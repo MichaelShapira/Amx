@@ -8,6 +8,7 @@ outline the run state machine maps over (levels stay in S3, out of the state pay
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import urllib.request
@@ -51,12 +52,33 @@ def _latest_host_facts(target_id: str) -> dict | None:
     return common.get_json(keys[-1]) if keys else None
 
 
+DSPM_REQUESTS_MANIFEST = "artifacts/dspm/v1/requests/manifest.json"
+DSPM_DATASET_MANIFEST = "datasets/dspm/v1/manifest.json"
+
+
 def _pool_sizes() -> dict[str, int]:
     sizes: dict[str, int] = {}
-    for key in ("artifacts/prompts/manifest.json", "artifacts/dspm/v1/requests/manifest.json"):
+    for key in ("artifacts/prompts/manifest.json", DSPM_REQUESTS_MANIFEST):
         if common.exists(key):
             sizes.update(common.get_json(key).get("pool_sizes", {}))
     return sizes
+
+
+def dspm_hashes(requests_manifest: dict | None, dataset_manifest_bytes: bytes | None) -> tuple[dict, list[str]]:
+    """Dataset and policy hashes for the report, plus errors when the uploaded request pools
+    were not built from the uploaded dataset (scoring would use the wrong labels)."""
+    if requests_manifest is None or dataset_manifest_bytes is None:
+        return {}, ["DSPM suite needs the dataset and request pools in S3; run `bench upload-artifacts`"]
+    ds = json.loads(dataset_manifest_bytes)
+    out = {"dataset_version": ds.get("version"), "dataset_sha256": ds.get("dataset_sha256"),
+           "dataset_manifest_sha256": hashlib.sha256(dataset_manifest_bytes).hexdigest(),
+           "span_label_map_sha256": ds.get("span_label_map_sha256"), "dataset_seed": ds.get("seed"),
+           **(requests_manifest.get("policy") or {})}
+    errors = []
+    if requests_manifest.get("dataset_manifest_sha256") != out["dataset_manifest_sha256"]:
+        errors.append("DSPM request pools were built from a different dataset than datasets/dspm/v1/manifest.json; "
+                      "rerun tools.dspm.build_requests and `bench upload-artifacts`")
+    return out, errors
 
 
 def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrency: int | None,
@@ -147,6 +169,13 @@ def handler(event: dict, context: Any = None) -> dict:
         errors.append(f"price unavailable: {e}")
         prices = {}
 
+    hashes: dict = {}
+    if run.suite == "dspm":
+        req = common.get_json(DSPM_REQUESTS_MANIFEST) if common.exists(DSPM_REQUESTS_MANIFEST) else None
+        dsb = common.get_bytes(DSPM_DATASET_MANIFEST) if common.exists(DSPM_DATASET_MANIFEST) else None
+        hashes, errs = dspm_hashes(req, dsb)
+        errors += errs
+
     pools = _pool_sizes()
     specs, outline = {}, {}
     for c in cells:
@@ -190,7 +219,7 @@ def handler(event: dict, context: Any = None) -> dict:
                 "cells": [c.model_dump() for c in cells], "instances": instances, "amis": amis,
                 "prices": prices, "built_images": built, "ecr_repository_uri": ecr_uri,
                 "harness_commit": common.env("HARNESS_COMMIT", "unknown"), "smoke": run.is_smoke,
-                "created_at": common.now_iso()}
+                "dspm_hashes": hashes, "created_at": common.now_iso()}
     common.put_json(f"{prefix}/resolved.json", resolved)
     common.set_status(run_id, "META", "running", smoke=run.is_smoke, n_cells=len(cells))
     for tid in instances:

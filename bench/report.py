@@ -339,6 +339,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
             "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
+            "dspm_hashes": res.get("dspm_hashes") or {},
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
                                                    "instances", "amis", "built_images", "created_at")}}
 
@@ -523,7 +524,10 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
     prov = s["provenance"]
     out += ["## Provenance", "", f"- run hash {prov.get('run_hash')}, models {prov.get('models_hash')}, "
             f"targets {prov.get('targets_hash')}", f"- harness commit {prov.get('harness_commit')}",
-            f"- AMIs {json.dumps(prov.get('amis'))}", ""]
+            f"- AMIs {json.dumps(prov.get('amis'))}"]
+    if s.get("dspm_hashes"):
+        out.append(f"- DSPM dataset and policy {json.dumps(s['dspm_hashes'], sort_keys=True)}")
+    out.append("")
     return "\n".join(out)
 
 

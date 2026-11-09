@@ -92,7 +92,7 @@ def build(dataset: Path, out: Path, tokenizers: dict, seed: int = 20261109) -> d
                         if worst > window:
                             raise SystemExit(f"{m.id} {wl}/{bkt}/{split}: input of {worst} tokens exceeds {window}")
                     key = dspm_pool(m, wl if split == "test" else f"dev-{wl}", bkt)
-                    path = out / Path(key).relative_to("artifacts/dspm/v1")
+                    path = out / Path(key).relative_to("artifacts/dspm/v1/requests")
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("".join(json.dumps(x, ensure_ascii=False, sort_keys=True) + "\n" for x in lines))
                     sizes[key] = len(lines)

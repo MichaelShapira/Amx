@@ -8,6 +8,7 @@ data/
 prompts/generated/
 # Build outputs
 .venv/
+*.egg-info/
 build/
 cdk.out/
 infra/cdk.out/

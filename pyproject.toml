@@ -15,7 +15,10 @@ dependencies = [
 dev = [
   "pytest>=8",
   "ruff>=0.8",
-  "faker>=37,<40",
+  "faker==39.1.0",          # the DSPM dataset hash depends on the exact Faker version
+  "moto>=5.2,<6",
+  "shellcheck-py>=0.10",
+  "pandas>=2.2",
   "rouge-score==0.1.2",
   "matplotlib>=3.9",
   "streamlit>=1.45",

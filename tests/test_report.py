@@ -24,7 +24,7 @@ def records(conc: int, n: int, ttft_ms: float, tpot_ms: float, tokens: int = 128
     e2e = ttft_ms + tpot_ms * (tokens - 1)
     for w in range(conc):
         t = start
-        for i in range(n):
+        for _ in range(n):
             out.append({"wall_send_ns": t, "send_to_first_ns": int(ttft_ms * MS),
                         "send_to_last_ns": int((ttft_ms + tpot_ms * (tokens - 1)) * MS),
                         "send_to_end_ns": int((e2e + 1) * MS), "prompt_tokens": prompt, "prompt_tokens_expected": prompt,

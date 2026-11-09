@@ -203,6 +203,20 @@ def test_preflight_checks(tmp_path):
     assert "lack amx_fp16" in text
 
 
+def test_preflight_dspm_hashes_refuse_stale_pools():
+    import hashlib
+
+    from lambdas.preflight import dspm_hashes
+
+    ds = json.dumps({"version": "v1", "dataset_sha256": "d" * 64, "seed": 7}).encode()
+    req = {"policy": {"policy_sha256": "p" * 64}, "dataset_manifest_sha256": hashlib.sha256(ds).hexdigest()}
+    hashes, errs = dspm_hashes(req, ds)
+    assert errs == [] and hashes["dataset_sha256"] == "d" * 64 and hashes["policy_sha256"] == "p" * 64
+    _, errs = dspm_hashes({**req, "dataset_manifest_sha256": "0" * 64}, ds)
+    assert "different dataset" in errs[0]
+    assert "upload-artifacts" in dspm_hashes(None, ds)[1][0]
+
+
 def test_capacity_log_appends(aws):
     from lambdas import target_control
 

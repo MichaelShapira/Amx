@@ -110,7 +110,8 @@ def aggregate_run(event: dict, context: Any = None) -> dict:
                      for k in common.list_keys(f"{prefix}/predictions/")},
         capacity={k.split("/")[-1][:-5]: common.get_json(k) for k in common.list_keys(f"{prefix}/capacity/")},
         hosts={k.split("/")[-1][:-5]: common.get_json(k) for k in common.list_keys(f"{prefix}/hosts/")},
-        dataset_items=_dataset_items(resolved),
+        dataset_items=_dataset_items(resolved, "test"),
+        dev_items=_dataset_items(resolved, "dev"),
         raw_loader=lambda cell_key, level_key: level_records(run_id, cell_key, level_key),
     )
     files = report.render(report.build_summary(inputs))
@@ -120,7 +121,8 @@ def aggregate_run(event: dict, context: Any = None) -> dict:
     return {"report_prefix": f"s3://{common.bucket()}/{prefix}/report/", "files": sorted(files)}
 
 
-def _dataset_items(resolved: dict) -> list[dict] | None:
+def _dataset_items(resolved: dict, split: str) -> list[dict] | None:
+    """Labels for scoring: test items for every model, dev items for M3's threshold."""
     if resolved["run"].get("suite") != "dspm":
         return None
-    return common.read_jsonl("datasets/dspm/v1/test.jsonl.gz")
+    return common.read_jsonl(f"datasets/dspm/v1/{split}.jsonl.gz")

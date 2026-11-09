@@ -18,6 +18,19 @@ class Script:
     omit_usage = False
 
 
+def sleep_until(deadline: float) -> None:
+    """Sleep to an absolute perf_counter deadline. time.sleep(0.010) overshoots by ~3 ms on
+    macOS (timer coalescing); chaining sleeps per token would turn that into a 30% TPOT
+    error, so each token is scheduled from the request start and the last few
+    milliseconds are spun."""
+    while True:
+        rem = deadline - time.perf_counter()
+        if rem <= 0:
+            return
+        if rem > 0.004:
+            time.sleep(rem - 0.004)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Headers and body go out in separate writes; without TCP_NODELAY, Nagle plus the
@@ -53,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.endswith("/classify"):
             inputs = req.get("input") or []
-            time.sleep(s.ttft_ms / 1000)
+            sleep_until(time.perf_counter() + s.ttft_ms / 1000)
             out = {"data": [{"index": i, "label": "ENTAILMENT", "probs": [0.1, 0.2, 0.7]}
                             for i, _ in enumerate(inputs)],
                    "usage": {"prompt_tokens": s.prompt_tokens * len(inputs)}}
@@ -68,17 +81,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        time.sleep(s.ttft_ms / 1000)
+        t0 = time.perf_counter()
         sent = 0
-        first = True
+        event = 0
         while sent < s.tokens:
-            if not first:
-                time.sleep(s.itl_ms * s.tokens_per_event / 1000)
+            # event k goes out at ttft + k x itl x tokens_per_event, from the request start
+            sleep_until(t0 + (s.ttft_ms + event * s.itl_ms * s.tokens_per_event) / 1000)
             k = min(s.tokens_per_event, s.tokens - sent)
             ev = {"choices": [{"index": 0, "text": "tok " * k}], "usage": None}
             self._chunk(f"data: {json.dumps(ev)}\n\n".encode())
             sent += k
-            first = False
+            event += 1
         if not s.omit_usage:
             ev = {"choices": [], "usage": {"prompt_tokens": s.prompt_tokens,
                                            "completion_tokens": s.tokens}}
