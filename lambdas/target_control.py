@@ -224,7 +224,9 @@ def ensure_running(event: dict, context: Any = None) -> dict:
     acceptable = {t for t in (requested_type, *(event.get("alternates") or [])) if t}
     inst = find_instance(tid)
     if inst is not None and not event.get("keep_lifecycle"):
-        wrong_market = inst["State"]["Name"] in ("running", "pending") and lifecycle(inst) != purchase.get("type", "spot")
+        # A stopped On-Demand instance counts as the wrong market for a Spot run too: restarting it
+        # would bill On-Demand for a run that asked for Spot (seen 2026-11-09).
+        wrong_market = lifecycle(inst) != purchase.get("type", "spot")
         wrong_type = bool(acceptable) and inst["InstanceType"] not in acceptable
         if wrong_market or wrong_type:
             # The run asks for another market or instance type than the instance left by an earlier

@@ -23,8 +23,13 @@ from bench.cellspec import cell_key
 from bench.config import ModelSpec, ResolvedCell, RunConfig, load_models, load_targets
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTANCE_VCPUS = {"g6.xlarge": 4, "g5.xlarge": 4, "m8i.4xlarge": 16, "c8i.4xlarge": 16, "m8i.8xlarge": 32,
-                  "m7i.4xlarge": 16}
+def _vcpus(instance_type: str) -> int:
+    """From the instance catalog; a literal table here missed g6.2xlarge on 2026-11-09 and the
+    capacity-equivalence column showed 0 G vCPUs."""
+    s = pairing.spec(instance_type)
+    return int(s["vcpus"]) if s else 0
+
+
 SLA_PRESETS = {"inline_strict": {"p99_e2e_ms": 250.0}, "inline_standard": {"p99_e2e_ms": 1000.0},
                "bulk": {"p99_e2e_ms": 30000.0}}
 TRANSFER = ("Speed results transfer to fine-tuned models of the same architecture, size and precision; "
@@ -386,8 +391,7 @@ def analyze(rows: list[dict], run: RunConfig) -> dict:
                     continue
                 eq = cost.capacity_equivalence(
                     gpu_throughput=_throughput(best_gpu), cpu_throughput=_throughput(r),
-                    cpu_vcpus=INSTANCE_VCPUS.get(r["instance_type"], 0),
-                    gpu_vcpus=INSTANCE_VCPUS.get(best_gpu["instance_type"], 0),
+                    cpu_vcpus=_vcpus(r["instance_type"]), gpu_vcpus=_vcpus(best_gpu["instance_type"]),
                     cpu_price=r["usd_per_hour"], gpu_price=best_gpu["usd_per_hour"])
                 if eq is None:
                     continue

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import time
 from typing import Any
 
 from bench import metrics
@@ -10,6 +12,9 @@ from lambdas import common
 
 CW_METRICS = (("cpu_usage_active", "cpu"), ("mem_used_percent", "mem"), ("nvidia_smi_utilization_gpu", "gpu"),
               ("nvidia_smi_memory_used", "gpu_mem"), ("nvidia_smi_power_draw", "gpu_power"))
+def _publish_delay_s() -> float:
+    """Agent force-flush interval (60 s) plus its publish jitter (up to ~60 s); 0 in tests."""
+    return float(os.environ.get("AGENT_PUBLISH_DELAY_S", "130"))
 
 
 def level_name(lvl: dict) -> str:
@@ -66,6 +71,13 @@ def aggregate_level(event: dict, context: Any = None) -> dict:
         end = max(int(r["wall_send_ns"]) + int(r["send_to_end_ns"]) for r in recs)
         summary["window_wall_ns"] = [start, end]
         try:
+            # The CloudWatch agent flushes every 60 s with up to ~60 s jitter; a short level
+            # queried right after its last request finds nothing (seen 2026-11-09: a 47 s level
+            # had `resources: {}` while a 525 s one on the same host had data).
+            delay = _publish_delay_s()
+            wait = delay - (time.time() - end / 1e9)
+            if wait > 0:
+                time.sleep(min(wait, delay))
             summary["resources"] = resources(lvl["target_id"], start, end)
         except Exception as e:  # noqa: BLE001 - resource metrics are context, not a reason to fail the level
             summary["resources_error"] = str(e)[:300]

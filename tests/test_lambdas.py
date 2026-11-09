@@ -35,6 +35,7 @@ def aws(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("BENCH_BUCKET", BUCKET)
     monkeypatch.setenv("BENCH_TABLE", "amx-gpu-bench")
+    monkeypatch.setenv("AGENT_PUBLISH_DELAY_S", "0")       # no CloudWatch agent to wait for
     with moto.mock_aws():
         from lambdas import common
 

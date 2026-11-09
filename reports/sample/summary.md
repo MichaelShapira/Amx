@@ -1,4 +1,4 @@
-# Benchmark report: smoke-m1-t1-t2 (smoke-m1-t1-t2-20261109T161710Z)
+# Benchmark report: smoke-m1-t1-t2 (smoke-m1-t1-t2-20261109T205743Z)
 
 > **SMOKE RUN.** Fewer requests and repeats than the methodology defaults. Use these numbers to check the harness, not to decide.
 
@@ -8,11 +8,20 @@ Suite **standard**, region us-east-1 (use1-az1). Prices are On-Demand from the A
 
 | Target | Instance | Engine | Precision | C | E2E P1/P50/P99 ms | TTFT P1/P50/P99 ms | TPOT P50 ms | Prefill tok/s P50 | Agg tok/s | req/s | err % | $/hr | $/1M tok | AMX | Q delta | SLA |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 1 | 9,983/10,007/10,042 | 152/166/174 | 77.5 | 779 | 13 | 0.10 | 0.00 | 0.847 | 18.39 | VERIFIED | - | meets |
-| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 4 | 10,196/10,336/10,405 | 230/324/485 | 78.2 | 401 | 50 | 0.38 | 0.00 | 0.847 | 4.75 | VERIFIED | - | meets |
-| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 16 | 10,114/12,121/12,184 | 163/1,563/1,616 | 83.2 | 83 | 169 | 0.91 | 0.00 | 0.847 | 1.39 | VERIFIED | - | **cheapest CPU meeting SLA** |
+| t1-g6 | g6.2xlarge | vllm | bf16 | 1 | 3,316/3,326/3,333 | 40/42/43 | 25.9 | 3,094 | 38 | 0.30 | 0.00 | 0.978 | 7.06 | n/a | - | meets |
+| t1-g6 | g6.2xlarge | vllm | bf16 | 4 | 3,393/3,441/3,448 | 44/96/100 | 26.3 | 1,356 | 149 | 1.09 | 0.00 | 0.978 | 1.82 | n/a | - | meets |
+| t1-g6 | g6.2xlarge | vllm | bf16 | 16 | 3,386/3,724/3,730 | 46/282/289 | 27.1 | 460 | 551 | 2.97 | 0.00 | 0.978 | 0.49 | n/a | - | **best GPU** |
+| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 1 | 9,876/9,925/10,083 | 141/149/162 | 77.0 | 871 | 13 | 0.10 | 0.00 | 0.847 | 18.28 | VERIFIED | 0.216 | meets |
+| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 4 | 9,972/10,260/10,377 | 153/455/510 | 77.1 | 285 | 50 | 0.37 | 0.00 | 0.847 | 4.72 | VERIFIED | 0.216 | meets |
+| t2-m8i-4xl | m8i.4xlarge | vllm | bf16 | 16 | 9,985/11,953/12,058 | 189/1,445/1,448 | 82.7 | 90 | 171 | 0.92 | 0.00 | 0.847 | 1.37 | VERIFIED | 0.216 | **cheapest CPU meeting SLA** |
 
-_no GPU row meets the SLA; capacity equivalence not computed_
+Capacity equivalence (CPU instances needed to match the best GPU row's SLA-meeting throughput):
+
+| CPU instance | Engine | Precision | C | Instances per GPU | Standard vCPUs | G vCPUs (GPU) | Hourly cost ratio | Within limit |
+|---|---|---|---|---|---|---|---|---|
+| m8i.4xlarge | vllm | bf16 | 1 | 43 | 688 | 8 | 37.24 | no (Conditional) |
+| m8i.4xlarge | vllm | bf16 | 16 | 4 | 64 | 8 | 3.46 | yes |
+| m8i.4xlarge | vllm | bf16 | 4 | 12 | 192 | 8 | 10.39 | no (Conditional) |
 
 ## Charts
 
@@ -26,36 +35,19 @@ _no GPU row meets the SLA; capacity equivalence not computed_
 ## Price source
 
 - g5.xlarge: $1.006/h, SKU 79BRGEEZC6TARVWJ, effective 2026-11-01T00:00:00Z, price list arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261107002852/us-east-1 (published 2026-11-07T00:28:52Z)
+- g6.2xlarge: $0.9776/h, SKU XCA3J9EEM739PU6M, effective 2026-11-01T00:00:00Z, price list arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261107002852/us-east-1 (published 2026-11-07T00:28:52Z)
 - g6.xlarge: $0.8048/h, SKU TPKUC6XYSUQ3VFK2, effective 2026-11-01T00:00:00Z, price list arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261107002852/us-east-1 (published 2026-11-07T00:28:52Z)
 - m8i.4xlarge: $0.84672/h, SKU E7HS8NYMC36MBM9V, effective 2026-11-01T00:00:00Z, price list arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261107002852/us-east-1 (published 2026-11-07T00:28:52Z)
 
 ## Capacity errors seen while starting instances
 
-- t1-g6: 2026-11-09T16:17:32Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:18:41Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:19:55Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:21:05Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:22:19Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:23:31Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:24:45Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:25:56Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:27:11Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:28:23Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:29:36Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:30:47Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:31:59Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:33:06Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:34:17Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:35:34Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:36:49Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:38:00Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:39:16Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:40:31Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:41:48Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:43:00Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:44:10Z InsufficientInstanceCapacity (template, None)
-- t1-g6: 2026-11-09T16:45:26Z InsufficientInstanceCapacity (g5.xlarge, None)
-- t1-g6: 2026-11-09T16:46:38Z InsufficientInstanceCapacity (template, None)
+- t1-g6: 2026-11-09T20:58:05Z InsufficientInstanceCapacity (g6.xlarge, None)
+- t1-g6: 2026-11-09T20:59:14Z InsufficientInstanceCapacity (g6.xlarge, None)
+- t1-g6: 2026-11-09T21:00:31Z InsufficientInstanceCapacity (g6.xlarge, None)
+- t1-g6: 2026-11-09T21:01:44Z InsufficientInstanceCapacity (g5.xlarge, None)
+- t1-g6: 2026-11-09T21:02:58Z InsufficientInstanceCapacity (g6.2xlarge, None)
+- t1-g6: 2026-11-09T21:04:14Z InsufficientInstanceCapacity (g6.xlarge, None)
+- t1-g6: 2026-11-09T21:05:24Z InsufficientInstanceCapacity (g5.xlarge, None)
 
 ## Warnings
 
@@ -64,7 +56,8 @@ _no GPU row meets the SLA; capacity equivalence not computed_
 
 ## Provenance
 
-- run hash 2ac2ba9116a0a31e0863c9227eac7534b573d77dee97a1619f7ccc288e455d22, models 0e7c5b311fde4429defd9403b108f1bd4539ab520b7f60aaf254930628f031a6, targets f062cab64b10cee1db8cd8723dbabfc2925223ff4c560eef063459c58214ecda
-- harness commit 0958a9bbf8fc212fb67f1d58656e142453d3358e
+- run hash a298b2fdcc2fde08c5a6203834086ebcb1a05d79ce8e417201bfc4470429d592, models 0e7c5b311fde4429defd9403b108f1bd4539ab520b7f60aaf254930628f031a6, targets f062cab64b10cee1db8cd8723dbabfc2925223ff4c560eef063459c58214ecda
+- harness commit bcb23473c69abc40d7155385b49cf5e3a6dad754
 - AMIs {"t1-g6": "ami-0fa51b517f148a6a4", "t2-m8i-4xl": "ami-07c1b6f58fb89ce9f"}
-- instances {"t2-m8i-4xl": ["i-0cba10f9497a00fd5"]}, market {"t2-m8i-4xl": "on-demand"} (requested on-demand); cost columns use On-Demand prices
+- instances {"t1-g6": ["i-0fc36ee7f7213317d"], "t2-m8i-4xl": ["i-0cba10f9497a00fd5"]}, market {"t1-g6": "spot", "t2-m8i-4xl": "on-demand"} (requested spot); cost columns use On-Demand prices
+- pairing t2-m8i-4xl (m8i.4xlarge) vs t1-g6 (g6.2xlarge): fair, GPU/CPU hourly price ratio 1.155
