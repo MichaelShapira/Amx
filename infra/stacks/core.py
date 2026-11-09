@@ -7,6 +7,7 @@ from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_dynamodb as ddb
+from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
@@ -112,7 +113,10 @@ class CoreStack(Stack):
         membw = fn("membw_probe", "lambdas.side_tasks.membw_probe", memory=256)
         agg_level = fn("aggregate_level", "lambdas.aggregate.aggregate_level", memory=1769)
         agg_run = fn("aggregate_run", "lambdas.aggregate.aggregate_run", memory=3008)
-        control = fn("target_control", "lambdas.target_control.handler", memory=256)
+        self.private_subnet_id = network.vpc.select_subnets(
+            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS).subnet_ids[0]
+        control = fn("target_control", "lambdas.target_control.handler", memory=256,
+                     env={"TARGET_SUBNET_ID": self.private_subnet_id})
         reaper = fn("reaper", "lambdas.reaper.handler", memory=256, timeout_min=5,
                     env={"IDLE_MINUTES": "30", "MAX_UPTIME_HOURS": "8"})
         preflight = fn("preflight", "lambdas.preflight.handler", memory=1024, timeout_min=5,
@@ -150,6 +154,9 @@ class CoreStack(Stack):
         for f in (init_level, plan_wave, wave_check):
             f.add_to_role_policy(iam.PolicyStatement(
                 actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources=[t.table_arn]))
+        # A re-run of a level (after a Spot interruption) first drops the raw records of the cut-short attempt.
+        init_level.add_to_role_policy(s3_list)
+        init_level.add_to_role_policy(iam.PolicyStatement(actions=["s3:DeleteObject"], resources=self._obj("runs/*/raw/*")))
         ssm_send = iam.PolicyStatement(
             actions=["ssm:SendCommand"],
             resources=[f"arn:aws:ssm:{self.region}::document/AWS-RunShellScript"])
@@ -164,18 +171,38 @@ class CoreStack(Stack):
         amx_probe.add_to_role_policy(s3_get("runs/*/amx/*"))
         amx_probe.add_to_role_policy(s3_put("runs/*/amx/*"))
         ec2_tagged = {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
+        inst_arn = f"arn:aws:ec2:{self.region}:{self.account}:instance/*"
         for f in (control, reaper):
             f.add_to_role_policy(iam.PolicyStatement(actions=["ec2:DescribeInstances"], resources=["*"]))
-            f.add_to_role_policy(iam.PolicyStatement(
-                actions=["ec2:StopInstances"], resources=[f"arn:aws:ec2:{self.region}:{self.account}:instance/*"],
-                conditions=ec2_tagged))
+            # Stop On-Demand instances, terminate one-time Spot ones; only bench-tagged instances either way.
+            f.add_to_role_policy(iam.PolicyStatement(actions=["ec2:StopInstances", "ec2:TerminateInstances"],
+                                                     resources=[inst_arn], conditions=ec2_tagged))
             f.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:GetItem", "dynamodb:UpdateItem"],
                                                      resources=[t.table_arn]))
+        control.add_to_role_policy(iam.PolicyStatement(actions=["ec2:StartInstances"], resources=[inst_arn],
+                                                       conditions=ec2_tagged))
+        # Launch per run from a target stack's launch template (On-Demand or Spot), in the private subnet
+        # with the targets security group; tags are set in the same call.
         control.add_to_role_policy(iam.PolicyStatement(
-            actions=["ec2:StartInstances"], resources=[f"arn:aws:ec2:{self.region}:{self.account}:instance/*"],
-            conditions=ec2_tagged))
+            actions=["ec2:RunInstances"],
+            resources=[inst_arn, f"arn:aws:ec2:{self.region}:{self.account}:volume/*",
+                       f"arn:aws:ec2:{self.region}:{self.account}:network-interface/*",
+                       f"arn:aws:ec2:{self.region}:{self.account}:launch-template/*",
+                       f"arn:aws:ec2:{self.region}::image/*",
+                       f"arn:aws:ec2:{self.region}:{self.account}:subnet/{self.private_subnet_id}",
+                       f"arn:aws:ec2:{self.region}:{self.account}:security-group/"
+                       f"{self.network.sg_targets.security_group_id}"]))
+        control.add_to_role_policy(iam.PolicyStatement(
+            actions=["ec2:CreateTags"], resources=[inst_arn, f"arn:aws:ec2:{self.region}:{self.account}:volume/*"],
+            conditions={"StringEquals": {"ec2:CreateAction": "RunInstances"}}))
+        control.add_to_role_policy(iam.PolicyStatement(
+            actions=["iam:PassRole"], resources=[f"arn:aws:iam::{self.account}:role/amx-gpu-bench-target-*"],
+            conditions={"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}))
+        control.add_to_role_policy(iam.PolicyStatement(
+            actions=["ssm:GetParameter"],
+            resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/amx-gpu-bench/targets/*"]))
         control.add_to_role_policy(s3_get("runs/*"))
-        control.add_to_role_policy(s3_put("runs/*/capacity/*", "runs/*/plan/*"))
+        control.add_to_role_policy(s3_put("runs/*/capacity/*", "runs/*/targets/*", "runs/*/plan/*"))
         agg_level.add_to_role_policy(s3_list)
         agg_level.add_to_role_policy(s3_get("runs/*"))
         agg_level.add_to_role_policy(s3_put("runs/*/metrics/*", "runs/*/predictions/*"))
@@ -270,8 +297,11 @@ class CoreStack(Stack):
 
         pf = invoke("Preflight", preflight, {"run_id.$": "$.run_id"},
                     result_selector={"run_id.$": "$.Payload.run_id", "targets.$": "$.Payload.targets",
+                                     "purchase.$": "$.Payload.purchase",
                                      "stop.$": "$.Payload.stop_targets_after_run"}, result_path="$.pf")
-        # Per cell
+        # Per cell. The cell item carries run_id, target_id, purchase, cell, instance_id, private_ip and
+        # recovery {attempt, interruption_logged}; a failed step goes to Check, which relaunches a gone
+        # (Spot-interrupted) instance and resumes the cell's remaining levels on the replacement.
         cstart = invoke("ConfigureStart", control, {"action": "configure_start", "run_id.$": "$.run_id",
                                                      "instance_id.$": "$.instance_id", "cell.$": "$.cell"},
                         result_selector={"command_id.$": "$.Payload.command_id"}, result_path="$.cmd")
@@ -284,16 +314,17 @@ class CoreStack(Stack):
         mem = invoke("MemBwProbe", membw, {"run_id.$": "$.run_id", "instance_id.$": "$.instance_id"},
                      result_path=P.DISCARD)
         qual = invoke("Quality", quality, {"quality.$": "$.cfg.r.quality"}, result_path=P.DISCARD)
+        # One failed level fails the map so that Check can tell an interrupted instance from a failed level.
         levels = sfn.DistributedMap(
             self, "Levels", item_reader=sfn.S3JsonItemReader(bucket=self.bucket, key=P.string_at("$.cfg.r.levels_key")),
-            max_concurrency=1, map_execution_type=sfn.StateMachineType.STANDARD, tolerated_failure_percentage=100,
+            max_concurrency=1, map_execution_type=sfn.StateMachineType.STANDARD, tolerated_failure_percentage=0,
             item_selector={"level.$": "$$.Map.Item.Value"}, result_path=P.DISCARD)
         levels.item_processor(tasks.StepFunctionsStartExecution(
             self, "RunLevel", state_machine=self.level_sm, integration_pattern=sfn.IntegrationPattern.RUN_JOB,
             input=sfn.TaskInput.from_json_path_at("$"), result_selector={"ok": True}))
         cell_done = sfn.Pass(self, "CellDone")
         cell_failed = sfn.Pass(self, "CellFailed", parameters={"failed.$": "$.cell.cell_id", "error.$": "$.error"})
-        after_mem = sfn.Choice(self, "NeedsQuality").when(sfn.Condition.boolean_equals("$.cell.quality", True),
+        after_mem = sfn.Choice(self, "NeedsQuality").when(sfn.Condition.is_not_null("$.cfg.r.quality"),
                                                           qual.next(levels)).otherwise(levels)
         after_amx = sfn.Choice(self, "NeedsMemBw").when(sfn.Condition.boolean_equals("$.cell.membw", True),
                                                         mem.next(after_mem)).otherwise(after_mem)
@@ -302,29 +333,62 @@ class CoreStack(Stack):
         ready = sfn.Choice(self, "CellReady").when(sfn.Condition.boolean_equals("$.cfg.r.done", True), after_cfg) \
             .otherwise(cpoll)
         levels.next(cell_done)
-        for st in (cstart, cpoll, amx, mem, qual, levels):
-            st.add_catch(cell_failed, result_path="$.error")
+        # Recovery: which stage failed, then Check decides relaunch / resume / fail.
+        stage_bringup = sfn.Pass(self, "FailedInBringup", result=sfn.Result.from_string("bringup"), result_path="$.stage")
+        stage_levels = sfn.Pass(self, "FailedInLevels", result=sfn.Result.from_string("levels"), result_path="$.stage")
+        check = invoke("Check", control, {
+            "action": "check", "run_id.$": "$.run_id", "target_id.$": "$.target_id", "instance_id.$": "$.instance_id",
+            "private_ip.$": "$.private_ip", "cell.$": "$.cell", "purchase.$": "$.purchase",
+            "recovery.$": "$.recovery", "stage.$": "$.stage", "error.$": "$.error"},
+            result_selector={"r.$": "$.Payload"}, result_path="$.chk")
+        adopt = sfn.Pass(self, "AdoptCheck", parameters={
+            "run_id.$": "$.run_id", "target_id.$": "$.target_id", "purchase.$": "$.purchase", "cell.$": "$.cell",
+            "instance_id.$": "$.chk.r.instance_id", "private_ip.$": "$.chk.r.private_ip",
+            "recovery.$": "$.chk.r.recovery", "decision.$": "$.chk.r.decision", "ready.$": "$.chk.r.ready",
+            "stage.$": "$.stage", "error.$": "$.error"})
+        wait_replace = sfn.Wait(self, "WaitForReplacement", time=sfn.WaitTime.duration(Duration.seconds(60)))
+        resume = invoke("ResumeLevels", control, {
+            "action": "resume_levels", "run_id.$": "$.run_id", "target_id.$": "$.target_id",
+            "instance_id.$": "$.instance_id", "private_ip.$": "$.private_ip", "cell.$": "$.cell"},
+            result_selector={"r.$": "$.Payload"}, result_path="$.cfg")
+        decide = sfn.Choice(self, "AfterCheck") \
+            .when(sfn.Condition.string_equals("$.decision", "fail"), cell_failed) \
+            .when(sfn.Condition.boolean_equals("$.ready", False), wait_replace.next(check)) \
+            .when(sfn.Condition.string_equals("$.decision", "relaunch"), cstart) \
+            .otherwise(resume.next(levels))
+        check.next(adopt).next(decide)
+        check.add_catch(cell_failed, result_path="$.error")
+        resume.add_catch(cell_failed, result_path="$.error")
+        for st in (cstart, cpoll, amx, mem, qual):
+            st.add_catch(stage_bringup, result_path="$.error")
+        levels.add_catch(stage_levels, result_path="$.error")
+        stage_bringup.next(check)
+        stage_levels.next(check)
         cells = sfn.Map(self, "Cells", items_path="$.target.cells", max_concurrency=1, result_path=P.DISCARD,
                         item_selector={"run_id.$": "$.run_id", "target_id.$": "$.target.target_id",
-                                       "instance_id.$": "$.target.instance_id", "private_ip.$": "$.inst.private_ip",
-                                       "cell.$": "$$.Map.Item.Value"})
+                                       "purchase.$": "$.purchase", "instance_id.$": "$.inst.r.instance_id",
+                                       "private_ip.$": "$.inst.r.private_ip", "cell.$": "$$.Map.Item.Value",
+                                       "recovery": {"attempt": 0, "interruption_logged": False}})
         cells.item_processor(cstart.next(cpoll).next(ready))
+        # Launch or start the target's instance; loop while capacity is short or the instance boots.
         ensure = invoke("EnsureRunning", control, {"action": "ensure_running", "run_id.$": "$.run_id",
-                                                    "target_id.$": "$.target.target_id",
-                                                    "instance_id.$": "$.target.instance_id"},
-                        result_selector={"private_ip.$": "$.Payload.private_ip"}, result_path="$.inst")
+                                                    "target_id.$": "$.target.target_id", "purchase.$": "$.purchase"},
+                        result_selector={"r.$": "$.Payload"}, result_path="$.inst")
+        wait_launch = sfn.Wait(self, "WaitForInstance", time=sfn.WaitTime.duration(Duration.seconds(60)))
         target_failed = sfn.Pass(self, "TargetFailed")
         ensure.add_catch(target_failed, result_path="$.error")
+        running = sfn.Choice(self, "InstanceReady").when(sfn.Condition.boolean_equals("$.inst.r.ready", True), cells) \
+            .otherwise(wait_launch.next(ensure))
         tmap = sfn.Map(self, "Targets", items_path="$.pf.targets", max_concurrency=0, result_path=P.DISCARD,
-                       item_selector={"run_id.$": "$.pf.run_id", "target.$": "$$.Map.Item.Value"})
-        tmap.item_processor(ensure.next(cells))
+                       item_selector={"run_id.$": "$.pf.run_id", "purchase.$": "$.pf.purchase",
+                                      "target.$": "$$.Map.Item.Value"})
+        tmap.item_processor(ensure.next(running))
         agg = invoke("AggregateRun", agg_run, {"run_id.$": "$.pf.run_id"},
                      result_selector={"report_prefix.$": "$.Payload.report_prefix"}, result_path="$.report")
-        stop_one = invoke("StopTarget", control, {"action": "stop", "target_id.$": "$.target_id",
-                                                  "instance_id.$": "$.instance_id"}, result_path=P.DISCARD)
+        stop_one = invoke("StopTarget", control, {"action": "stop", "target_id.$": "$.target_id"},
+                          result_path=P.DISCARD)
         stop_map = sfn.Map(self, "StopTargets", items_path="$.pf.targets", result_path=P.DISCARD,
-                           item_selector={"target_id.$": "$$.Map.Item.Value.target_id",
-                                          "instance_id.$": "$$.Map.Item.Value.instance_id"})
+                           item_selector={"target_id.$": "$$.Map.Item.Value.target_id"})
         stop_map.item_processor(stop_one)
         done = sfn.Succeed(self, "RunDone")
         stop_choice = sfn.Choice(self, "StopAfterRun").when(sfn.Condition.boolean_equals("$.pf.stop", True),

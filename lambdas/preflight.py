@@ -135,15 +135,16 @@ def handler(event: dict, context: Any = None) -> dict:
     errors += check_run(run, cells, models, tmap, reserved_worker_concurrency=reserved, offerings=offerings,
                         host_flags=host_flags)
 
-    # Deployed targets: instance id and AMI from the target stacks.
-    instances: dict[str, str] = {}
+    # Deployed targets: launch template and AMI from the target stacks. The instance itself is
+    # launched per run by target_control (On-Demand or Spot, run.purchase).
+    templates: dict[str, str] = {}
     amis: dict[str, str | None] = {}
     for tid in sorted({c.target for c in cells}):
-        iid = _param(f"/amx-gpu-bench/targets/{tid}")
-        if not iid:
-            errors.append(f"target {tid} is not deployed (no SSM parameter /amx-gpu-bench/targets/{tid})")
+        lt = _param(f"/amx-gpu-bench/targets/{tid}/launch-template")
+        if not lt:
+            errors.append(f"target {tid} is not deployed (no SSM parameter /amx-gpu-bench/targets/{tid}/launch-template)")
         else:
-            instances[tid] = iid
+            templates[tid] = lt
         amis[tid] = _param(f"/amx-gpu-bench/targets/{tid}/ami")
 
     # Built images.
@@ -208,21 +209,21 @@ def handler(event: dict, context: Any = None) -> dict:
         membw = cpu and t.instance_type not in membw_done
         if membw:
             membw_done.add(t.instance_type)
-        outline.setdefault(c.target, {"target_id": c.target, "instance_id": instances[c.target], "cpu": cpu,
-                                      "cells": []})["cells"].append({
+        outline.setdefault(c.target, {"target_id": c.target, "cpu": cpu, "cells": []})["cells"].append({
             "cell_id": c.cell_id, "cell_key": spec["cell_key"], "engine": c.engine, "cpu": cpu,
             "spec_uri": f"s3://{common.bucket()}/{prefix}/cells/{spec['cell_key']}.json",
             "amx": cpu, "membw": membw, "quality": qual is not None, "n_levels": len(levels)})
         common.set_status(run_id, f"CELL#{c.cell_id}", "planned", engine=c.engine, n_levels=len(levels))
     resolved = {"run_id": run_id, "run": run.model_dump(mode="json"), "run_hash": config_hash(run),
                 "models_hash": config_hash(models), "targets_hash": config_hash(targets),
-                "cells": [c.model_dump() for c in cells], "instances": instances, "amis": amis,
-                "prices": prices, "built_images": built, "ecr_repository_uri": ecr_uri,
-                "harness_commit": common.env("HARNESS_COMMIT", "unknown"), "smoke": run.is_smoke,
-                "dspm_hashes": hashes, "created_at": common.now_iso()}
+                "cells": [c.model_dump() for c in cells], "launch_templates": templates, "amis": amis,
+                "purchase": run.purchase.model_dump(), "prices": prices, "built_images": built,
+                "ecr_repository_uri": ecr_uri, "harness_commit": common.env("HARNESS_COMMIT", "unknown"),
+                "smoke": run.is_smoke, "dspm_hashes": hashes, "created_at": common.now_iso()}
     common.put_json(f"{prefix}/resolved.json", resolved)
-    common.set_status(run_id, "META", "running", smoke=run.is_smoke, n_cells=len(cells))
-    for tid in instances:
+    common.set_status(run_id, "META", "running", smoke=run.is_smoke, n_cells=len(cells),
+                      purchase=run.purchase.type)
+    for tid in templates:
         common.touch_target(tid, run_id)
-    return {"run_id": run_id, "targets": list(outline.values()),
+    return {"run_id": run_id, "targets": list(outline.values()), "purchase": run.purchase.model_dump(),
             "stop_targets_after_run": run.stop_targets_after_run}

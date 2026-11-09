@@ -89,6 +89,16 @@ def list_keys(prefix: str, *, bucket_name: str | None = None) -> list[str]:
     return sorted(keys)
 
 
+def delete_prefix(prefix: str) -> int:
+    """Delete every object under a prefix (a re-run of a level must not read the raw
+    records of the attempt a Spot interruption cut short)."""
+    keys = list_keys(prefix)
+    for i in range(0, len(keys), 1000):
+        client("s3").delete_objects(Bucket=bucket(), Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]],
+                                                             "Quiet": True})
+    return len(keys)
+
+
 def exists(key: str) -> bool:
     try:
         client("s3").head_object(Bucket=bucket(), Key=key)

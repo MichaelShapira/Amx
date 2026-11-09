@@ -241,6 +241,18 @@ class CapacityCfg(Strict):
     max_cpu_instances_per_gpu: int = 4
 
 
+class PurchaseCfg(Strict):
+    """How target instances are launched for this run. Spot instances are one-time requests
+    that terminate on interruption; the run then launches another instance (Spot again, or
+    On-Demand once the Spot capacity window is used up) and resumes the cell's remaining
+    levels. Cost figures always use On-Demand prices."""
+    type: Literal["on-demand", "spot"] = "on-demand"
+    spot_fallback_on_demand: bool = True
+    spot_max_price_usd: float | None = None          # None: EC2 caps at the On-Demand price
+    spot_capacity_window_s: int = 600                # keep retrying Spot this long before falling back
+    max_relaunches_per_cell: int = 3
+
+
 class DspmCfg(Strict):
     workloads: list[Literal["W1", "W2", "W3", "W4", "W5"]] = Field(
         default_factory=lambda: ["W1", "W2", "W3", "W4"]
@@ -275,6 +287,7 @@ class RunConfig(Strict):
     quality: QualityCfg = Field(default_factory=QualityCfg)
     sla: SLA = Field(default_factory=SLA)
     capacity: CapacityCfg = Field(default_factory=CapacityCfg)
+    purchase: PurchaseCfg = Field(default_factory=PurchaseCfg)
     dspm: DspmCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20

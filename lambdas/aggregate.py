@@ -114,11 +114,26 @@ def aggregate_run(event: dict, context: Any = None) -> dict:
         dev_items=_dataset_items(resolved, "dev"),
         raw_loader=lambda cell_key, level_key: level_records(run_id, cell_key, level_key),
     )
+    resolved.update(target_provenance({k.split("/")[-1][:-5]: common.get_json(k)
+                                       for k in common.list_keys(f"{prefix}/targets/")}))
     files = report.render(report.build_summary(inputs))
     for name, body in files.items():
         common.client("s3").put_object(Bucket=common.bucket(), Key=f"{prefix}/report/{name}", Body=body)
     common.set_status(run_id, "META", "complete", report_prefix=f"{prefix}/report/")
     return {"report_prefix": f"s3://{common.bucket()}/{prefix}/report/", "files": sorted(files)}
+
+
+def target_provenance(events: dict[str, list[dict]]) -> dict:
+    """From runs/<run>/targets/<target>.json (written by target_control): the instances that
+    served each target, their market (spot / on-demand) and the interruptions seen."""
+    instances, lifecycle, interruptions = {}, {}, {}
+    for tid, evs in sorted(events.items()):
+        launched = [e for e in evs if e.get("event") in ("launched", "started")]
+        instances[tid] = sorted({e["instance_id"] for e in launched})
+        lifecycle[tid] = launched[-1]["lifecycle"] if launched else None
+        interruptions[tid] = [{k: e.get(k) for k in ("time", "instance_id", "state_reason", "cell")}
+                              for e in evs if e.get("event") == "interrupted"]
+    return {"instances": instances, "lifecycle": lifecycle, "interruptions": interruptions}
 
 
 def _dataset_items(resolved: dict, split: str) -> list[dict] | None:

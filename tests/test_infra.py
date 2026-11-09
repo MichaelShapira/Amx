@@ -40,24 +40,40 @@ def test_only_ingress_is_8000_from_workers(templates):
     assert '"CidrIp": "0.0.0.0/0", "Description": "HTTPS out' in blob or "HTTPS out via NAT" in blob
 
 
-def test_instances_private_imdsv2_encrypted_tagged(templates):
+def test_launch_templates_private_imdsv2_encrypted_tagged(templates):
+    """Instances are launched per run (On-Demand or Spot) from one launch template per target;
+    the stacks themselves create no instance."""
+    assert list(_all(templates, "AWS::EC2::Instance")) == []
     n = 0
-    for name, _, inst in _all(templates, "AWS::EC2::Instance"):
+    for name, _, lt in _all(templates, "AWS::EC2::LaunchTemplate"):
         n += 1
-        p = inst["Properties"]
-        assert "KeyName" not in p
-        nic = p.get("NetworkInterfaces")
-        assert not nic or all(not x.get("AssociatePublicIpAddress") for x in nic)
-        bd = p["BlockDeviceMappings"][0]["Ebs"]
+        d = lt["Properties"]["LaunchTemplateData"]
+        assert "KeyName" not in d
+        assert d["MetadataOptions"]["HttpTokens"] == "required"
+        assert all(x.get("AssociatePublicIpAddress") is False for x in d["NetworkInterfaces"])
+        bd = d["BlockDeviceMappings"][0]["Ebs"]
         assert bd["Encrypted"] is True and bd["VolumeType"] == "gp3"
-        tags = {t["Key"]: t["Value"] for t in p["Tags"]}
+        tags = {t["Key"]: t["Value"] for spec in d["TagSpecifications"] for t in spec["Tags"]
+                if spec["ResourceType"] == "instance"}
         assert tags["bench:managed"] == "true" and tags["bench:target"] == name
         for k, v in PROJECT_TAGS.items():
             assert tags[k] == v
     assert n == 6
-    lts = list(_all(templates, "AWS::EC2::LaunchTemplate"))
-    assert lts and all(lt["Properties"]["LaunchTemplateData"]["MetadataOptions"]["HttpTokens"] == "required"
-                       for _, _, lt in lts)
+
+
+def test_control_launch_is_scoped(templates):
+    core = templates["core"].to_json()["Resources"]
+    stmts = [st for r in core.values() if r["Type"] == "AWS::IAM::Policy"
+             for st in r["Properties"]["PolicyDocument"]["Statement"]]
+    run = [st for st in stmts if "ec2:RunInstances" in (st["Action"] if isinstance(st["Action"], list) else [st["Action"]])]
+    assert len(run) == 1
+    res = json.dumps(run[0]["Resource"])
+    assert ":subnet/" in res and ":security-group/" in res and "launch-template/*" in res
+    passrole = [st for st in stmts if st["Action"] == "iam:PassRole"]
+    assert passrole and all(st["Condition"]["StringEquals"]["iam:PassedToService"] == "ec2.amazonaws.com"
+                            and "role/amx-gpu-bench-target-*" in json.dumps(st["Resource"]) for st in passrole)
+    tagging = [st for st in stmts if st["Action"] == "ec2:CreateTags"]
+    assert tagging and all(st["Condition"]["StringEquals"]["ec2:CreateAction"] == "RunInstances" for st in tagging)
 
 
 def test_public_subnet_never_maps_public_ips(templates):
@@ -92,7 +108,7 @@ def test_ec2_start_stop_are_tag_conditioned(templates):
     for _, _, pol in _all(templates, "AWS::IAM::Policy"):
         for st in pol["Properties"]["PolicyDocument"]["Statement"]:
             acts = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
-            if any(a in ("ec2:StartInstances", "ec2:StopInstances") for a in acts):
+            if any(a in ("ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances") for a in acts):
                 found += 1
                 assert st["Condition"]["StringEquals"]["aws:ResourceTag/bench:managed"] == "true"
             if "ssm:SendCommand" in acts and "instance" in json.dumps(st["Resource"]):

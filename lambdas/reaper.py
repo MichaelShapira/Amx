@@ -51,7 +51,14 @@ def handler(event: dict, context: Any = None) -> dict:
                 reason = decide(inst, common.plain(act), active=_active(act.get("active_run_id")), now=now,
                                 idle_min=idle_min, max_uptime_h=max_up)
                 if reason:
-                    ec2.stop_instances(InstanceIds=[inst["InstanceId"]])
+                    # One-time Spot instances cannot be stopped; they are ephemeral by design
+                    # (models are re-staged from the S3 cache), so terminate them.
+                    if inst.get("InstanceLifecycle") == "spot":
+                        ec2.terminate_instances(InstanceIds=[inst["InstanceId"]])
+                        action = "terminated"
+                    else:
+                        ec2.stop_instances(InstanceIds=[inst["InstanceId"]])
+                        action = "stopped"
                     stopped.append({"instance_id": inst["InstanceId"], "target": tid, "reason": reason,
-                                    "at": dt.datetime.now(dt.UTC).isoformat()})
+                                    "action": action, "at": dt.datetime.now(dt.UTC).isoformat()})
     return {"stopped": stopped}

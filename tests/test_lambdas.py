@@ -220,10 +220,84 @@ def test_preflight_dspm_hashes_refuse_stale_pools():
 def test_capacity_log_appends(aws):
     from lambdas import target_control
 
-    target_control._log_capacity("r1", "t1-g6", {"code": "InsufficientInstanceCapacity", "time": "x"})
-    target_control._log_capacity("r1", "t1-g6", {"code": "InsufficientInstanceCapacity", "time": "y"})
+    target_control._log("r1", "t1-g6", "capacity", {"code": "InsufficientInstanceCapacity", "time": "x"})
+    target_control._log("r1", "t1-g6", "capacity", {"code": "InsufficientInstanceCapacity", "time": "y"})
     body = boto3.client("s3", region_name="us-east-1").get_object(Bucket=BUCKET, Key="runs/r1/capacity/t1-g6.json")
     assert [e["time"] for e in json.loads(body["Body"].read())] == ["x", "y"]
+
+
+def test_purchase_decisions():
+    from lambdas.target_control import decide_after_failure, decide_market, market_options
+
+    spot = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True}
+    assert market_options({"type": "on-demand"}) is None
+    assert market_options(spot) == {"MarketType": "spot", "SpotOptions": {
+        "SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}}
+    assert market_options({**spot, "spot_max_price_usd": 0.5})["SpotOptions"]["MaxPrice"] == "0.5"
+    assert decide_market({"type": "on-demand"}, 0, 10_000) == "on-demand"
+    assert decide_market(spot, 1000, 1500) == "spot"            # inside the capacity window
+    assert decide_market(spot, 1000, 1700) == "on-demand"       # window used up: fall back
+    with pytest.raises(RuntimeError, match="spot_fallback_on_demand"):
+        decide_market({**spot, "spot_fallback_on_demand": False}, 1000, 1700)
+    running, gone = {"State": {"Name": "running"}}, {"State": {"Name": "terminated"}}
+    assert decide_after_failure(gone, 0, spot, "levels") == "relaunch"
+    assert decide_after_failure(None, 0, spot, "bringup") == "relaunch"
+    assert decide_after_failure(running, 0, spot, "levels") == "resume"
+    assert decide_after_failure(running, 0, spot, "bringup") == "fail"
+    assert decide_after_failure(gone, 3, spot, "levels") == "fail"   # relaunch cap
+
+
+def test_spot_interruption_relaunches_and_resumes(aws):
+    """Spot instance disappears mid-cell: check() terminates nothing twice, launches a
+    replacement from the launch template, keeps done levels and re-runs the rest."""
+    from lambdas import target_control as tc
+
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+    subnet = ec2.create_subnet(VpcId=vpc, CidrBlock="10.0.1.0/24")["Subnet"]["SubnetId"]
+    ami = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+    lt = ec2.create_launch_template(LaunchTemplateName="amx-gpu-bench-t1-g6", LaunchTemplateData={
+        "ImageId": ami, "InstanceType": "g6.xlarge"})["LaunchTemplate"]["LaunchTemplateId"]
+    boto3.client("ssm", region_name="us-east-1").put_parameter(Name="/amx-gpu-bench/targets/t1-g6/launch-template",
+                                                              Value=lt, Type="String")
+    import os
+
+    os.environ["TARGET_SUBNET_ID"] = subnet
+    tc._ssm_online = lambda iid, deadline: True          # moto has no DescribeInstanceInformation
+    purchase = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True,
+                "max_relaunches_per_cell": 3}
+    first = tc.ensure_running({"run_id": "r1", "target_id": "t1-g6", "purchase": purchase})
+    assert first["ready"] is True and first["lifecycle"] in ("spot", "on-demand")
+    old = first["instance_id"]
+    tags = {t["Key"]: t["Value"] for t in ec2.describe_instances(InstanceIds=[old])["Reservations"][0]["Instances"][0]["Tags"]}
+    assert tags["bench:managed"] == "true" and tags["bench:target"] == "t1-g6" and tags["project"] == "amx-gpu-bench"
+    # Plan with three levels: one done, one running (interrupted), one not started.
+    levels = [{"level_key": f"ck__short__c{c}__r0", "cell_key": "ck"} for c in (1, 4, 16)]
+    aws.put_json("runs/r1/plan/ck.json", {"levels": levels, "quality": None})
+    aws.put_json("runs/r1/bringup/ck.json", {"api_path": "/v1/completions"})
+    aws.set_status("r1", "LEVEL#ck__short__c1__r0", "done")
+    aws.set_status("r1", "LEVEL#ck__short__c4__r0", "running")
+    ec2.terminate_instances(InstanceIds=[old])                   # the interruption
+    cell = {"cell_id": "c|t|p", "cell_key": "ck", "cpu": False}
+    out = tc.check({"run_id": "r1", "target_id": "t1-g6", "instance_id": old, "private_ip": "10.0.1.5", "cell": cell,
+                    "purchase": purchase, "recovery": {"attempt": 0, "interruption_logged": False},
+                    "stage": "levels", "error": {"Error": "WaveFailed"}})
+    assert out["decision"] == "relaunch" and out["ready"] is True and out["instance_id"] != old
+    assert out["recovery"] == {"attempt": 1, "interruption_logged": False}
+    events = aws.get_json("runs/r1/targets/t1-g6.json")
+    assert [e["event"] for e in events] == ["launched", "interrupted", "launched"]
+    assert events[1]["instance_id"] == old and events[1]["cell"] == "c|t|p"
+    remaining = tc.remaining_levels("r1", levels)
+    assert [lvl["level_key"] for lvl in remaining] == ["ck__short__c4__r0", "ck__short__c16__r0"]
+    # A level failing on a healthy instance: marked failed, the rest resume.
+    out2 = tc.check({"run_id": "r1", "target_id": "t1-g6", "instance_id": out["instance_id"], "private_ip": "x",
+                     "cell": cell, "purchase": purchase, "recovery": out["recovery"], "stage": "levels",
+                     "error": {"Error": "WaveFailed"}})
+    assert out2["decision"] == "resume" and out2["marked_failed"] == ["ck__short__c4__r0"]
+    assert [lvl["level_key"] for lvl in tc.remaining_levels("r1", levels)] == ["ck__short__c16__r0"]
+    # stop: a Spot instance is terminated, not stopped.
+    res = tc.stop({"target_id": "t1-g6"})
+    assert "terminated" in res or "stopped" in res
 
 
 def test_jsonl_gz_round_trip(aws):

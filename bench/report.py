@@ -336,12 +336,17 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
                 row["meets_sla"], row["sla_reason"] = False, vs["reason"]
     per_model = analyze(rows, run)
     warnings = collect_warnings(rows, cells, models, amx_v, qual, smoke)
+    for tid, events in sorted((res.get("interruptions") or {}).items()):
+        if events:
+            warnings.append(f"{tid}: {len(events)} instance interruption(s); the affected levels were re-run on a "
+                            f"replacement instance ({(res.get('lifecycle') or {}).get(tid)}).")
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
             "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
             "dspm_hashes": res.get("dspm_hashes") or {},
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
-                                                   "instances", "amis", "built_images", "created_at")}}
+                                                   "instances", "lifecycle", "interruptions", "purchase", "amis",
+                                                   "built_images", "created_at")}}
 
 
 def analyze(rows: list[dict], run: RunConfig) -> dict:
@@ -524,7 +529,9 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
     prov = s["provenance"]
     out += ["## Provenance", "", f"- run hash {prov.get('run_hash')}, models {prov.get('models_hash')}, "
             f"targets {prov.get('targets_hash')}", f"- harness commit {prov.get('harness_commit')}",
-            f"- AMIs {json.dumps(prov.get('amis'))}"]
+            f"- AMIs {json.dumps(prov.get('amis'))}",
+            f"- instances {json.dumps(prov.get('instances'))}, market {json.dumps(prov.get('lifecycle'))} "
+            f"(requested {((prov.get('purchase') or {}).get('type'))}); cost columns use On-Demand prices"]
     if s.get("dspm_hashes"):
         out.append(f"- DSPM dataset and policy {json.dumps(s['dspm_hashes'], sort_keys=True)}")
     out.append("")

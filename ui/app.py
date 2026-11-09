@@ -88,6 +88,13 @@ def page_new_run():
         p50_tpot = st.number_input("SLA: P50 TPOT ms (0 = none)", 0, 10000, 150)
         p99_e2e = st.number_input("SLA: P99 E2E ms (0 = none)", 0, 600000, 0)
         preset = st.selectbox("DSPM SLA preset", ["inline_standard", "inline_strict", "bulk"]) if suite == "dspm" else None
+    st.subheader("Instances")
+    purchase = st.radio("Purchase option", ["on-demand", "spot"], horizontal=True,
+                        help="Spot: one-time requests; an interrupted instance is replaced (Spot again, then "
+                             "On-Demand once the capacity window is used up) and the cell's remaining levels are "
+                             "re-run on the replacement. Cost columns always use On-Demand prices.")
+    fallback = st.checkbox("Fall back to On-Demand when Spot capacity is short for 10 minutes", value=True) \
+        if purchase == "spot" else True
     run = {"name": st.text_input("Run name", f"{suite}-ui"), "suite": suite,
            "mode": "full" if (per_mode == "requests" and per_val >= 200 and repeats >= 3) else "smoke",
            "account": "346399954218", "region": REGION, "az_id": "use1-az1", "models": chosen, "cells": cells,
@@ -97,7 +104,8 @@ def page_new_run():
            "per_level": {per_mode: int(per_val)}, "repeats": int(repeats), "warmup_requests": 20,
            "quality": {"enabled": suite == "standard"},
            "sla": {k: v for k, v in {"p99_ttft_ms": p99_ttft, "p50_tpot_ms": p50_tpot, "p99_e2e_ms": p99_e2e}.items() if v}
-           | {"max_error_pct": 1.0}}
+           | {"max_error_pct": 1.0},
+           "purchase": {"type": purchase, "spot_fallback_on_demand": bool(fallback)}}
     if suite == "dspm":
         run["dspm"] = {"sla_preset": preset}
     text = yaml.safe_dump({"run": {k: v for k, v in run.items() if v is not None}}, sort_keys=False)
@@ -172,7 +180,7 @@ def page_runs():
 
     runs = _runs()
     st.dataframe([{"run": r["pk"][4:], "status": r.get("status"), "updated": r.get("updated_at"),
-                   "smoke": r.get("smoke")} for r in runs], width="stretch")
+                   "smoke": r.get("smoke"), "purchase": r.get("purchase")} for r in runs], width="stretch")
     rid = st.selectbox("Run", [r["pk"][4:] for r in runs]) if runs else None
     if not rid:
         return

@@ -104,8 +104,10 @@ def wave_check(event: dict, context: Any = None) -> dict:
 
 
 def init_level(event: dict, context: Any = None) -> dict:
-    """Reset the level item before the first wave (re-runs of a level start from zero)."""
+    """Reset the level item before the first wave (re-runs of a level start from zero), and
+    drop raw records left by an attempt that a Spot interruption cut short."""
     lvl = event["level"]
+    common.delete_prefix(common.level_raw_prefix(lvl["run_id"], lvl["cell_key"], lvl["level_key"]) + "/")
     common.table().put_item(Item={"pk": f"RUN#{lvl['run_id']}", "sk": f"LEVEL#{lvl['level_key']}",
                                   "status": "running", "completed": 0, "errors": 0, "waves": 0,
                                   "next_index": 0, "retry_ranges": [], "cell_key": lvl["cell_key"],

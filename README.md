@@ -105,13 +105,14 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
 - **What gets created.** A VPC with one private and one public subnet in `use1-az1`, one
   NAT gateway, S3 and DynamoDB gateway endpoints, the bench bucket (Block Public Access,
   TLS only, SSE-S3, retained on destroy), the DynamoDB table (retained), the Lambdas, two
-  state machines, a reaper schedule (every 10 minutes) and one EC2 instance per target
-  stack. Everything carries the tags `project=amx-gpu-bench`, `owner=operator`,
-  `purpose=cpu-amx-vs-gpu-benchmark`.
+  state machines, a reaper schedule (every 10 minutes) and one launch template plus
+  instance role per target stack. Everything carries the tags `project=amx-gpu-bench`,
+  `owner=operator`, `purpose=cpu-amx-vs-gpu-benchmark`.
 - **Standing cost while the stacks exist:** the NAT gateway, $0.045/hour (about $1.08 a
-  day), plus data processing. Instances start running at deploy; the reaper stops any
-  target with no activity for 30 minutes, and any target up for more than 8 hours with no
-  active run. Run configs set `stop_targets_after_run: true`.
+  day), plus data processing. No instance runs until a run starts one; the reaper stops
+  (On-Demand) or terminates (Spot) any target with no activity for 30 minutes, and any
+  target up for more than 8 hours with no active run. Run configs set
+  `stop_targets_after_run: true`.
 - **Images** are built at deploy time with `DockerImageAsset` and pushed to the CDK
   bootstrap asset repository. They are `linux/amd64`; on Apple Silicon they build under
   emulation and the first deploy takes a long time. Lambda dependencies are bundled
@@ -120,6 +121,27 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   The report records the instance type that ran.
 - More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`, `t4-m8i-4xl-torch`) are
   separate stacks; deploy them after the smoke reports are reviewed.
+
+## On-Demand or Spot
+
+Target stacks own a launch template, not an instance. Each run launches its instances
+from the template (`run.purchase.type`, default `on-demand`; `bench run ... --purchase
+spot`, or the "Purchase option" radio in the UI) and finds them again by the `bench:target`
+tag. Spot instances are one-time requests that terminate on interruption. When a cell step
+fails, the `Check` step looks at the instance:
+
+- instance gone (interrupted, stopped, terminated): record the interruption, launch another
+  instance (Spot again while the 10-minute `spot_capacity_window_s` lasts, then On-Demand if
+  `spot_fallback_on_demand` is on), re-serve the model, and run only the cell's remaining
+  levels; a level cut short is re-run from zero and its partial raw records are dropped;
+- instance healthy and a level failed: mark that level failed and continue with the rest;
+- bring-up failed on a healthy instance, or more than `max_relaunches_per_cell` (3)
+  relaunches: the cell fails.
+
+The report's provenance block lists the instances that served each target, their market,
+and every interruption; a warning line names the targets that were interrupted. Cost
+columns always use On-Demand prices. At the end of a run (`stop_targets_after_run`) and
+from the reaper, On-Demand instances are stopped and Spot instances are terminated.
 
 ## Prepare artifacts
 

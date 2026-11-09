@@ -116,16 +116,22 @@ def cmd_upload(args) -> int:
 def cmd_run(args) -> int:
     import boto3
 
+    body = Path(args.run).read_bytes()
+    if getattr(args, "purchase", None):            # --purchase spot|on-demand overrides the YAML
+        data = yaml.safe_load(body)
+        data["run"]["purchase"] = {**data["run"].get("purchase", {}), "type": args.purchase}
+        body = yaml.safe_dump(data, sort_keys=False).encode()
     run = load_run(args.run)
+    run = run.model_copy(update={"purchase": run.purchase.model_copy(update={"type": args.purchase})}) \
+        if getattr(args, "purchase", None) else run
     resolve_cells(run, load_models(ROOT / "config/models.yaml"), load_targets(ROOT / "config/targets.yaml"))
     bucket = _resolve(args, "BucketName", "bucket")
     arn = _resolve(args, "RunStateMachineArn", "state_machine")
     run_id = f"{run.name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
-    boto3.client("s3", region_name=REGION).put_object(Bucket=bucket, Key=f"runs/{run_id}/run.yaml",
-                                                      Body=Path(args.run).read_bytes())
+    boto3.client("s3", region_name=REGION).put_object(Bucket=bucket, Key=f"runs/{run_id}/run.yaml", Body=body)
     ex = boto3.client("stepfunctions", region_name=REGION).start_execution(
         stateMachineArn=arn, name=run_id, input=json.dumps({"run_id": run_id}))
-    print(json.dumps({"run_id": run_id, "execution_arn": ex["executionArn"]}, indent=2))
+    print(json.dumps({"run_id": run_id, "purchase": run.purchase.type, "execution_arn": ex["executionArn"]}, indent=2))
     return 0
 
 
@@ -194,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("run")
         p.add_argument("--bucket")
         p.add_argument("--state-machine", dest="state_machine")
+        if name == "run":
+            p.add_argument("--purchase", choices=["on-demand", "spot"],
+                           help="launch the target instances On-Demand or Spot (overrides run.purchase.type)")
     up = sub.add_parser("upload-artifacts")
     up.add_argument("--bucket")
     st = sub.add_parser("status")
