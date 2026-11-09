@@ -1,0 +1,35 @@
+{
+  "agent": {
+    "metrics_collection_interval": 10,
+    "run_as_user": "cwagent"
+  },
+  "metrics": {
+    "namespace": "AmxGpuBench",
+    "aggregation_dimensions": [["target_id"]],
+    "metrics_collected": {
+      "cpu": {
+        "measurement": ["usage_active", "usage_user", "usage_system", "usage_iowait"],
+        "totalcpu": true,
+        "resources": ["*"],
+        "metrics_collection_interval": 10,
+        "append_dimensions": {"target_id": "__TARGET_ID__"}
+      },
+      "mem": {
+        "measurement": ["used", "used_percent", "available"],
+        "metrics_collection_interval": 10,
+        "append_dimensions": {"target_id": "__TARGET_ID__"}
+      },
+      "net": {
+        "measurement": ["bytes_recv", "bytes_sent"],
+        "resources": ["*"],
+        "metrics_collection_interval": 10,
+        "append_dimensions": {"target_id": "__TARGET_ID__"}
+      },
+      "nvidia_gpu": {
+        "measurement": ["utilization_gpu", "memory_used", "memory_total", "power_draw", "temperature_gpu"],
+        "metrics_collection_interval": 10,
+        "append_dimensions": {"target_id": "__TARGET_ID__"}
+      }
+    }
+  }
+}
