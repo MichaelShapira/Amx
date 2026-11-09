@@ -1,0 +1,86 @@
+# Target catalog (Requirement 2). Images are pinned by digest (research.md section 3).
+# built:<name> images are thin-server images built by CDK into the account's ECR repo.
+x-vllm-common: &vllm_common
+  max_num_seqs: 128
+  max_num_batched_tokens: 2048
+  seed: 0
+
+targets:
+  - id: t1-g6
+    label: T1
+    instance_type: g6.xlarge
+    alternates: [g5.xlarge]
+    ami_ssm: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id
+    accelerator: gpu
+    root_volume_gib: 200
+    engines:
+      vllm:
+        image: public.ecr.aws/deep-learning-containers/vllm@sha256:6db6c433557b38d86d47f68e367532d41a8341e56fa2605e60c13d190a5c7d17
+        args: {<<: *vllm_common, gpu_memory_utilization: 0.90}
+      thin-torch:
+        image: built:thin-torch-cuda
+        args: {max_batch: 16, max_wait_ms: 5}
+
+  - id: t2-m8i-4xl
+    label: T2
+    instance_type: m8i.4xlarge
+    ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
+    accelerator: cpu
+    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    root_volume_gib: 200
+    engines:
+      vllm:
+        image: docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3
+        env: {VLLM_CPU_OMP_THREADS_BIND: auto, VLLM_CPU_NUM_OF_RESERVED_CPU: "1"}
+        args: {<<: *vllm_common, kv_cache_gib: 32, block_size: 128}
+
+  - id: t2-c8i-4xl
+    label: T2
+    instance_type: c8i.4xlarge
+    inherits: t2-m8i-4xl
+    engines:
+      vllm:
+        image: docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3
+        args: {kv_cache_gib: 16}
+
+  - id: t2-m8i-8xl
+    label: T2-scale
+    instance_type: m8i.8xlarge
+    inherits: t2-m8i-4xl
+    engines:
+      vllm:
+        image: docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3
+        args: {kv_cache_gib: 64}
+
+  - id: t3-m8i-4xl-ov
+    label: T3
+    instance_type: m8i.4xlarge
+    ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
+    accelerator: cpu
+    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    engines:
+      ovms:
+        image: docker.io/openvino/model_server@sha256:148e3fe802261ed0b5b634de3bbccdefe7176a218ec34a88e382b40704c34a1c
+        args: {max_num_seqs: 128, max_num_batched_tokens: 2048, cache_size_gb: 24}
+      thin-openvino:
+        image: built:thin-openvino
+        args: {max_batch: 16, max_wait_ms: 5}
+
+  - id: t4-m8i-4xl-torch
+    label: T4
+    instance_type: m8i.4xlarge
+    ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
+    accelerator: cpu
+    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    engines:
+      thin-torch:
+        image: built:thin-torch-cpu
+        env: {OMP_NUM_THREADS: "8", OMP_PROC_BIND: close, OMP_PLACES: cores, ONEDNN_PRIMITIVE_CACHE_CAPACITY: "4096"}
+        args: {max_batch: 16, max_wait_ms: 5}
+
+  - id: t5-m7i-4xl
+    label: T5
+    instance_type: m7i.4xlarge
+    inherits: t2-m8i-4xl
+    cpu_features: [amx_bf16, amx_int8, amx_tile]
+    enabled: false

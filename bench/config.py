@@ -1,0 +1,394 @@
+"""Config schemas for the model catalog, target catalog and run configs.
+
+Every run is driven by one YAML run config (Requirement 6.1). Catalogs are validated
+strictly: unpinned revisions, unpinned images and oversized models are rejected.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+BUILT_IMAGE = re.compile(r"^built:[a-z0-9-]+$")
+
+ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder"]
+Suite = Literal["standard", "dspm"]
+EngineName = Literal["vllm", "ovms", "thin-torch", "thin-openvino"]
+
+# Methodology defaults (Requirement 7.4).
+FULL_MIN_REQUESTS = 200
+FULL_MIN_REPEATS = 3
+# Requests must finish well inside the 15-minute Lambda limit (Requirement 5.7).
+MAX_REQUEST_TIMEOUT_S = 780
+
+
+class Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PromptFormat(Strict):
+    kind: Literal["chat_template", "plain", "pair", "prefix", "roblox_chat"]
+    template: str | None = None
+    prefix: str | None = None
+
+
+class ClassifierSpec(Strict):
+    batch_sizes: list[int] = Field(default_factory=lambda: [1, 8, 32, 64])
+    labels: list[str] = Field(default_factory=list)
+    multi_label: bool = False
+    max_length: int = 512
+
+
+class QualityReference(Strict):
+    target: str
+    precision: str
+    fp32_anchor: dict[str, str] | None = None
+
+
+class PrecisionSpec(Strict):
+    engines: list[EngineName]
+    hf_repo: str | None = None
+    revision: str | None = None
+    export: dict[str, Any] | None = None
+    inference_precision: Literal["bf16", "f16", "f32"] | None = None
+    weights: str | None = None
+    activations: str | None = None
+    requires_cpu_flag: str | None = None
+    quality_only: bool = False
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _pinned(self) -> PrecisionSpec:
+        if self.hf_repo and not (self.revision and SHA40.match(self.revision)):
+            raise ValueError(f"precision checkpoint {self.hf_repo} needs a 40-hex commit revision")
+        return self
+
+
+class ModelSpec(Strict):
+    id: str
+    slot: str
+    hf_repo: str
+    revision: str
+    type: ModelType
+    license: str
+    gated: bool = False
+    params: int
+    nominal_size_b: float
+    suites: list[Suite] = Field(default_factory=lambda: ["standard"])
+    load_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+    max_input_tokens: int
+    max_model_len: int | None = None
+    prompt_format: PromptFormat
+    quality_reference: QualityReference | None = None
+    classifier: ClassifierSpec | None = None
+    precisions: dict[str, PrecisionSpec]
+    enabled: bool = True
+    notes: str | None = None
+
+    @field_validator("revision")
+    @classmethod
+    def _sha(cls, v: str) -> str:
+        if not SHA40.match(v):
+            raise ValueError("revision must be a 40-hex commit SHA (Requirement 1.3)")
+        return v
+
+    @property
+    def non_commercial(self) -> bool:
+        return self.license in {"qwen-research", "cc-by-nc-4.0", "cc-by-nc-nd-4.0"}
+
+
+class ModelCatalog(Strict):
+    size_cap_b: float = 4.0
+    models: list[ModelSpec]
+
+    @model_validator(mode="after")
+    def _cap_and_unique(self) -> ModelCatalog:
+        ids = [m.id for m in self.models]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate model ids")
+        for m in self.models:
+            if m.nominal_size_b > self.size_cap_b:
+                raise ValueError(
+                    f"{m.id}: nominal size {m.nominal_size_b}B exceeds cap {self.size_cap_b}B"
+                )
+        return self
+
+    def get(self, model_id: str) -> ModelSpec:
+        for m in self.models:
+            if m.id == model_id:
+                return m
+        raise KeyError(f"unknown model {model_id}")
+
+
+class EngineSpec(Strict):
+    image: str
+    port: int = 8000
+    env: dict[str, str] = Field(default_factory=dict)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("image")
+    @classmethod
+    def _pinned_image(cls, v: str) -> str:
+        if not (IMAGE_DIGEST.match(v) or BUILT_IMAGE.match(v)):
+            raise ValueError(f"image {v!r} must be pinned by digest or be built:<name>")
+        return v
+
+
+class TargetSpec(Strict):
+    id: str
+    label: str
+    instance_type: str | None = None
+    alternates: list[str] = Field(default_factory=list)
+    ami_ssm: str | None = None
+    accelerator: Literal["gpu", "cpu"] | None = None
+    cpu_features: list[str] = Field(default_factory=list)
+    root_volume_gib: int = 200
+    engines: dict[str, EngineSpec] = Field(default_factory=dict)
+    inherits: str | None = None
+    enabled: bool = True
+
+
+class TargetCatalog(Strict):
+    targets: list[TargetSpec]
+
+    def resolved(self) -> dict[str, TargetSpec]:
+        raw = {t.id: t for t in self.targets}
+        out: dict[str, TargetSpec] = {}
+
+        def resolve(tid: str, seen: tuple[str, ...] = ()) -> TargetSpec:
+            if tid in out:
+                return out[tid]
+            if tid in seen:
+                raise ValueError(f"inheritance cycle at {tid}")
+            t = raw[tid]
+            if t.inherits:
+                base = resolve(t.inherits, (*seen, tid)).model_dump()
+                mine = t.model_dump(exclude_unset=True)
+                merged = _deep_merge(base, mine)
+                merged["inherits"] = None
+                if "enabled" not in mine:
+                    merged["enabled"] = True
+                t = TargetSpec.model_validate(merged)
+            for field in ("instance_type", "ami_ssm", "accelerator"):
+                if getattr(t, field) is None:
+                    raise ValueError(f"target {tid} has no {field}")
+            out[tid] = t
+            return t
+
+        for tid in raw:
+            resolve(tid)
+        return out
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    result = copy.deepcopy(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = copy.deepcopy(v)
+    return result
+
+
+class Cell(Strict):
+    target: str
+    precision: str
+    model: str | None = None
+    variant: Literal["default", "constrained"] = "default"
+
+
+class Sampling(Strict):
+    temperature: float = 0.0
+    max_new_tokens: int = 256
+    ignore_eos: bool = True
+    seed: int = 0
+
+
+class PerLevel(Strict):
+    requests: int | None = None
+    duration_s: int | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> PerLevel:
+        if (self.requests is None) == (self.duration_s is None):
+            raise ValueError("per_level needs exactly one of requests or duration_s")
+        return self
+
+
+class QualityCfg(Strict):
+    enabled: bool = True
+    prompt_set: str = "quality-50"
+    max_new_tokens: int = 256
+
+
+class SLA(Strict):
+    p99_ttft_ms: float | None = None
+    p50_tpot_ms: float | None = None
+    p99_e2e_ms: float | None = None
+    max_error_pct: float = 1.0
+
+
+class CapacityCfg(Strict):
+    max_cpu_instances_per_gpu: int = 4
+
+
+class DspmCfg(Strict):
+    workloads: list[Literal["W1", "W2", "W3", "W4", "W5"]] = Field(
+        default_factory=lambda: ["W1", "W2", "W3", "W4"]
+    )
+    sla_preset: Literal["inline_strict", "inline_standard", "bulk"] = "bulk"
+    dataset_version: str = "v1"
+    test_items: int | None = None
+    prefix_caching: bool = True
+    agreement_min: float = 0.98
+    recall_drop_max_pp: float = 1.0
+    fitness_recall_min: float = 0.90
+    fitness_fpr_max: float = 0.05
+
+
+class RunConfig(Strict):
+    name: str
+    suite: Suite = "standard"
+    mode: Literal["smoke", "full"] = "smoke"
+    account: str
+    region: str = "us-east-1"
+    az_id: str = "use1-az1"
+    models: list[str]
+    cells: list[Cell]
+    prompt_set: str = "short"
+    custom_prompt: str | None = None
+    sampling: Sampling = Field(default_factory=Sampling)
+    concurrency: list[int]
+    per_level: PerLevel
+    repeats: int = 1
+    warmup_requests: int = 20
+    request_timeout_s: int = 600
+    quality: QualityCfg = Field(default_factory=QualityCfg)
+    sla: SLA = Field(default_factory=SLA)
+    capacity: CapacityCfg = Field(default_factory=CapacityCfg)
+    dspm: DspmCfg | None = None
+    stop_targets_after_run: bool = True
+    max_waves: int = 20
+
+    @model_validator(mode="after")
+    def _methodology(self) -> RunConfig:
+        if not self.concurrency or any(c < 1 or c > 512 for c in self.concurrency):
+            raise ValueError("concurrency levels must be between 1 and 512")
+        if self.warmup_requests < 20:
+            raise ValueError("at least 20 warm-up requests are required (Requirement 7.3)")
+        if self.request_timeout_s > MAX_REQUEST_TIMEOUT_S:
+            raise ValueError(f"request_timeout_s must be <= {MAX_REQUEST_TIMEOUT_S}")
+        if self.mode == "full":
+            if self.per_level.requests is not None and self.per_level.requests < FULL_MIN_REQUESTS:
+                raise ValueError(f"full mode needs >= {FULL_MIN_REQUESTS} requests per level")
+            if self.repeats < FULL_MIN_REPEATS:
+                raise ValueError(f"full mode needs >= {FULL_MIN_REPEATS} repeats")
+        if self.suite == "dspm" and self.dspm is None:
+            self.dspm = DspmCfg()
+        if self.custom_prompt and self.prompt_set != "custom":
+            raise ValueError("custom_prompt requires prompt_set: custom")
+        return self
+
+    @property
+    def is_smoke(self) -> bool:
+        """Requirement 7.7: anything below the methodology defaults is labeled smoke."""
+        below = (
+            self.per_level.requests is not None and self.per_level.requests < FULL_MIN_REQUESTS
+        ) or self.repeats < FULL_MIN_REPEATS
+        return self.mode == "smoke" or below
+
+
+class ResolvedCell(Strict):
+    cell_id: str
+    model: str
+    target: str
+    precision: str
+    engine: str
+    variant: str = "default"
+    quality_only: bool = False
+
+
+def resolve_cells(run: RunConfig, models: ModelCatalog, targets: TargetCatalog) -> list[ResolvedCell]:
+    """Expand run cells against the catalogs; refuse anything that does not resolve."""
+    tmap = targets.resolved()
+    out: list[ResolvedCell] = []
+    for cell in run.cells:
+        model_ids = [cell.model] if cell.model else run.models
+        for mid in model_ids:
+            if mid not in run.models:
+                raise ValueError(f"cell model {mid} is not listed in run.models")
+            m = models.get(mid)
+            if not m.enabled:
+                raise ValueError(f"model {mid} is disabled")
+            if run.suite not in m.suites:
+                raise ValueError(f"model {mid} is not part of the {run.suite} suite")
+            if cell.target not in tmap:
+                raise ValueError(f"unknown target {cell.target}")
+            t = tmap[cell.target]
+            if not t.enabled:
+                raise ValueError(f"target {t.id} is disabled")
+            p = m.precisions.get(cell.precision)
+            if p is None or not p.enabled:
+                raise ValueError(f"{mid} has no enabled precision {cell.precision}")
+            if p.requires_cpu_flag and t.accelerator == "cpu" and p.requires_cpu_flag not in t.cpu_features:
+                raise ValueError(
+                    f"{mid}/{cell.precision} needs CPU flag {p.requires_cpu_flag}, which {t.id} lacks"
+                )
+            engine = next((e for e in p.engines if e in t.engines), None)
+            if engine is None:
+                raise ValueError(
+                    f"{mid}/{cell.precision}: none of {p.engines} is available on {t.id}"
+                )
+            if cell.variant == "constrained" and engine != "vllm":
+                raise ValueError("the constrained variant is only available on vLLM targets")
+            cid = f"{mid}|{t.id}|{cell.precision}" + ("" if cell.variant == "default" else f"|{cell.variant}")
+            out.append(
+                ResolvedCell(
+                    cell_id=cid, model=mid, target=t.id, precision=cell.precision,
+                    engine=engine, variant=cell.variant, quality_only=p.quality_only,
+                )
+            )
+    ids = [c.cell_id for c in out]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate cells in run")
+    return out
+
+
+def load_yaml(path: str | Path) -> Any:
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _strip_anchors(data: dict) -> dict:
+    """Top-level keys starting with 'x-' only hold YAML anchors; drop them before validation."""
+    return {k: v for k, v in data.items() if not str(k).startswith("x-")}
+
+
+def load_models(path: str | Path = "config/models.yaml") -> ModelCatalog:
+    return ModelCatalog.model_validate(_strip_anchors(load_yaml(path)))
+
+
+def load_targets(path: str | Path = "config/targets.yaml") -> TargetCatalog:
+    return TargetCatalog.model_validate(_strip_anchors(load_yaml(path)))
+
+
+def load_run(path: str | Path) -> RunConfig:
+    data = load_yaml(path)
+    return RunConfig.model_validate(data["run"] if "run" in data else data)
+
+
+def config_hash(obj: Any) -> str:
+    """Stable SHA-256 of a config object, used to tie results to the exact inputs."""
+    if isinstance(obj, BaseModel):
+        obj = obj.model_dump(mode="json")
+    blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(blob).hexdigest()

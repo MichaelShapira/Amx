@@ -1,0 +1,24 @@
+# Credentials and secrets: never commit
+.env
+*.pem
+*creds*.sh
+# Generated data. The DSPM dataset contains realistic fake secrets and identifiers that
+# secret scanners flag; it lives in S3 and in data/ locally, never in git.
+data/
+prompts/generated/
+# Build outputs
+.venv/
+build/
+cdk.out/
+infra/cdk.out/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+# Local run outputs
+runs/
+reports/local/
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/

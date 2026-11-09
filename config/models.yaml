@@ -1,0 +1,239 @@
+# Model catalog (Requirement 1). Revisions are the Hugging Face commits pinned on
+# 2026-11-09 (research.md section 2). Nominal size is capped at 4B (Requirement 1.6).
+size_cap_b: 4.0
+
+x-ov-int8: &ov_int8 {weight_format: int8}
+x-ov-int4: &ov_int4 {weight_format: int4, group_size: 128, ratio: 1.0, sym: false}
+
+models:
+  - id: m1-qwen2.5-3b
+    slot: M1
+    hf_repo: Qwen/Qwen2.5-3B-Instruct
+    revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
+    type: decoder
+    license: qwen-research          # non-commercial: research or evaluation only
+    params: 3085938688
+    nominal_size_b: 3
+    suites: [standard, dspm]
+    max_input_tokens: 4096
+    max_model_len: 16384
+    prompt_format: {kind: chat_template}
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      w8a8:
+        engines: [vllm]
+        hf_repo: RedHatAI/Qwen2.5-3B-Instruct-quantized.w8a8
+        revision: cd4a8836f6c1e916f43d7c60c4dc3796b7aca18c
+        weights: int8
+        activations: int8
+      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
+      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
+      awq-int4:
+        engines: [vllm]
+        hf_repo: Qwen/Qwen2.5-3B-Instruct-AWQ
+        revision: 3559b226e8ce77211e2c1bd7ddfb7686fec4d6dd
+        weights: int4-awq
+        activations: bf16
+        enabled: false
+
+  - id: m2-qwen3-4b-2507
+    slot: M2
+    hf_repo: Qwen/Qwen3-4B-Instruct-2507
+    revision: cdbee75f17c01a7cc42f958dc650907174af0554
+    type: decoder
+    license: apache-2.0
+    params: 4022468096
+    nominal_size_b: 4
+    suites: [standard, dspm]
+    max_input_tokens: 4096
+    max_model_len: 16384
+    prompt_format: {kind: chat_template}
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      w8a8:
+        engines: [vllm]
+        hf_repo: RedHatAI/Qwen3-4B-Instruct-2507-quantized.w8a8
+        revision: 31ec5013b3319d7ba82b2a354d6e48b376204dd3
+        weights: int8
+        activations: int8
+      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
+      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
+
+  - id: m3-roberta-large-mnli
+    slot: M3
+    hf_repo: FacebookAI/roberta-large-mnli
+    revision: 2a8f12d27941090092df78e4ba6f0928eb5eac98
+    type: encoder-classifier
+    license: mit
+    params: 356412419
+    nominal_size_b: 0.36
+    suites: [standard, dspm]
+    max_input_tokens: 512
+    prompt_format: {kind: pair}
+    classifier: {batch_sizes: [1, 8, 32, 64], labels: [CONTRADICTION, NEUTRAL, ENTAILMENT], max_length: 512}
+    quality_reference:
+      target: t1-g6
+      precision: bf16
+      fp32_anchor: {target: t4-m8i-4xl-torch, precision: fp32}
+    precisions:
+      bf16: {engines: [vllm, thin-torch, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
+      fp16:
+        engines: [thin-torch, thin-openvino]
+        inference_precision: f16
+        weights: fp16
+        activations: fp16
+        requires_cpu_flag: amx_fp16
+      fp32: {engines: [thin-torch], inference_precision: f32, weights: fp32, activations: fp32, quality_only: true}
+      int8-ov:
+        engines: [thin-openvino]
+        export: {weight_format: int8, task: text-classification}
+        weights: int8
+        activations: bf16-or-int8-dynamic
+
+  - id: m4-gemma-2-2b
+    slot: M4
+    hf_repo: google/gemma-2-2b-it
+    revision: 299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
+    type: decoder
+    license: gemma
+    gated: true
+    params: 2614341888
+    nominal_size_b: 2.6
+    suites: [standard, dspm]
+    max_input_tokens: 4096
+    max_model_len: 8192
+    prompt_format: {kind: chat_template}   # Gemma 2 has no system role; policy goes into the user turn
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      w8a8:
+        engines: [vllm]
+        hf_repo: RedHatAI/gemma-2-2b-it-quantized.w8a8
+        revision: 9bafbb745168370d51b0e7e2c9356d6bc2fd1a5d
+        weights: int8
+        activations: int8
+      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
+      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
+
+  - id: m5-flan-t5-xl
+    slot: M5
+    hf_repo: google/flan-t5-xl
+    revision: 7d6315df2c2fb742f0f5b556879d730926ca9001
+    type: encoder-decoder
+    license: apache-2.0
+    params: 2849757184
+    nominal_size_b: 2.85
+    suites: [standard, dspm]
+    max_input_tokens: 1024             # the 4K prompt set is skipped; DSPM inputs stay <= 512
+    prompt_format: {kind: plain}
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
+      int8-ov:
+        engines: [thin-openvino]
+        export: {weight_format: int8, task: text2text-generation-with-past}
+        weights: int8
+        activations: bf16-or-int8-dynamic
+      int4-ov:
+        engines: [thin-openvino]
+        export: {weight_format: int4, group_size: 128, ratio: 1.0, sym: false, task: text2text-generation-with-past}
+        weights: int4-g128
+        activations: bf16-or-int8-dynamic
+
+  # --- DSPM/DLP detector models (design section 24) ---------------------------------
+  - id: d1-privacy-filter
+    slot: D1
+    hf_repo: openai/privacy-filter
+    revision: 7ffa9a043d54d1be65afb281eddf0ffbe629385b
+    type: token-classifier
+    license: apache-2.0
+    params: 1399486865
+    nominal_size_b: 1.4
+    suites: [dspm]
+    max_input_tokens: 2048
+    prompt_format: {kind: plain}
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
+
+  - id: d2-roblox-pii-v2
+    slot: D2
+    hf_repo: Roblox/roblox-pii-classifier-v2
+    revision: 44a84be3eba4859a7e2a1f7b9cee8df61131f28b
+    type: encoder-classifier
+    license: apache-2.0
+    params: 559893507
+    nominal_size_b: 0.56
+    suites: [dspm]
+    max_input_tokens: 512
+    prompt_format: {kind: roblox_chat}
+    classifier:
+      batch_sizes: [1, 8, 32, 64]
+      labels: [privacy_asking_for_pii, privacy_giving_pii, directing_users_off_platform]
+      multi_label: true
+      max_length: 512
+    quality_reference: {target: t1-g6, precision: bf16}
+    precisions:
+      bf16: {engines: [vllm, thin-torch, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
+      fp16:
+        engines: [thin-torch, thin-openvino]
+        inference_precision: f16
+        weights: fp16
+        activations: fp16
+        requires_cpu_flag: amx_fp16
+      int8-ov:
+        engines: [thin-openvino]
+        export: {weight_format: int8, task: text-classification}
+        weights: int8
+        activations: bf16-or-int8-dynamic
+
+  # --- Alternatives inside the cap, disabled by default ------------------------------
+  - id: alt-modernbert-large-zeroshot
+    slot: M3-alt
+    hf_repo: MoritzLaurer/ModernBERT-large-zeroshot-v2.0
+    revision: a51e07b524299e309dd2b88d48b0cfa2bd9ec598
+    type: encoder-classifier
+    license: apache-2.0
+    params: 395833346
+    nominal_size_b: 0.4
+    suites: [standard, dspm]
+    max_input_tokens: 8192
+    prompt_format: {kind: pair}
+    classifier: {labels: [entailment, not_entailment]}
+    enabled: false
+    notes: optimum-intel 2.2.0 refuses ModernBERT export, so no OpenVINO precisions
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+
+  - id: alt-qwen2.5-1.5b
+    slot: M4-alt
+    hf_repo: Qwen/Qwen2.5-1.5B-Instruct
+    revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+    type: decoder
+    license: apache-2.0
+    params: 1543714304
+    nominal_size_b: 1.5
+    suites: [standard, dspm]
+    max_input_tokens: 4096
+    max_model_len: 16384
+    prompt_format: {kind: chat_template}
+    enabled: false
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+
+  - id: alt-flan-t5-large
+    slot: M5-alt
+    hf_repo: google/flan-t5-large
+    revision: 0613663d0d48ea86ba8cb3d7a44f0f65dc596a2a
+    type: encoder-decoder
+    license: apache-2.0
+    params: 783150080
+    nominal_size_b: 0.78
+    suites: [standard, dspm]
+    max_input_tokens: 1024
+    prompt_format: {kind: plain}
+    enabled: false
+    precisions:
+      bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
