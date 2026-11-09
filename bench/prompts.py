@@ -16,6 +16,16 @@ from bench.config import ModelSpec
 
 HYPOTHESIS_STANDARD = "This passage describes events and characters in a story."
 
+# Roblox/roblox-pii-classifier-v2 input format (inference.py in the model repository at the
+# pinned revision): instruction prefix, a blank line, then turns "t: text" joined by " </s> ".
+ROBLOX_PREFIX = ("Instruct: In the following chat messages from target speaker t and possibly "
+                 "other speakers s1, s2, etc., detect abuse by speaker t.\nQuery:")
+
+
+def roblox_format(text: str) -> str:
+    """The message under evaluation is sent by the target speaker t as a single turn."""
+    return f"{ROBLOX_PREFIX}\n\nt: {text}"
+
 
 def hf_token() -> str | None:
     return os.environ.get("HF_TOKEN")
@@ -78,8 +88,6 @@ def render(model: ModelSpec, tok, user_text: str, system_text: str | None = None
         hyp = system_text or HYPOTHESIS_STANDARD
         return {"pair": [user_text, hyp], "tokens": count_tokens(tok, user_text, hyp)}
     if kind == "roblox_chat":
-        prompt = ("Instruct: In the following chat messages from target speaker t and possibly "
-                  "other speakers s1, s2, etc., detect abuse by speaker t.\nQuery:\n"
-                  f"t: {user_text}")
+        prompt = roblox_format(user_text)
         return {"prompt": prompt, "tokens": min(count_tokens(tok, prompt), 512)}
     raise ValueError(f"unknown prompt format {kind}")

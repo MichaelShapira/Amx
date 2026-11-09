@@ -65,7 +65,8 @@ def test_spec_is_private_pinned_and_consistent(name, run, cell, spec):
             assert "--runner" in cmd and cmd[cmd.index("--max-model-len") + 1] == "512"
     if spec["engine"].startswith("thin"):
         env = dict(opts[i + 1].split("=", 1) for i, o in enumerate(opts) if o == "-e")
-        assert env["THIN_HOST"] == "0.0.0.0" and env["THIN_MODEL_DIR"] == "{MODEL_DIR}"
+        # In-container bind; the publish above is the boundary (private IP only).
+        assert env["THIN_HOST"] == "0.0.0.0" and env["THIN_MODEL_DIR"] == "{MODEL_DIR}"  # noqa: S104
         if spec["engine"] == "thin-openvino" and cell.precision == "fp16":
             assert env["THIN_OV_PRECISION_HINT"] == "f16"
         if spec["model_id"] == "d2-roblox-pii-v2":

@@ -60,7 +60,9 @@ class BuildConfig:
     long: tuple[int, int] = (1500, 1900)
     w3: tuple[int, int] = (64, 360)
     w4: tuple[int, int] = (100, 950)
-    caps_short: dict = field(default_factory=lambda: {"m5-flan-t5-xl": 380, "m3-roberta-large-mnli": 470})
+    # Flan-T5 sees the short policy and the options (125 tokens, 148 for W2 categories)
+    # around the content and was trained on inputs of at most 512 tokens.
+    caps_short: dict = field(default_factory=lambda: {"m5-flan-t5-xl": 358, "m3-roberta-large-mnli": 470})
     caps_w3: dict = field(default_factory=lambda: {"m5-flan-t5-xl": 380, "m3-roberta-large-mnli": 470,
                                                    "d2-roblox-pii-v2": 470})
     min_pos_category_share: float = 0.05

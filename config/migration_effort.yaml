@@ -1,0 +1,32 @@
+# Migration effort calculator (design section 18, Requirement 16). Units: engineer-days.
+# Seeded from the task brief; values marked "proposal" are not in the brief. Edit freely:
+# the calculator reads this file at run time and the UI shows which rule drove each line.
+units: engineer_days
+
+# Per model. Every matching rule is found and the widest range wins (an encoder-decoder
+# served on vLLM gets the larger of the vLLM rule and the Flan-T5 rule).
+base_rules:
+  - {id: pytorch_or_sagemaker, when: {stack: [pytorch_transformers, sagemaker_pytorch]}, days: [1, 3]}
+  - {id: vllm_gpu_to_vllm_cpu, when: {stack: [vllm_gpu]}, days: [3, 7]}
+  - {id: flan_t5_to_openvino, when: {model_type: [encoder-decoder]}, days: [3, 7]}
+  - {id: tgi_to_optimum_ovms, when: {stack: [tgi]}, days: [5, 10]}
+  - {id: triton_trtllm, when: {stack: [triton_trtllm]}, days: [10, 20]}
+
+addons_per_model:
+  flash_attention_to_sdpa: [1, 1]
+  bitsandbytes_to_ov_awq_gptq: [2, 5]
+  custom_cuda_or_triton_kernels: [5, 15]
+  tensorrt_engines_outside_triton: [5, 10]        # proposal; not in the brief
+  accuracy_validation: {bf16: [2, 3], int8: [2, 4], int4: [4, 5]}   # brief: 2-5, INT4 at the upper end
+
+addons_per_project:
+  load_latency_testing: [3, 5]
+  infra_ci_changes: {iac_and_cicd_exist: [1, 2], otherwise: [3, 5]}   # brief: 1-5
+
+familiarity_multiplier: {low: 1.3, medium: 1.0, high: 0.85}           # proposal
+calibration: {clamp: [0.5, 2.0]}
+
+# Recommendation (design 18.4): capacity decides, cost is shown only.
+recommendation:
+  max_cpu_instances_per_gpu: 4                    # proposal
+  far_outside_size_factor: 3.0                    # customer model > 3x the nearest benchmarked size -> insufficient data

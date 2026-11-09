@@ -69,7 +69,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
     """Return {"run_opts": [...], "image": str, "cmd": [...]} for `docker run -d`."""
     eng = target.engines[cell.engine]
     gpu = target.accelerator == "gpu"
-    opts = ["--name", CONTAINER, "--restart", "no", "-p", "{PRIVATE_IP}:%d:%d" % (PORT, PORT),
+    opts = ["--name", CONTAINER, "--restart", "no", "-p", f"{{PRIVATE_IP}}:{PORT}:{PORT}",
             "-v", "/opt/models:/models:ro", "--log-opt", "max-size=200m", "--log-opt", "max-file=2"]
     if gpu:
         opts += ["--gpus", "all"]
