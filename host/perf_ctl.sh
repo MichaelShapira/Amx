@@ -23,18 +23,28 @@ case "$action" in
       run perf stat -a -x, -e exe.amx_busy,cycles -o "$csv"
       exit 0
     fi
-    nohup perf stat -a -x, -e exe.amx_busy,cycles -o "$csv" -- sleep 86400 >/dev/null 2>&1 &
+    # perf's own stderr goes to a file: when the PMU event is unavailable perf exits at once,
+    # and `stop` must be able to say why instead of "no such process".
+    nohup perf stat -a -x, -e exe.amx_busy,cycles -o "$csv" -- sleep 86400 >/dev/null 2>"$dir/$level.err" &
     echo $! >"$pidf"
-    log "perf_ctl: started for $level (pid $(cat "$pidf"))"
+    sleep 1
+    if ! kill -0 "$(cat "$pidf")" 2>/dev/null; then
+      log "perf_ctl: perf exited at start for $level: $(tr '\n' ' ' <"$dir/$level.err" | cut -c1-300)"
+    else
+      log "perf_ctl: started for $level (pid $(cat "$pidf"))"
+    fi
     ;;
   stop)
     if [[ "$DRY_RUN" == "1" ]]; then run kill -INT "<pid of $level>"; exit 0; fi
     [[ -f "$pidf" ]] || die "perf is not running for $level"
     pid=$(cat "$pidf")
     # Interrupt the sleep child; perf then writes its counters and exits.
-    pkill -INT -P "$pid" sleep || kill -INT "$pid" || true
+    pkill -INT -P "$pid" sleep 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
     for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     rm -f "$pidf"
+    if [[ ! -s "$csv" ]]; then
+      die "perf wrote no counters for $level: $(tr '\n' ' ' <"$dir/$level.err" 2>/dev/null | cut -c1-400)"
+    fi
     s3_put "$csv" "s3://$bucket/runs/$run_id/amx/perf/$level.csv"
     cat "$csv"
     ;;

@@ -117,8 +117,13 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   bootstrap asset repository. They are `linux/amd64`; on Apple Silicon they build under
   emulation and the first deploy takes a long time. Lambda dependencies are bundled
   locally with `uv` for `aarch64` (Docker is the fallback).
-- **Capacity fallback.** `npx cdk deploy AmxBench-Target-t1-g6 -c type_t1-g6=g5.xlarge`.
-  The report records the instance type that ran.
+- **Capacity fallback.** After three `InsufficientInstanceCapacity` answers for a target's
+  configured type, the launcher alternates with the `alternates` listed in `targets.yaml`
+  (g6.xlarge → g5.xlarge) for up to 30 minutes, then fails that target's cells and the run
+  continues with the other targets. Every attempt is logged under `runs/<id>/capacity/` and
+  listed in the report; the report rows carry the type that ran. The whole deployment is
+  pinned to one AZ (`use1-az1`) so workers and targets share it; when EC2 says the type is
+  available in another AZ, that is a redeploy of the network stack, not a run option.
 - More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`, `t4-m8i-4xl-torch`) are
   separate stacks; deploy them after the smoke reports are reviewed.
 

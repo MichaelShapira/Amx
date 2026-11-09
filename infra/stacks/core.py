@@ -259,7 +259,16 @@ class CoreStack(Stack):
         next_wave = sfn.Pass(self, "NextWave", parameters={"level.$": "$.level", "wave.$": "$.check.wave",
                                                            "retries.$": "$.retries"})
         retry_wave = sfn.Pass(self, "RetryWave", parameters={"level.$": "$.level", "wave.$": "$.wave", "retries": 1})
-        fail = sfn.Fail(self, "LevelFailed", cause="a wave failed twice", error="WaveFailed")
+        # Every failure path records the error on the level item first (the run state machine
+        # reads it to decide whether a relaunch must re-run the level), then fails the execution.
+        mark_failed = invoke("MarkLevelFailed", init_level, {"action": "mark_failed", "level.$": "$.level",
+                                                             "error.$": "$.error"}, result_path=P.DISCARD)
+        fail = sfn.Fail(self, "LevelFailed", cause="see the level item's error", error="LevelFailed")
+        mark_failed.next(fail)
+        mark_failed.add_catch(fail, result_path=P.DISCARD)
+        wave_failed = sfn.Pass(self, "WaveFailedTwice", result=sfn.Result.from_object({"Error": "WaveFailed"}),
+                               result_path="$.error")
+        wave_failed.next(mark_failed)
         perf_stop = invoke("PerfStop", perf, {"action": "stop", "level.$": "$.level"},
                            result_selector={"counts.$": "$.Payload.counts"}, result_path="$.perf")
         no_perf = sfn.Pass(self, "NoPerf", result=sfn.Result.from_object({"counts": None}), result_path="$.perf")
@@ -268,7 +277,10 @@ class CoreStack(Stack):
         perf_start.add_catch(plan, result_path=P.DISCARD)
         perf_stop.add_catch(no_perf, result_path=P.DISCARD)
         measure.add_catch(sfn.Choice(self, "WaveFailedOnce").when(
-            sfn.Condition.number_equals("$.retries", 0), retry_wave.next(plan)).otherwise(fail), result_path=P.DISCARD)
+            sfn.Condition.number_equals("$.retries", 0), retry_wave.next(plan)).otherwise(wave_failed),
+            result_path=P.DISCARD)
+        for st in (init, warm, plan, prewarm, check, aggregate):
+            st.add_catch(mark_failed, result_path="$.error")
         more = sfn.Choice(self, "MoreWaves").when(sfn.Condition.boolean_equals("$.check.more", True), next_wave.next(plan))
         is_cpu_end = sfn.Choice(self, "CpuLevelEnd").when(sfn.Condition.boolean_equals("$.level.cpu", True), perf_stop)
         more.otherwise(is_cpu_end)

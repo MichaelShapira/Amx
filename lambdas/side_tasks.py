@@ -31,6 +31,10 @@ def _drive(lvl: dict, lines: list[list[dict]], conc: int, keep: bool = False) ->
         return list(ex.map(one, lines))
 
 
+class WarmupFailed(RuntimeError):
+    """Every warm-up request failed: the endpoint is down (the level is re-run after a relaunch)."""
+
+
 def warmup(event: dict, context: Any = None) -> dict:
     """Send warmup_requests (>= 20) at concurrency min(C, 8); results are excluded from metrics.
     Also estimates how many items one worker can finish inside a Lambda invocation, which
@@ -45,7 +49,7 @@ def warmup(event: dict, context: Any = None) -> dict:
     good = [r["send_to_end_ns"] / 1e9 for r in recs if not r.get("error")]
     errors = len(recs) - len(good)
     if errors == len(recs):
-        raise RuntimeError(f"all {len(recs)} warm-up requests failed: {recs[0].get('error')}")
+        raise WarmupFailed(f"all {len(recs)} warm-up requests failed: {recs[0].get('error')}")
     p50 = statistics.median(good)
     # Under load a request takes longer than at warm-up concurrency; budget with a margin.
     slow = p50 * max(1.0, int(lvl["conc"]) / max(1, min(int(lvl["conc"]), 8)))
@@ -82,9 +86,12 @@ def perf_counters(event: dict, context: Any = None) -> dict:
     cmd = f"{common.bench_home()}/perf_ctl.sh {action} {common.bucket()} {lvl['run_id']} {lvl['level_key']}"
     res = common.ssm_run(lvl["instance_id"], [cmd], timeout_s=120, comment=f"perf {action}")
     if res["status"] != "Success":
-        # A missing counter is not fatal: the verdict falls back to the engine trace.
-        return {"ok": False, "status": res["status"], "stderr": res["stderr"][-500:]}
-    return {"ok": True, "counts": amx.parse_perf_csv(res["stdout"]) if action == "stop" else None}
+        # A missing counter is not fatal: the verdict falls back to the engine trace. `counts`
+        # is always present: the state machine selects $.Payload.counts, and a missing path is a
+        # States.Runtime error that no Catch can handle (it failed every level on 2026-11-09).
+        return {"ok": False, "counts": None, "status": res["status"], "stderr": res["stderr"][-500:]}
+    return {"ok": True, "counts": amx.parse_perf_csv(res["stdout"]) if action == "stop" else None,
+            "perf_error": res["stderr"][-300:] or None}
 
 
 # ---------------------------------------------------------------------------- AMX and memory probes

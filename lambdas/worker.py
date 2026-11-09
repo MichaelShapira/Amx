@@ -127,14 +127,42 @@ def handler(event: dict, context: Any = None) -> dict:
                        worker=int(event["worker"]), req=n, start_at_ns=start_at, late_start_ms=round(late_ms, 3),
                        cold_env=cold and n == 0)
             records.append(rec)
+            if endpoint_down(records):
+                break
     errors = sum(1 for r in records if r.get("error"))
     key = (f"{common.level_raw_prefix(event['run_id'], event['cell_key'], event['level_key'])}"
            f"/w{int(event['wave']):03d}/worker-{int(event['worker']):04d}.jsonl.gz")
     common.put_jsonl_gz(key, records)
-    _count(event, len(records), errors, unprocessed)
     COLD = False
+    if endpoint_down(records):
+        # Do not count these toward the quota: the level is re-run once the target is back
+        # (Spot interruption) and must not end as "done" with a 100% error rate. The flag on
+        # the level item is how MarkLevelFailed learns the cause (the wave Map hides it).
+        common.table().update_item(Key={"pk": f"RUN#{event['run_id']}", "sk": f"LEVEL#{event['level_key']}"},
+                                   UpdateExpression="SET endpoint_down = :t", ExpressionAttributeValues={":t": True})
+        raise EndpointUnreachable(f"{DOWN_STREAK} consecutive connection failures on {event['endpoint']}: "
+                                  f"{records[-1].get('error')}")
+    _count(event, len(records), errors, unprocessed)
     return {"worker": event["worker"], "n": len(records), "errors": errors, "late_ms": round(late_ms, 1),
             "unprocessed": sum(b - a for a, b in unprocessed)}
+
+
+DOWN_STREAK = 5
+# Transport-level failures only. A request timeout is a slow engine, which is a measurement.
+CONNECTION_ERRORS = ("client_ConnectError", "client_ConnectTimeout", "client_RemoteProtocolError",
+                     "client_ReadError")
+
+
+class EndpointUnreachable(RuntimeError):
+    """The target stopped answering at the transport level (interrupted or dead instance)."""
+
+
+def endpoint_down(records: list[dict]) -> bool:
+    """True when the last DOWN_STREAK records all failed at the connection level. HTTP errors
+    (an overloaded engine answering 5xx) do not count: those are measured, not recovered from."""
+    if len(records) < DOWN_STREAK:
+        return False
+    return all((r.get("error") or "").startswith(CONNECTION_ERRORS) for r in records[-DOWN_STREAK:])
 
 
 def _rest(event: dict, current: list[int]) -> list[list[int]]:

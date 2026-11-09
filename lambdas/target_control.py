@@ -344,15 +344,22 @@ def decide_after_failure(instance: dict | None, attempt: int, purchase: dict, st
     return "resume" if stage == "levels" else "fail"
 
 
-def _mark_inflight_failed(run_id: str, cell_key: str, error: Any) -> list[str]:
-    """The Levels map runs one level at a time, so the level still 'running' is the one that failed."""
+ENDPOINT_ERRORS = ("EndpointUnreachable", "WarmupFailed")
+
+
+def _reset_endpoint_failures(run_id: str, cell_key: str) -> list[str]:
+    """Before a relaunch: levels that failed because the instance went away are re-run on the
+    replacement (a level that failed on its own stays failed). Levels still 'running' (the
+    Map had started the next one) are re-run as well, through remaining_levels()."""
     plan_ = common.get_json(f"runs/{run_id}/plan/{cell_key}.json")
-    marked = []
+    reset = []
     for lvl in plan_["levels"]:
-        if _level_status(run_id, lvl["level_key"]) == "running":
-            common.set_status(run_id, f"LEVEL#{lvl['level_key']}", "failed", error=str(error)[:500])
-            marked.append(lvl["level_key"])
-    return marked
+        item = common.plain(common.table().get_item(
+            Key={"pk": f"RUN#{run_id}", "sk": f"LEVEL#{lvl['level_key']}"}).get("Item") or {})
+        if item.get("status") == "failed" and item.get("error") in ENDPOINT_ERRORS:
+            common.set_status(run_id, f"LEVEL#{lvl['level_key']}", "pending", error="", endpoint_down=False)
+            reset.append(lvl["level_key"])
+    return reset
 
 
 def check(event: dict, context: Any = None) -> dict:
@@ -371,7 +378,7 @@ def check(event: dict, context: Any = None) -> dict:
                           f"after {attempt} recoveries", error=str(event.get("error"))[:500])
         return out
     if decision == "resume":
-        out["marked_failed"] = _mark_inflight_failed(run_id, cell["cell_key"], event.get("error"))
+        # The level state machine marked its own failure (MarkLevelFailed); the rest continue.
         out["recovery"]["attempt"] = attempt + 1
         return out
     if not rec.get("interruption_logged"):
@@ -384,6 +391,7 @@ def check(event: dict, context: Any = None) -> dict:
         out["recovery"]["interruption_logged"] = True
     if inst is not None and inst["State"]["Name"] not in ("shutting-down", "terminated"):
         _terminate(iid)
+    out["reset_levels"] = _reset_endpoint_failures(run_id, cell["cell_key"])
     repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase,
                            "alternates": event.get("alternates")}, context)
     out["ready"] = repl["ready"]

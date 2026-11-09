@@ -103,9 +103,29 @@ def wave_check(event: dict, context: Any = None) -> dict:
             "errors": int(state.get("errors", 0))}
 
 
+ENDPOINT_ERRORS = ("EndpointUnreachable", "WarmupFailed")   # a dead target, not a bad level
+
+
+def mark_level_failed(event: dict, context: Any = None) -> dict:
+    """Last step of a failed level execution: record the error on the level item so that the
+    run state machine can tell a level that failed on its own (stays failed) from one that
+    failed because the instance went away (re-run on the replacement)."""
+    lvl = event["level"]
+    err = event.get("error") or {}
+    name = err.get("Error", "Unknown")
+    if _level(lvl["run_id"], lvl["level_key"]).get("endpoint_down"):
+        name = "EndpointUnreachable"          # workers set the flag; the wave Map reports only its own error
+    common.set_status(lvl["run_id"], f"LEVEL#{lvl['level_key']}", "failed", error=name,
+                      cause=str(err.get("Cause", ""))[:800])
+    return {"marked": lvl["level_key"], "error": name, "endpoint_failure": name in ENDPOINT_ERRORS}
+
+
 def init_level(event: dict, context: Any = None) -> dict:
     """Reset the level item before the first wave (re-runs of a level start from zero), and
-    drop raw records left by an attempt that a Spot interruption cut short."""
+    drop raw records left by an attempt that a Spot interruption cut short. With
+    action=mark_failed (same Lambda) it records a failed level instead."""
+    if event.get("action") == "mark_failed":
+        return mark_level_failed(event, context)
     lvl = event["level"]
     common.delete_prefix(common.level_raw_prefix(lvl["run_id"], lvl["cell_key"], lvl["level_key"]) + "/")
     common.table().put_item(Item={"pk": f"RUN#{lvl['run_id']}", "sk": f"LEVEL#{lvl['level_key']}",

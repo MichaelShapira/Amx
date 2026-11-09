@@ -247,6 +247,29 @@ def test_purchase_decisions():
     assert decide_after_failure(gone, 3, spot, "levels") == "fail"   # relaunch cap
 
 
+def test_worker_raises_when_endpoint_is_dead(aws):
+    """Connection failures in a row raise EndpointUnreachable (not counted toward the quota);
+    HTTP errors and timeouts are measurements and do not."""
+    from lambdas import worker
+
+    down = [{"error": "client_ConnectError"}] * 5
+    assert worker.endpoint_down(down) is True
+    assert worker.endpoint_down(down[:4]) is False
+    assert worker.endpoint_down([{"error": "http_503"}] * 5) is False
+    assert worker.endpoint_down([{"error": "timeout"}] * 5) is False
+    assert worker.endpoint_down([*down[:4], {"error": None}]) is False
+    aws.put_jsonl_gz("artifacts/prompts/dead.jsonl", [{"id": f"p{i}", "prompt": "hi", "tokens": 1} for i in range(8)])
+    aws.table().put_item(Item={"pk": "RUN#r9", "sk": "LEVEL#lk", "completed": 0, "errors": 0})
+    ev = {"run_id": "r9", "cell_key": "ck", "level_key": "lk", "conc": 1, "wave": 0, "worker": 0, "quota": 8,
+          "endpoint": "http://127.0.0.1:9", "api_path": "/v1/completions", "api_task": "generate",
+          "payload": {"model": "m", "max_tokens": 1}, "pool": {"bucket": BUCKET, "key": "artifacts/prompts/dead.jsonl"},
+          "start_at_ns": time.time_ns(), "request_timeout_s": 2}
+    with pytest.raises(worker.EndpointUnreachable):
+        worker.handler(ev)
+    item = aws.plain(aws.table().get_item(Key={"pk": "RUN#r9", "sk": "LEVEL#lk"})["Item"])
+    assert item.get("endpoint_down") is True and item["completed"] == 0
+
+
 def test_capacity_fallback_rotates_alternates():
     from lambdas.target_control import pick_instance_type
 
@@ -281,12 +304,14 @@ def test_spot_interruption_relaunches_and_resumes(aws):
     old = first["instance_id"]
     tags = {t["Key"]: t["Value"] for t in ec2.describe_instances(InstanceIds=[old])["Reservations"][0]["Instances"][0]["Tags"]}
     assert tags["bench:managed"] == "true" and tags["bench:target"] == "t1-g6" and tags["project"] == "amx-gpu-bench"
-    # Plan with three levels: one done, one running (interrupted), one not started.
-    levels = [{"level_key": f"ck__short__c{c}__r0", "cell_key": "ck"} for c in (1, 4, 16)]
+    # Plan with four levels: done; failed because the endpoint died (marked by the level state
+    # machine); running (the Map had started it when the cell failed); not started.
+    levels = [{"level_key": f"ck__short__c{c}__r0", "cell_key": "ck"} for c in (1, 4, 8, 16)]
     aws.put_json("runs/r1/plan/ck.json", {"levels": levels, "quality": None})
     aws.put_json("runs/r1/bringup/ck.json", {"api_path": "/v1/completions"})
     aws.set_status("r1", "LEVEL#ck__short__c1__r0", "done")
-    aws.set_status("r1", "LEVEL#ck__short__c4__r0", "running")
+    aws.set_status("r1", "LEVEL#ck__short__c4__r0", "failed", error="EndpointUnreachable")
+    aws.set_status("r1", "LEVEL#ck__short__c8__r0", "running")
     ec2.terminate_instances(InstanceIds=[old])                   # the interruption
     cell = {"cell_id": "c|t|p", "cell_key": "ck", "cpu": False}
     out = tc.check({"run_id": "r1", "target_id": "t1-g6", "instance_id": old, "private_ip": "10.0.1.5", "cell": cell,
@@ -297,14 +322,25 @@ def test_spot_interruption_relaunches_and_resumes(aws):
     events = aws.get_json("runs/r1/targets/t1-g6.json")
     assert [e["event"] for e in events] == ["launched", "interrupted", "launched"]
     assert events[1]["instance_id"] == old and events[1]["cell"] == "c|t|p"
-    remaining = tc.remaining_levels("r1", levels)
-    assert [lvl["level_key"] for lvl in remaining] == ["ck__short__c4__r0", "ck__short__c16__r0"]
-    # A level failing on a healthy instance: marked failed, the rest resume.
+    assert out["reset_levels"] == ["ck__short__c4__r0"]          # endpoint failure -> re-run
+    remaining = [lvl["level_key"] for lvl in tc.remaining_levels("r1", levels)]
+    assert remaining == ["ck__short__c4__r0", "ck__short__c8__r0", "ck__short__c16__r0"]
+    # A level failing on its own on a healthy instance stays failed; the rest resume.
+    aws.set_status("r1", "LEVEL#ck__short__c4__r0", "failed", error="WaveFailed")
     out2 = tc.check({"run_id": "r1", "target_id": "t1-g6", "instance_id": out["instance_id"], "private_ip": "x",
                      "cell": cell, "purchase": purchase, "recovery": out["recovery"], "stage": "levels",
-                     "error": {"Error": "WaveFailed"}})
-    assert out2["decision"] == "resume" and out2["marked_failed"] == ["ck__short__c4__r0"]
-    assert [lvl["level_key"] for lvl in tc.remaining_levels("r1", levels)] == ["ck__short__c16__r0"]
+                     "error": {"Error": "LevelFailed"}})
+    assert out2["decision"] == "resume" and out2["recovery"]["attempt"] == 2
+    assert [lvl["level_key"] for lvl in tc.remaining_levels("r1", levels)] == ["ck__short__c8__r0", "ck__short__c16__r0"]
+    # mark_failed turns the workers' endpoint_down flag into the EndpointUnreachable error.
+    from lambdas import waves
+
+    boto3.resource("dynamodb", region_name="us-east-1").Table("amx-gpu-bench").update_item(
+        Key={"pk": "RUN#r1", "sk": "LEVEL#ck__short__c8__r0"}, UpdateExpression="SET endpoint_down = :t",
+        ExpressionAttributeValues={":t": True})
+    m = waves.init_level({"action": "mark_failed", "level": {"run_id": "r1", "level_key": "ck__short__c8__r0"},
+                          "error": {"Error": "WaveFailed", "Cause": "x"}})
+    assert m["error"] == "EndpointUnreachable" and m["endpoint_failure"] is True
     # stop: a Spot instance is terminated, not stopped.
     res = tc.stop({"target_id": "t1-g6"})
     assert "terminated" in res or "stopped" in res
