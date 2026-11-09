@@ -1,0 +1,9 @@
+# Thin server extras for the AWS DLC PyTorch 2.14.0 images; torch comes from the image.
+transformers==5.22.2
+tokenizers==0.23.3
+huggingface_hub==2.4.0
+safetensors==0.8.0
+fastapi==0.162.2
+uvicorn==0.54.0
+protobuf==7.36.2
+sentencepiece

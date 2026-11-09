@@ -1,0 +1,21 @@
+# bench-thin:openvino (design 7.4, 7.5): the thin server on the export image's pinned
+# OpenVINO stack (optimum-intel 2.2.0, openvino 2026.4.1, transformers 5.5.x, torch 2.14.0+cpu).
+# Build from the repository root:
+#   docker build -f servers/thin/Dockerfile.openvino .
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+WORKDIR /app
+COPY servers/export/requirements.lock /app/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /app/requirements.lock \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+    && python -c "import openvino, optimum.intel, transformers; print('openvino', openvino.__version__, 'transformers', transformers.__version__)"
+
+COPY servers/__init__.py /app/servers/__init__.py
+COPY servers/thin /app/servers/thin
+
+ENV PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    THIN_HOST=127.0.0.1 THIN_PORT=8000 THIN_BACKEND=openvino
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin bench
+USER 10001
+EXPOSE 8000
+CMD ["python", "-m", "servers.thin.app"]

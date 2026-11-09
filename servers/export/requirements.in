@@ -1,0 +1,12 @@
+# OpenVINO stack shared by the export image and the thin server's openvino image (design 7.4).
+torch==2.14.0+cpu
+optimum-intel==2.2.0
+openvino==2026.4.1
+openvino-tokenizers==2026.4.1.0
+nncf==3.4.0
+transformers>=5.5,<5.6
+fastapi==0.162.2
+uvicorn==0.54.0
+sentencepiece
+protobuf
+jinja2

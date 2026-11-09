@@ -20,6 +20,9 @@ class Script:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Headers and body go out in separate writes; without TCP_NODELAY, Nagle plus the
+    # client's delayed ACK adds 15-40 ms to some responses and breaks the timing checks.
+    disable_nagle_algorithm = True
     script = Script
 
     def log_message(self, *args):  # silence test output

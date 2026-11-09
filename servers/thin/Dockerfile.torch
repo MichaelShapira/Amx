@@ -1,0 +1,24 @@
+# bench-thin:torch-cpu and bench-thin:torch-cuda (design 7.5).
+# Build from the repository root:
+#   docker build -f servers/thin/Dockerfile.torch --build-arg BASE_IMAGE=<cpu or cuda digest> .
+# torch comes from the AWS Deep Learning Container base; everything else is pinned with
+# hashes in requirements-torch.lock.
+ARG BASE_IMAGE=public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+COPY servers/thin/requirements-torch.lock /app/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /app/requirements.lock \
+    && python -c "import torch, transformers; print('torch', torch.__version__, 'transformers', transformers.__version__)"
+
+COPY servers/__init__.py /app/servers/__init__.py
+COPY servers/thin /app/servers/thin
+
+# Models are mounted read-only at /models; nothing is downloaded at run time.
+ENV PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    THIN_HOST=127.0.0.1 THIN_PORT=8000
+RUN useradd --uid 10001 --no-create-home --shell /sbin/nologin bench
+USER 10001
+EXPOSE 8000
+ENTRYPOINT []
+CMD ["python", "-m", "servers.thin.app"]

@@ -1,0 +1,6 @@
+# Docker build context for the thin-server and export images: code only.
+*
+!servers/__init__.py
+!servers/thin/**
+!servers/export/**
+servers/**/__pycache__

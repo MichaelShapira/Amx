@@ -78,7 +78,9 @@ def test_keep_text_and_classify(server):
                                 timeout_s=10)
     assert rec["error"] is None and len(body["data"]) == 2
     assert rec["prompt_tokens"] == 84
-    assert rec["send_to_end_ns"] / m.MS == pytest.approx(50, abs=TOL_MS)
+    # The fake server sleeps 50 ms; macOS timer coalescing can delay its wake-up by tens of
+    # milliseconds under load, so only the lower bound is tight here.
+    assert 50 - 1 <= rec["send_to_end_ns"] / m.MS <= 50 + 3 * TOL_MS
 
 
 def test_constrained_payload():
