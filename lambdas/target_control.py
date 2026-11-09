@@ -22,6 +22,7 @@ bench:target tag. Actions (event["action"]):
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -79,6 +80,14 @@ def _log(run_id: str, target_id: str, key: str, entry: dict) -> None:
     common.put_json(k, events)
 
 
+def _in_target_log(run_id: str, target_id: str, instance_id: str) -> bool:
+    try:
+        events = common.get_json(f"runs/{run_id}/targets/{target_id}.json")
+    except ClientError:
+        return False
+    return any(e.get("instance_id") == instance_id for e in events)
+
+
 def _activity(target_id: str) -> dict:
     item = common.table().get_item(Key={"pk": f"TARGET#{target_id}", "sk": "ACTIVITY"}).get("Item") or {}
     return common.plain(item)
@@ -123,6 +132,14 @@ def pick_instance_type(attempts: int, alternates: list[str] | None) -> str | Non
     return options[(attempts - PRIMARY_TYPE_ATTEMPTS + 1) % len(options)]
 
 
+def _template_type(template_id: str) -> str | None:
+    try:
+        v = _ec2().describe_launch_template_versions(LaunchTemplateId=template_id, Versions=["$Latest"])
+        return v["LaunchTemplateVersions"][0]["LaunchTemplateData"].get("InstanceType")
+    except ClientError:
+        return None
+
+
 def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: str | None = None) -> dict | None:
     template = _param(f"/amx-gpu-bench/targets/{tid}/launch-template")
     tags = [{"Key": "bench:managed", "Value": "true"}, {"Key": "bench:target", "Value": tid},
@@ -145,9 +162,11 @@ def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: s
         code = e.response["Error"]["Code"]
         if code not in CAPACITY_CODES:
             raise
+        msg = e.response["Error"].get("Message", "")
+        az = re.search(r"Availability Zone you requested \(([a-z0-9-]+)\)", msg)
         _log(run_id, tid, "capacity", {"time": common.now_iso(), "code": code, "market": market,
-                                       "instance_type": instance_type or "template",
-                                       "message": e.response["Error"].get("Message", "")[:300]})
+                                       "instance_type": instance_type or _template_type(template),
+                                       "availability_zone": az.group(1) if az else None, "message": msg[:300]})
         return None
     _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "launched", "instance_id": inst["InstanceId"],
                                   "instance_type": inst["InstanceType"], "lifecycle": market,
@@ -227,6 +246,12 @@ def ensure_running(event: dict, context: Any = None) -> dict:
     state = inst["State"]["Name"]
     if state == "stopping":
         return {"ready": False, "reason": "stopping"}
+    if state == "running" and not _in_target_log(run_id, tid, iid):
+        # Found running, left by an earlier run: record it so the report knows which instance
+        # served the target (launched/started instances are already in the log).
+        _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "reused", "instance_id": iid,
+                                      "instance_type": inst["InstanceType"], "lifecycle": lifecycle(inst),
+                                      "availability_zone": inst["Placement"]["AvailabilityZone"]})
     if state == "stopped":
         try:
             _ec2().start_instances(InstanceIds=[iid])

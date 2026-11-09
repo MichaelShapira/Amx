@@ -128,7 +128,7 @@ def target_provenance(events: dict[str, list[dict]]) -> dict:
     served each target, their market (spot / on-demand) and the interruptions seen."""
     instances, lifecycle, interruptions, itypes = {}, {}, {}, {}
     for tid, evs in sorted(events.items()):
-        launched = [e for e in evs if e.get("event") in ("launched", "started")]
+        launched = [e for e in evs if e.get("event") in ("launched", "started", "reused")]
         instances[tid] = sorted({e["instance_id"] for e in launched})
         lifecycle[tid] = launched[-1]["lifecycle"] if launched else None
         itypes[tid] = launched[-1].get("instance_type") if launched else None

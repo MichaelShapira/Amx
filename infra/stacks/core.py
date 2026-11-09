@@ -172,7 +172,8 @@ class CoreStack(Stack):
         ec2_tagged = {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
         inst_arn = f"arn:aws:ec2:{self.region}:{self.account}:instance/*"
         for f in (control, reaper):
-            f.add_to_role_policy(iam.PolicyStatement(actions=["ec2:DescribeInstances"], resources=["*"]))
+            f.add_to_role_policy(iam.PolicyStatement(
+                actions=["ec2:DescribeInstances", "ec2:DescribeLaunchTemplateVersions"], resources=["*"]))
             # Stop On-Demand instances, terminate one-time Spot ones; only bench-tagged instances either way.
             f.add_to_role_policy(iam.PolicyStatement(actions=["ec2:StopInstances", "ec2:TerminateInstances"],
                                                      resources=[inst_arn], conditions=ec2_tagged))
