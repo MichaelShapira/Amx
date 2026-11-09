@@ -17,9 +17,17 @@ from typing import Any
 
 import yaml
 
-from bench import cellspec, cost, plan
+from bench import cellspec, cost, pairing, plan
 from bench.amx import parse_cpu_flags
-from bench.config import RunConfig, config_hash, load_models, load_targets, resolve_cells
+from bench.config import (
+    RunConfig,
+    config_hash,
+    load_models,
+    load_targets,
+    resolve_cells,
+    run_alternates,
+    run_instance_types,
+)
 from lambdas import common
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
@@ -90,7 +98,7 @@ def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrenc
         max_c = max(max_c, plan.ACCURACY_CONC)
     if reserved_worker_concurrency is not None and reserved_worker_concurrency < max_c:
         errors.append(f"worker reserved concurrency {reserved_worker_concurrency} < highest level {max_c}")
-    types = {tmap[c.target].instance_type for c in cells}
+    types = set(run_instance_types(run, cells, tmap).values())
     if offerings is not None:
         missing = sorted(types - offerings)
         if missing:
@@ -122,7 +130,9 @@ def handler(event: dict, context: Any = None) -> dict:
         reserved = common.client("lambda").get_function_concurrency(FunctionName=worker).get(
             "ReservedConcurrentExecutions")
     # Instance offerings in the AZ.
-    types = sorted({tmap[c.target].instance_type for c in cells})
+    itypes = run_instance_types(run, cells, tmap)
+    alts = {tid: run_alternates(run, tid, tmap) for tid in itypes}
+    types = sorted(set(itypes.values()))
     offered = common.client("ec2").describe_instance_type_offerings(
         LocationType="availability-zone-id",
         Filters=[{"Name": "location", "Values": [run.az_id]}, {"Name": "instance-type", "Values": types}])
@@ -164,7 +174,7 @@ def handler(event: dict, context: Any = None) -> dict:
 
     # Prices (no fallback: a missing price stops the run). Alternates are priced too, so a
     # capacity fallback (g6 -> g5) still gets cost columns.
-    priced = sorted(set(types) | {a for c in cells for a in tmap[c.target].alternates})
+    priced = sorted(set(types) | {a for al in alts.values() for a in al})
     try:
         prices = cost.snapshot(common.client_in("pricing", "us-east-1"), priced, run.region,
                                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -185,7 +195,7 @@ def handler(event: dict, context: Any = None) -> dict:
         m, t = models.get(c.model), tmap[c.target]
         try:
             spec = cellspec.build(c, m, t, run, run_id=run_id, bucket=common.bucket(), hf_token_secret=secret,
-                                  ecr_repo_uri=ecr_uri or None, built_tags=built)
+                                  ecr_repo_uri=ecr_uri or None, built_tags=built, instance_type=itypes[c.target])
             levels = plan.levels_for_cell(run, c, m, run_id=run_id, bucket=common.bucket(), pool_sizes=pools)
             qual = None if c.quality_only else plan.quality_level(run, c, m, run_id=run_id, bucket=common.bucket(),
                                                                   pool_sizes=pools)
@@ -208,11 +218,11 @@ def handler(event: dict, context: Any = None) -> dict:
         common.put_json(f"{prefix}/cells/{spec['cell_key']}.json", spec)
         common.put_json(f"{prefix}/plan/{spec['cell_key']}.json", {"levels": levels, "quality": qual})
         cpu = t.accelerator == "cpu"
-        membw = cpu and t.instance_type not in membw_done
+        membw = cpu and itypes[c.target] not in membw_done
         if membw:
-            membw_done.add(t.instance_type)
-        outline.setdefault(c.target, {"target_id": c.target, "cpu": cpu, "alternates": list(t.alternates),
-                                      "cells": []})["cells"].append({
+            membw_done.add(itypes[c.target])
+        outline.setdefault(c.target, {"target_id": c.target, "cpu": cpu, "instance_type": itypes[c.target],
+                                      "alternates": alts[c.target], "cells": []})["cells"].append({
             "cell_id": c.cell_id, "cell_key": spec["cell_key"], "engine": c.engine, "cpu": cpu,
             "spec_uri": f"s3://{common.bucket()}/{prefix}/cells/{spec['cell_key']}.json",
             "amx": cpu, "membw": membw, "quality": qual is not None, "n_levels": len(levels)})
@@ -222,7 +232,9 @@ def handler(event: dict, context: Any = None) -> dict:
                 "cells": [c.model_dump() for c in cells], "launch_templates": templates, "amis": amis,
                 "purchase": run.purchase.model_dump(), "prices": prices, "built_images": built,
                 "ecr_repository_uri": ecr_uri, "harness_commit": common.env("HARNESS_COMMIT", "unknown"),
-                "smoke": run.is_smoke, "dspm_hashes": hashes, "created_at": common.now_iso()}
+                "smoke": run.is_smoke, "dspm_hashes": hashes, "instance_types_requested": itypes,
+                "alternates": alts, "pairing": pairing.judge_run(itypes, {tid: tmap[tid].accelerator for tid in itypes}),
+                "created_at": common.now_iso()}
     common.put_json(f"{prefix}/resolved.json", resolved)
     common.set_status(run_id, "META", "running", smoke=run.is_smoke, n_cells=len(cells),
                       purchase=run.purchase.type)

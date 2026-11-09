@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bench import amx, cost, dspm, dspm_scoring, metrics, quality
+from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality
 from bench.cellspec import cell_key
 from bench.config import ModelSpec, ResolvedCell, RunConfig, load_models, load_targets
 
@@ -343,10 +343,16 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if events:
             warnings.append(f"{tid}: {len(events)} instance interruption(s); the affected levels were re-run on a "
                             f"replacement instance ({(res.get('lifecycle') or {}).get(tid)}).")
+    # Pairing on the types that actually ran (a capacity fallback can differ from the request).
+    ran = {**(res.get("instance_types_requested") or {}), **{k: v for k, v in (res.get("instance_types") or {}).items() if v}}
+    pairs = pairing.judge_run(ran, {tid: targets[tid].accelerator for tid in ran if tid in targets}) if ran else []
+    for j in pairs:
+        if j["fair"] is False:
+            warnings.append(f"UNFAIR PAIRING {j['cpu_target']} vs {j['gpu_target']}: {j['reason']}")
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
             "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
-            "dspm_hashes": res.get("dspm_hashes") or {},
+            "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
                                                    "instances", "lifecycle", "interruptions", "purchase", "amis",
                                                    "built_images", "created_at")}}
@@ -535,6 +541,9 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
             f"- AMIs {json.dumps(prov.get('amis'))}",
             f"- instances {json.dumps(prov.get('instances'))}, market {json.dumps(prov.get('lifecycle'))} "
             f"(requested {((prov.get('purchase') or {}).get('type'))}); cost columns use On-Demand prices"]
+    for j in s.get("pairing") or []:
+        out.append(f"- pairing {j['cpu_target']} ({j['cpu']}) vs {j['gpu_target']} ({j['gpu']}): "
+                   f"{'fair' if j['fair'] else 'UNFAIR'}, GPU/CPU hourly price ratio {j['ratio']}")
     if s.get("dspm_hashes"):
         out.append(f"- DSPM dataset and policy {json.dumps(s['dspm_hashes'], sort_keys=True)}")
     out.append("")

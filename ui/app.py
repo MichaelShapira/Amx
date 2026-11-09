@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import estimator, report  # noqa: E402
-from bench.config import RunConfig, load_models, load_targets, resolve_cells  # noqa: E402
+from bench import estimator, pairing, report  # noqa: E402
+from bench.config import RunConfig, load_models, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.plan import levels_for_cell  # noqa: E402
 
 REGION = "us-east-1"
@@ -53,6 +53,36 @@ def aws_ready() -> bool:
 
 # ---------------------------------------------------------------------------- New run
 
+def _fmt_type(t: str) -> str:
+    s = pairing.spec(t) or {}
+    gpu = f", {s['gpus']}x {s['gpu_model']}" if s.get("gpus") else ""
+    return f"{t}  ({s.get('vcpus')} vCPU, {s.get('memory_gib')} GiB{gpu}, ${s.get('usd_per_hour', 0):.3f}/h)"
+
+
+def _pairing_panel(cells: list[dict], itypes: dict[str, str], tmap) -> None:
+    """Fair-pairing check for the targets in the run: every CPU/GPU pair is judged on hourly
+    price (within 0.5x-2x), and for each CPU instance the fairest GPU types are proposed."""
+    used = sorted({c["target"] for c in cells})
+    if not used:
+        return
+    types = {tid: itypes.get(tid) or tmap[tid].instance_type for tid in used}
+    acc = {tid: tmap[tid].accelerator for tid in used}
+    st.subheader("Pairing")
+    cpus = [t for t in used if acc[t] == "cpu"]
+    gpus = [t for t in used if acc[t] == "gpu"]
+    if not cpus or not gpus:
+        st.info("Add at least one CPU and one GPU target to compare them.")
+        return
+    for j in pairing.judge_run(types, acc):
+        (st.success if j["fair"] else st.warning)(f"{j['cpu_target']} {j['cpu']} vs {j['gpu_target']} {j['gpu']}: "
+                                                   f"{j['reason']}")
+    for tid in cpus:
+        props = pairing.propose(types[tid], "gpu")
+        st.caption(f"Fair GPU counterparts for {types[tid]} ({tid}), by price: " + "; ".join(
+            f"{p['instance_type']} ({p['gpus']}x {p['gpu_model']}, {p['ratio']:.2f}x)" for p in props))
+    st.caption(f"Catalog prices are On-Demand, us-east-1, snapshot {pairing.load_catalog()['price_snapshot'][:10]}.")
+
+
 def page_new_run():
     models, targets = catalogs()
     tmap = targets.resolved()
@@ -61,17 +91,27 @@ def page_new_run():
     avail = [m.id for m in models.models if m.enabled and suite in m.suites]
     chosen = st.multiselect("Models", avail, default=avail[:1])
     cells = []
-    st.subheader("Cells")
+    itypes: dict[str, str] = {}
+    st.subheader("Cells and instance types")
     for tid, t in tmap.items():
         if not t.enabled:
             continue
-        with st.expander(f"{tid} ({t.instance_type}, {t.accelerator})"):
+        with st.expander(f"{tid} ({t.accelerator}, default {t.instance_type})",
+                         expanded=tid in ("t1-g6", "t2-m8i-4xl")):
+            options = pairing.types_for(t.accelerator)
+            idx = options.index(t.instance_type) if t.instance_type in options else 0
+            sel = st.selectbox("Instance type", options, index=idx, key=f"itype-{tid}",
+                               format_func=lambda x: _fmt_type(x), help="AMX families only for CPU targets; "
+                               "the catalog price is the On-Demand rate used in the report.")
+            if sel != t.instance_type:
+                itypes[tid] = sel
             for mid in chosen:
                 m = models.get(mid)
                 precs = [p for p, spec in m.precisions.items() if spec.enabled and any(e in t.engines for e in spec.engines)]
                 for p in precs:
                     if st.checkbox(f"{mid} / {p}", key=f"{tid}-{mid}-{p}", value=(p == "bf16" and tid in ("t1-g6", "t2-m8i-4xl"))):
                         cells.append({"target": tid, "precision": p, "model": mid})
+    _pairing_panel(cells, itypes, tmap)
     c1, c2, c3 = st.columns(3)
     with c1:
         prompt_set = st.selectbox("Prompt set", ["short", "medium", "long", "custom"] if suite == "standard" else ["dspm"])
@@ -89,10 +129,10 @@ def page_new_run():
         p99_e2e = st.number_input("SLA: P99 E2E ms (0 = none)", 0, 600000, 0)
         preset = st.selectbox("DSPM SLA preset", ["inline_standard", "inline_strict", "bulk"]) if suite == "dspm" else None
     st.subheader("Instances")
-    purchase = st.radio("Purchase option", ["on-demand", "spot"], horizontal=True,
-                        help="Spot: one-time requests; an interrupted instance is replaced (Spot again, then "
-                             "On-Demand once the capacity window is used up) and the cell's remaining levels are "
-                             "re-run on the replacement. Cost columns always use On-Demand prices.")
+    purchase = st.radio("Purchase option", ["spot", "on-demand"], horizontal=True,
+                        help="Spot (default): one-time requests; an interrupted instance is replaced (Spot again, "
+                             "then On-Demand once the capacity window is used up) and the cell's remaining levels "
+                             "are re-run on the replacement. Cost columns always use On-Demand prices.")
     fallback = st.checkbox("Fall back to On-Demand when Spot capacity is short for 10 minutes", value=True) \
         if purchase == "spot" else True
     run = {"name": st.text_input("Run name", f"{suite}-ui"), "suite": suite,
@@ -106,6 +146,8 @@ def page_new_run():
            "sla": {k: v for k, v in {"p99_ttft_ms": p99_ttft, "p50_tpot_ms": p50_tpot, "p99_e2e_ms": p99_e2e}.items() if v}
            | {"max_error_pct": 1.0},
            "purchase": {"type": purchase, "spot_fallback_on_demand": bool(fallback)}}
+    if itypes:
+        run["instance_types"] = itypes
     if suite == "dspm":
         run["dspm"] = {"sla_preset": preset}
     text = yaml.safe_dump({"run": {k: v for k, v in run.items() if v is not None}}, sort_keys=False)
@@ -137,8 +179,9 @@ def page_new_run():
         from bench.estimate_run import estimate
 
         pr = boto3.client("pricing", region_name="us-east-1")
-        prices = {t: cost.fetch_price(pr, t, REGION).usd_per_hour for t in {tmap[c.target].instance_type for c in rcells}}
-        st.json(estimate(rc, rcells, models, tmap, prices, sizes))
+        rtypes = run_instance_types(rc, rcells, tmap)
+        prices = {t: cost.fetch_price(pr, t, REGION).usd_per_hour for t in set(rtypes.values())}
+        st.json(estimate(rc, rcells, models, tmap, prices, sizes, instance_types=rtypes))
     st.download_button("Download YAML", text, file_name=f"{run['name']}.yaml")
     if st.button("Start run", type="primary") and aws_ready():
         import boto3

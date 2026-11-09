@@ -122,13 +122,14 @@ def decide_market(purchase: dict, launch_started_at: float, now: float) -> str:
                        "spot_fallback_on_demand is off")
 
 
-def pick_instance_type(attempts: int, alternates: list[str] | None) -> str | None:
-    """None = the launch template's type. After PRIMARY_TYPE_ATTEMPTS capacity failures, rotate
-    through the configured alternates (targets.yaml `alternates`, e.g. g6.xlarge -> g5.xlarge);
-    the type that ran is recorded and priced in the report."""
+def pick_instance_type(attempts: int, alternates: list[str] | None, primary: str | None = None) -> str | None:
+    """The type to launch now. primary = the run's requested type (run.instance_types override),
+    None = the launch template's type. After PRIMARY_TYPE_ATTEMPTS capacity failures, rotate
+    between the primary and the alternates (targets.yaml / run.alternates, e.g. g6.xlarge ->
+    g5.xlarge); the type that ran is recorded and priced in the report."""
     if not alternates or attempts < PRIMARY_TYPE_ATTEMPTS:
-        return None
-    options = [None, *alternates]
+        return primary
+    options = [primary, *alternates]
     return options[(attempts - PRIMARY_TYPE_ATTEMPTS + 1) % len(options)]
 
 
@@ -219,14 +220,21 @@ def ensure_running(event: dict, context: Any = None) -> dict:
     run_id, tid = event["run_id"], event["target_id"]
     purchase = event.get("purchase") or {}
     deadline = time.time() + CALL_BUDGET_S
+    requested_type = event.get("instance_type")
+    acceptable = {t for t in (requested_type, *(event.get("alternates") or [])) if t}
     inst = find_instance(tid)
-    if inst is not None and inst["State"]["Name"] in ("running", "pending") and lifecycle(inst) != \
-            purchase.get("type", "on-demand") and not event.get("keep_lifecycle"):
-        # The operator changed the purchase option: replace the instance (models live in S3).
-        _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "replaced", "instance_id": inst["InstanceId"],
-                                      "lifecycle": lifecycle(inst), "requested": purchase.get("type")})
-        _terminate(inst["InstanceId"])
-        inst = None
+    if inst is not None and not event.get("keep_lifecycle"):
+        wrong_market = inst["State"]["Name"] in ("running", "pending") and lifecycle(inst) != purchase.get("type", "spot")
+        wrong_type = bool(acceptable) and inst["InstanceType"] not in acceptable
+        if wrong_market or wrong_type:
+            # The run asks for another market or instance type than the instance left by an earlier
+            # run: replace it (models are re-staged from the S3 cache).
+            _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "replaced",
+                                          "instance_id": inst["InstanceId"], "instance_type": inst["InstanceType"],
+                                          "lifecycle": lifecycle(inst), "requested": purchase.get("type"),
+                                          "requested_type": requested_type})
+            _terminate(inst["InstanceId"])
+            inst = None
     if inst is None:
         act = _activity(tid)
         started = float(act.get("launch_started_at") or 0) or time.time()
@@ -237,7 +245,7 @@ def ensure_running(event: dict, context: Any = None) -> dict:
             raise RuntimeError(f"{tid}: no capacity after {TOTAL_LAUNCH_WINDOW_S} s")
         attempts = int(act.get("launch_attempts") or 0)
         inst = _launch(run_id, tid, purchase, decide_market(purchase, started, time.time()),
-                       pick_instance_type(attempts, event.get("alternates")))
+                       pick_instance_type(attempts, event.get("alternates"), requested_type))
         if inst is None:
             _set_activity(tid, launch_attempts=attempts + 1)
             return {"ready": False, "reason": "capacity"}
@@ -418,7 +426,7 @@ def check(event: dict, context: Any = None) -> dict:
         _terminate(iid)
     out["reset_levels"] = _reset_endpoint_failures(run_id, cell["cell_key"])
     repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase,
-                           "alternates": event.get("alternates")}, context)
+                           "instance_type": event.get("instance_type"), "alternates": event.get("alternates")}, context)
     out["ready"] = repl["ready"]
     if repl["ready"]:
         out.update(instance_id=repl["instance_id"], private_ip=repl["private_ip"], lifecycle=repl["lifecycle"])

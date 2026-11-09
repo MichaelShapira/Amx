@@ -47,8 +47,10 @@ def request_seconds(lvl: dict, model_type: str, target: TargetSpec, prompt_token
 
 def estimate(run: RunConfig, cells: list[ResolvedCell], models: ModelCatalog, targets: dict[str, TargetSpec],
              prices: dict[str, float], pool_sizes: dict[str, int], *, prompt_tokens: dict[str, int] | None = None,
-             measured: dict[tuple, dict] | None = None) -> dict:
+             measured: dict[tuple, dict] | None = None, instance_types: dict[str, str] | None = None) -> dict:
+    """instance_types: the type per target this run launches (run.instance_types override)."""
     prompt_tokens = prompt_tokens or {}
+    itype = {t: (instance_types or {}).get(t) or targets[t].instance_type for t in targets}
     per_cell, per_target_s = [], {}
     lambda_gb_s = 0.0
     for c in cells:
@@ -75,10 +77,11 @@ def estimate(run: RunConfig, cells: list[ResolvedCell], models: ModelCatalog, ta
                          "speed_source": "measured" if sources == {"measured"} else "prior"})
         per_target_s[c.target] = per_target_s.get(c.target, 0.0) + secs
     run_hours = max(per_target_s.values(), default=0.0) / 3600       # targets run in parallel
-    instance_cost = sum(s / 3600 * prices[targets[t].instance_type] for t, s in per_target_s.items())
+    instance_cost = sum(s / 3600 * prices[itype[t]] for t, s in per_target_s.items())
     nat = run_hours * NAT_USD_PER_HOUR
     lam = lambda_gb_s * LAMBDA_USD_PER_GB_S
     return {"cells": per_cell, "target_hours": {t: round(s / 3600, 2) for t, s in per_target_s.items()},
+            "instance_types": {t: itype[t] for t in per_target_s},
             "wall_clock_hours": round(run_hours, 2), "usd": {"instances": round(instance_cost, 2),
                                                              "nat_gateway": round(nat, 2), "lambda": round(lam, 2),
                                                              "total": round(instance_cost + nat + lam, 2)},

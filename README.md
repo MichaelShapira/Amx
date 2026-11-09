@@ -118,8 +118,8 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   emulation and the first deploy takes a long time. Lambda dependencies are bundled
   locally with `uv` for `aarch64` (Docker is the fallback).
 - **Capacity fallback.** After three `InsufficientInstanceCapacity` answers for a target's
-  configured type, the launcher alternates with the `alternates` listed in `targets.yaml`
-  (g6.xlarge → g5.xlarge) for up to 30 minutes, then fails that target's cells and the run
+  requested type, the launcher alternates with the `alternates` listed in the run config or
+  `targets.yaml` (g6.xlarge → g5.xlarge, g6.2xlarge) for up to 30 minutes, then fails that target's cells and the run
   continues with the other targets. Every attempt is logged under `runs/<id>/capacity/` and
   listed in the report; the report rows carry the type that ran. The whole deployment is
   pinned to one AZ (`use1-az1`) so workers and targets share it; when EC2 says the type is
@@ -127,13 +127,32 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
 - More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`, `t4-m8i-4xl-torch`) are
   separate stacks; deploy them after the smoke reports are reviewed.
 
-## On-Demand or Spot
+## Instance types and fair pairing
+
+Each target has a default instance type in `targets.yaml`, and every run can override it
+(`run.instance_types: {t1-g6: g6.2xlarge}`, `bench run … --instance-type t1-g6=g6.2xlarge`,
+or the per-target selector in the UI). The choices come from `config/instance_catalog.json`
+(specs and On-Demand prices from the EC2 and Price List APIs; refresh with
+`tools/refresh_instance_catalog.py`, the snapshot date is in the file). CPU targets accept
+AMX families only (m8i, c8i, r8i, m7i, c7i, r7i); GPU targets accept g6, g5 and g6e.
+
+A CPU/GPU pair is **fair** when the GPU instance's hourly On-Demand price is within 0.5x
+to 2x the CPU instance's. The benchmark answers "for capacity at a similar spend, what does
+each side deliver"; a g6.48xlarge (8 L4s, $13/h) against an m8i.xlarge only measures
+instance size. `bench pair m8i.4xlarge` lists comparable GPU types (single-GPU first, then
+closest price), the UI shows the same proposals under the cell selectors and flags the
+current pair, `bench validate` prints the judgement, and `bench run` refuses an unfair pair
+unless `--allow-unfair` is given. The report carries the ratio for the types that actually
+ran, with a warning line when a capacity fallback made the pair unfair. Memory-sized engine
+arguments (vLLM CPU KV cache, OVMS cache) scale with the override's memory.
+
+## Spot or On-Demand
 
 Target stacks own a launch template, not an instance. Each run launches its instances
-from the template (`run.purchase.type`, default `on-demand`; `bench run ... --purchase
-spot`, or the "Purchase option" radio in the UI) and finds them again by the `bench:target`
-tag. Spot instances are one-time requests that terminate on interruption. When a cell step
-fails, the `Check` step looks at the instance:
+from the template (`run.purchase.type`, default `spot`; `bench run ... --purchase
+on-demand`, or the "Purchase option" radio in the UI) and finds them again by the
+`bench:target` tag. Spot instances are one-time requests that terminate on interruption.
+When a cell step fails, the `Check` step looks at the instance:
 
 - instance gone (interrupted, stopped, terminated): record the interruption, launch another
   instance (Spot again while the 10-minute `spot_capacity_window_s` lasts, then On-Demand if

@@ -65,8 +65,12 @@ def _env_flags(env: dict[str, str]) -> list[str]:
     return out
 
 
-def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConfig, image: str) -> dict:
-    """Return {"run_opts": [...], "image": str, "cmd": [...]} for `docker run -d`."""
+def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConfig, image: str,
+                instance_type: str | None = None) -> dict:
+    """Return {"run_opts": [...], "image": str, "cmd": [...]} for the detached container start.
+    instance_type: the type this run launches; memory-sized arguments scale from the target's default."""
+    from bench.pairing import scale_kv_cache
+
     eng = target.engines[cell.engine]
     gpu = target.accelerator == "gpu"
     opts = ["--name", CONTAINER, "--restart", "no", "-p", f"{{PRIVATE_IP}}:{PORT}:{PORT}",
@@ -92,7 +96,8 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         if gpu:
             cmd += ["--gpu-memory-utilization", str(a.get("gpu_memory_utilization", 0.9))]
         else:
-            cmd += ["--kv-cache-memory-bytes", str(int(a.get("kv_cache_gib", 16)) * 2**30),
+            kv = scale_kv_cache(int(a.get("kv_cache_gib", 16)), target.instance_type, instance_type)
+            cmd += ["--kv-cache-memory-bytes", str(kv * 2**30),
                     "--block-size", str(a.get("block_size", 128))]
         if model.type in ("encoder-classifier", "token-classifier"):
             cmd += ["--runner", "pooling"]
@@ -147,7 +152,9 @@ def verbose_env(cell: ResolvedCell) -> dict[str, str]:
 
 def build(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConfig, *, run_id: str,
           bucket: str, hf_token_secret: str, ecr_repo_uri: str | None = None,
-          built_tags: dict[str, str] | None = None) -> dict:
+          built_tags: dict[str, str] | None = None, instance_type: str | None = None) -> dict:
+    """instance_type: the type this run launches for the target (run.instance_types override);
+    memory-dependent engine arguments are scaled from the target's default size."""
     image = resolve_image(target.engines[cell.engine].image, ecr_repo_uri, built_tags)
     ov = _ov(model, cell.precision, cell.engine)
     if ov is not None:
@@ -159,13 +166,18 @@ def build(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConf
         "precision": cell.precision, "variant": cell.variant, "api_task": API_TASK[model.type],
         "weights": _weights(model, cell.precision), "ov": ov,
         "prefix_caching": _prefix_caching(run) if cell.engine in ("vllm", "ovms") else None,
-        "container": docker_argv(cell, model, target, run, image),
+        "instance_type": instance_type or target.instance_type,
+        "container": docker_argv(cell, model, target, run, image, instance_type),
         "health": health(cell, model), "verbose_env": verbose_env(cell),
         "bucket": bucket, "hf_token_secret": hf_token_secret, "region": run.region,
     }
     if cell.engine == "ovms":
         a = target.engines["ovms"].args
+        from bench.pairing import scale_kv_cache
+
         spec["ovms_graph"] = {"enable_prefix_caching": "true" if spec["prefix_caching"] else "false",
-                              "cache_size": a.get("cache_size_gb", 16), "max_num_seqs": a.get("max_num_seqs", 128),
+                              "cache_size": scale_kv_cache(int(a.get("cache_size_gb", 16)), target.instance_type,
+                                                           instance_type),
+                              "max_num_seqs": a.get("max_num_seqs", 128),
                               "max_num_batched_tokens": a.get("max_num_batched_tokens", 2048)}
     return spec

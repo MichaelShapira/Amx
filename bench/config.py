@@ -242,11 +242,11 @@ class CapacityCfg(Strict):
 
 
 class PurchaseCfg(Strict):
-    """How target instances are launched for this run. Spot instances are one-time requests
-    that terminate on interruption; the run then launches another instance (Spot again, or
-    On-Demand once the Spot capacity window is used up) and resumes the cell's remaining
-    levels. Cost figures always use On-Demand prices."""
-    type: Literal["on-demand", "spot"] = "on-demand"
+    """How target instances are launched for this run. Spot (the default) instances are
+    one-time requests that terminate on interruption; the run then launches another instance
+    (Spot again, or On-Demand once the Spot capacity window is used up) and resumes the
+    cell's remaining levels. Cost figures always use On-Demand prices."""
+    type: Literal["on-demand", "spot"] = "spot"
     spot_fallback_on_demand: bool = True
     spot_max_price_usd: float | None = None          # None: EC2 caps at the On-Demand price
     spot_capacity_window_s: int = 600                # keep retrying Spot this long before falling back
@@ -288,6 +288,11 @@ class RunConfig(Strict):
     sla: SLA = Field(default_factory=SLA)
     capacity: CapacityCfg = Field(default_factory=CapacityCfg)
     purchase: PurchaseCfg = Field(default_factory=PurchaseCfg)
+    # Per-target instance type for this run (target id -> EC2 type), e.g. {t1-g6: g6.2xlarge}.
+    # Must be a catalog type of the target's accelerator (AMX family for CPU targets); the
+    # pairing check (bench/pairing.py) reports whether the CPU and GPU sides are comparable.
+    instance_types: dict[str, str] = Field(default_factory=dict)
+    alternates: dict[str, list[str]] = Field(default_factory=dict)      # per-target capacity fallbacks
     dspm: DspmCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20
@@ -373,7 +378,30 @@ def resolve_cells(run: RunConfig, models: ModelCatalog, targets: TargetCatalog) 
     ids = [c.cell_id for c in out]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate cells in run")
+    used = {c.target for c in out}
+    for tid, itype in run.instance_types.items():
+        if tid not in tmap:
+            raise ValueError(f"instance_types names unknown target {tid}")
+        if tid not in used:
+            raise ValueError(f"instance_types names target {tid}, which has no cell in this run")
+        from bench.pairing import validate_for_target
+
+        t = tmap[tid]
+        try:
+            validate_for_target(itype, t.accelerator, t.cpu_features)
+        except ValueError as e:
+            raise ValueError(f"instance_types[{tid}]: {e}") from e
     return out
+
+
+def run_instance_types(run: RunConfig, cells: list[ResolvedCell], tmap: dict[str, TargetSpec]) -> dict[str, str]:
+    """Instance type per target used by this run: the run's override or the target's default."""
+    return {tid: run.instance_types.get(tid) or tmap[tid].instance_type for tid in sorted({c.target for c in cells})}
+
+
+def run_alternates(run: RunConfig, tid: str, tmap: dict[str, TargetSpec]) -> list[str]:
+    alts = run.alternates.get(tid)
+    return list(alts) if alts is not None else list(tmap[tid].alternates)
 
 
 def load_yaml(path: str | Path) -> Any:

@@ -351,11 +351,13 @@ class CoreStack(Stack):
         check = invoke("Check", control, {
             "action": "check", "run_id.$": "$.run_id", "target_id.$": "$.target_id", "instance_id.$": "$.instance_id",
             "private_ip.$": "$.private_ip", "cell.$": "$.cell", "purchase.$": "$.purchase",
-            "alternates.$": "$.alternates", "recovery.$": "$.recovery", "stage.$": "$.stage", "error.$": "$.error"},
+            "alternates.$": "$.alternates", "instance_type.$": "$.instance_type_requested",
+            "recovery.$": "$.recovery", "stage.$": "$.stage", "error.$": "$.error"},
             result_selector={"r.$": "$.Payload"}, result_path="$.chk")
         adopt = sfn.Pass(self, "AdoptCheck", parameters={
             "run_id.$": "$.run_id", "target_id.$": "$.target_id", "purchase.$": "$.purchase", "cell.$": "$.cell",
-            "alternates.$": "$.alternates", "instance_id.$": "$.chk.r.instance_id", "private_ip.$": "$.chk.r.private_ip",
+            "alternates.$": "$.alternates", "instance_type_requested.$": "$.instance_type_requested",
+            "instance_id.$": "$.chk.r.instance_id", "private_ip.$": "$.chk.r.private_ip",
             "recovery.$": "$.chk.r.recovery", "decision.$": "$.chk.r.decision", "ready.$": "$.chk.r.ready",
             "stage.$": "$.stage", "error.$": "$.error"})
         wait_replace = sfn.Wait(self, "WaitForReplacement", time=sfn.WaitTime.duration(Duration.seconds(60)))
@@ -379,6 +381,7 @@ class CoreStack(Stack):
         cells = sfn.Map(self, "Cells", items_path="$.target.cells", max_concurrency=1, result_path=P.DISCARD,
                         item_selector={"run_id.$": "$.run_id", "target_id.$": "$.target.target_id",
                                        "purchase.$": "$.purchase", "alternates.$": "$.target.alternates",
+                                       "instance_type_requested.$": "$.target.instance_type",
                                        "instance_id.$": "$.inst.r.instance_id",
                                        "private_ip.$": "$.inst.r.private_ip", "cell.$": "$$.Map.Item.Value",
                                        "recovery": {"attempt": 0, "interruption_logged": False}})
@@ -386,7 +389,8 @@ class CoreStack(Stack):
         # Launch or start the target's instance; loop while capacity is short or the instance boots.
         ensure = invoke("EnsureRunning", control, {"action": "ensure_running", "run_id.$": "$.run_id",
                                                     "target_id.$": "$.target.target_id", "purchase.$": "$.purchase",
-                                                    "alternates.$": "$.target.alternates"},
+                                                    "alternates.$": "$.target.alternates",
+                                                    "instance_type.$": "$.target.instance_type"},
                         result_selector={"r.$": "$.Payload"}, result_path="$.inst")
         wait_launch = sfn.Wait(self, "WaitForInstance", time=sfn.WaitTime.duration(Duration.seconds(60)))
         target_failed = sfn.Pass(self, "TargetFailed")
