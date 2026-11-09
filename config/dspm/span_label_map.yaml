@@ -1,0 +1,51 @@
+# Maps span labels of the public sources to policy roles (design 24.3).
+#   category: the span alone makes the item sensitive in that category
+#   name: part of a person's name (PERSONAL needs a full name plus a personal attribute)
+#   personal_attr: makes a named person's record PERSONAL
+#   weak: not sensitive on its own
+# Card numbers are rewritten to valid check digits before labeling, so every FINANCIAL
+# card span matches the policy text.
+nemotron-pii:
+  category:
+    ssn: GOV_ID
+    national_id: GOV_ID
+    tax_id: GOV_ID
+    credit_debit_card: FINANCIAL
+    cvv: FINANCIAL
+    account_number: FINANCIAL
+    medical_record_number: HEALTH
+    health_plan_beneficiary_number: HEALTH
+    blood_type: HEALTH
+    password: CREDENTIALS
+    api_key: CREDENTIALS
+    pin: CREDENTIALS
+  # http_cookie is weak: Nemotron's values are consent and feature-flag cookies
+  # (gdpr_consent=yes), not session cookies.
+  # Category spans that only count when the same record also names a person.
+  # (policy: HEALTH values count when tied to a person).
+  requires_name: [blood_type, medical_record_number, health_plan_beneficiary_number]
+  name: [first_name, last_name]
+  personal_attr: [date_of_birth, street_address, phone_number, email, coordinate,
+                  race_ethnicity, religious_belief, political_view, sexuality, biometric_identifier]
+  weak: [date, company_name, url, occupation, time, country, customer_id, city, state, user_name,
+         date_time, employment_status, education_level, employee_id, language, county,
+         bank_routing_number, gender, age, fax_number, postcode, ipv4, ipv6, swift_bic,
+         vehicle_identifier, mac_address, license_plate, certificate_license_number,
+         device_identifier, unique_id, http_cookie]
+gretel-pii-finance:
+  category:
+    ssn: GOV_ID
+    passport_number: GOV_ID
+    driver_license_number: GOV_ID
+    credit_card_number: FINANCIAL
+    credit_card_security_code: FINANCIAL
+    iban: FINANCIAL
+    bban: FINANCIAL
+    password: CREDENTIALS
+    account_pin: CREDENTIALS
+    api_key: CREDENTIALS
+  name: [name, first_name, last_name]
+  full_name_labels: [name]
+  personal_attr: [date_of_birth, street_address, phone_number, email, local_latlng]
+  weak: [company, date, time, swift_bic_code, customer_id, ipv4, ipv6, bank_routing_number,
+         user_name, employee_id, date_time]
