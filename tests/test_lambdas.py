@@ -247,6 +247,16 @@ def test_purchase_decisions():
     assert decide_after_failure(gone, 3, spot, "levels") == "fail"   # relaunch cap
 
 
+def test_capacity_fallback_rotates_alternates():
+    from lambdas.target_control import pick_instance_type
+
+    assert pick_instance_type(0, ["g5.xlarge"]) is None and pick_instance_type(2, ["g5.xlarge"]) is None
+    assert pick_instance_type(3, ["g5.xlarge"]) == "g5.xlarge"       # after 3 failures on the template type
+    assert pick_instance_type(4, ["g5.xlarge"]) is None               # then alternate again
+    assert pick_instance_type(5, ["g5.xlarge"]) == "g5.xlarge"
+    assert pick_instance_type(9, []) is None and pick_instance_type(9, None) is None
+
+
 def test_spot_interruption_relaunches_and_resumes(aws):
     """Spot instance disappears mid-cell: check() terminates nothing twice, launches a
     replacement from the launch template, keeps done levels and re-runs the rest."""
@@ -257,13 +267,13 @@ def test_spot_interruption_relaunches_and_resumes(aws):
     subnet = ec2.create_subnet(VpcId=vpc, CidrBlock="10.0.1.0/24")["Subnet"]["SubnetId"]
     ami = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
     lt = ec2.create_launch_template(LaunchTemplateName="amx-gpu-bench-t1-g6", LaunchTemplateData={
-        "ImageId": ami, "InstanceType": "g6.xlarge"})["LaunchTemplate"]["LaunchTemplateId"]
+        "ImageId": ami, "InstanceType": "g6.xlarge",
+        "NetworkInterfaces": [{"DeviceIndex": 0, "SubnetId": subnet, "AssociatePublicIpAddress": False}]})[
+        "LaunchTemplate"]["LaunchTemplateId"]
     boto3.client("ssm", region_name="us-east-1").put_parameter(Name="/amx-gpu-bench/targets/t1-g6/launch-template",
                                                               Value=lt, Type="String")
-    import os
-
-    os.environ["TARGET_SUBNET_ID"] = subnet
     tc._ssm_online = lambda iid, deadline: True          # moto has no DescribeInstanceInformation
+    tc._boot_complete = lambda iid, deadline: True
     purchase = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True,
                 "max_relaunches_per_cell": 3}
     first = tc.ensure_running({"run_id": "r1", "target_id": "t1-g6", "purchase": purchase})

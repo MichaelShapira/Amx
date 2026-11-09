@@ -50,7 +50,7 @@ def test_launch_templates_private_imdsv2_encrypted_tagged(templates):
         d = lt["Properties"]["LaunchTemplateData"]
         assert "KeyName" not in d
         assert d["MetadataOptions"]["HttpTokens"] == "required"
-        assert all(x.get("AssociatePublicIpAddress") is False for x in d["NetworkInterfaces"])
+        assert all(x.get("AssociatePublicIpAddress") is False and "SubnetId" in x for x in d["NetworkInterfaces"])
         bd = d["BlockDeviceMappings"][0]["Ebs"]
         assert bd["Encrypted"] is True and bd["VolumeType"] == "gp3"
         tags = {t["Key"]: t["Value"] for spec in d["TagSpecifications"] for t in spec["Tags"]

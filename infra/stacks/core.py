@@ -115,8 +115,7 @@ class CoreStack(Stack):
         agg_run = fn("aggregate_run", "lambdas.aggregate.aggregate_run", memory=3008)
         self.private_subnet_id = network.vpc.select_subnets(
             subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS).subnet_ids[0]
-        control = fn("target_control", "lambdas.target_control.handler", memory=256,
-                     env={"TARGET_SUBNET_ID": self.private_subnet_id})
+        control = fn("target_control", "lambdas.target_control.handler", memory=256)
         reaper = fn("reaper", "lambdas.reaper.handler", memory=256, timeout_min=5,
                     env={"IDLE_MINUTES": "30", "MAX_UPTIME_HOURS": "8"})
         preflight = fn("preflight", "lambdas.preflight.handler", memory=1024, timeout_min=5,
@@ -339,11 +338,11 @@ class CoreStack(Stack):
         check = invoke("Check", control, {
             "action": "check", "run_id.$": "$.run_id", "target_id.$": "$.target_id", "instance_id.$": "$.instance_id",
             "private_ip.$": "$.private_ip", "cell.$": "$.cell", "purchase.$": "$.purchase",
-            "recovery.$": "$.recovery", "stage.$": "$.stage", "error.$": "$.error"},
+            "alternates.$": "$.alternates", "recovery.$": "$.recovery", "stage.$": "$.stage", "error.$": "$.error"},
             result_selector={"r.$": "$.Payload"}, result_path="$.chk")
         adopt = sfn.Pass(self, "AdoptCheck", parameters={
             "run_id.$": "$.run_id", "target_id.$": "$.target_id", "purchase.$": "$.purchase", "cell.$": "$.cell",
-            "instance_id.$": "$.chk.r.instance_id", "private_ip.$": "$.chk.r.private_ip",
+            "alternates.$": "$.alternates", "instance_id.$": "$.chk.r.instance_id", "private_ip.$": "$.chk.r.private_ip",
             "recovery.$": "$.chk.r.recovery", "decision.$": "$.chk.r.decision", "ready.$": "$.chk.r.ready",
             "stage.$": "$.stage", "error.$": "$.error"})
         wait_replace = sfn.Wait(self, "WaitForReplacement", time=sfn.WaitTime.duration(Duration.seconds(60)))
@@ -366,13 +365,15 @@ class CoreStack(Stack):
         stage_levels.next(check)
         cells = sfn.Map(self, "Cells", items_path="$.target.cells", max_concurrency=1, result_path=P.DISCARD,
                         item_selector={"run_id.$": "$.run_id", "target_id.$": "$.target.target_id",
-                                       "purchase.$": "$.purchase", "instance_id.$": "$.inst.r.instance_id",
+                                       "purchase.$": "$.purchase", "alternates.$": "$.target.alternates",
+                                       "instance_id.$": "$.inst.r.instance_id",
                                        "private_ip.$": "$.inst.r.private_ip", "cell.$": "$$.Map.Item.Value",
                                        "recovery": {"attempt": 0, "interruption_logged": False}})
         cells.item_processor(cstart.next(cpoll).next(ready))
         # Launch or start the target's instance; loop while capacity is short or the instance boots.
         ensure = invoke("EnsureRunning", control, {"action": "ensure_running", "run_id.$": "$.run_id",
-                                                    "target_id.$": "$.target.target_id", "purchase.$": "$.purchase"},
+                                                    "target_id.$": "$.target.target_id", "purchase.$": "$.purchase",
+                                                    "alternates.$": "$.target.alternates"},
                         result_selector={"r.$": "$.Payload"}, result_path="$.inst")
         wait_launch = sfn.Wait(self, "WaitForInstance", time=sfn.WaitTime.duration(Duration.seconds(60)))
         target_failed = sfn.Pass(self, "TargetFailed")

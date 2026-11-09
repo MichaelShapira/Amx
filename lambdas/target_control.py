@@ -113,19 +113,32 @@ def decide_market(purchase: dict, launch_started_at: float, now: float) -> str:
                        "spot_fallback_on_demand is off")
 
 
-def _launch(run_id: str, tid: str, purchase: dict, market: str) -> dict | None:
+def pick_instance_type(attempts: int, alternates: list[str] | None) -> str | None:
+    """None = the launch template's type. After PRIMARY_TYPE_ATTEMPTS capacity failures, rotate
+    through the configured alternates (targets.yaml `alternates`, e.g. g6.xlarge -> g5.xlarge);
+    the type that ran is recorded and priced in the report."""
+    if not alternates or attempts < PRIMARY_TYPE_ATTEMPTS:
+        return None
+    options = [None, *alternates]
+    return options[(attempts - PRIMARY_TYPE_ATTEMPTS + 1) % len(options)]
+
+
+def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: str | None = None) -> dict | None:
     template = _param(f"/amx-gpu-bench/targets/{tid}/launch-template")
     tags = [{"Key": "bench:managed", "Value": "true"}, {"Key": "bench:target", "Value": tid},
             {"Key": "bench:run", "Value": run_id}, {"Key": "Name", "Value": f"amx-gpu-bench-{tid}"},
             {"Key": "project", "Value": "amx-gpu-bench"}, {"Key": "owner", "Value": "operator"},
             {"Key": "purpose", "Value": "cpu-amx-vs-gpu-benchmark"}]
+    # Subnet, security group, role, IMDSv2 and the no-public-IP setting all come from the template.
     kw: dict[str, Any] = {"LaunchTemplate": {"LaunchTemplateId": template, "Version": "$Latest"},
-                          "SubnetId": common.env("TARGET_SUBNET_ID"), "MinCount": 1, "MaxCount": 1,
+                          "MinCount": 1, "MaxCount": 1,
                           "TagSpecifications": [{"ResourceType": "instance", "Tags": tags},
                                                 {"ResourceType": "volume", "Tags": tags}]}
     mo = market_options(purchase) if market == "spot" else None
     if mo:
         kw["InstanceMarketOptions"] = mo
+    if instance_type:
+        kw["InstanceType"] = instance_type
     try:
         inst = _ec2().run_instances(**kw)["Instances"][0]
     except ClientError as e:
@@ -133,6 +146,7 @@ def _launch(run_id: str, tid: str, purchase: dict, market: str) -> dict | None:
         if code not in CAPACITY_CODES:
             raise
         _log(run_id, tid, "capacity", {"time": common.now_iso(), "code": code, "market": market,
+                                       "instance_type": instance_type or "template",
                                        "message": e.response["Error"].get("Message", "")[:300]})
         return None
     _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "launched", "instance_id": inst["InstanceId"],
@@ -160,6 +174,28 @@ def _ssm_online(iid: str, deadline: float) -> bool:
     return False
 
 
+BOOT_CHECK = ('test -x /opt/bench/serve.sh && docker info >/dev/null 2>&1 && '
+              '[ "$(systemctl show -p Result --value bench-boot.service)" = success ]')
+PRIMARY_TYPE_ATTEMPTS = 3           # capacity failures on the configured type before alternates are tried
+BOOT_TIMEOUT_S = 1200               # user data (dnf, Docker, S3 sync) must finish within this after launch
+
+
+def _boot_complete(iid: str, deadline: float) -> bool:
+    """The SSM agent answers before user data has installed Docker and synced /opt/bench from S3
+    (seen 2026-11-09: `serve.sh: No such file or directory`). Wait until the oneshot
+    bench-boot.service has finished and the scripts are in place."""
+    while time.time() < deadline:
+        try:
+            res = common.ssm_run(iid, [BOOT_CHECK], timeout_s=60, comment="bench boot check")
+        except Exception:  # noqa: BLE001 - agent not ready for commands yet
+            time.sleep(10)
+            continue
+        if res["status"] == "Success":
+            return True
+        time.sleep(15)
+    return False
+
+
 def ensure_running(event: dict, context: Any = None) -> dict:
     run_id, tid = event["run_id"], event["target_id"]
     purchase = event.get("purchase") or {}
@@ -178,12 +214,15 @@ def ensure_running(event: dict, context: Any = None) -> dict:
         if not act.get("launch_started_at"):
             _set_activity(tid, launch_started_at=started)
         if time.time() - started > TOTAL_LAUNCH_WINDOW_S:
-            _set_activity(tid, launch_started_at=0)
+            _set_activity(tid, launch_started_at=0, launch_attempts=0)
             raise RuntimeError(f"{tid}: no capacity after {TOTAL_LAUNCH_WINDOW_S} s")
-        inst = _launch(run_id, tid, purchase, decide_market(purchase, started, time.time()))
+        attempts = int(act.get("launch_attempts") or 0)
+        inst = _launch(run_id, tid, purchase, decide_market(purchase, started, time.time()),
+                       pick_instance_type(attempts, event.get("alternates")))
         if inst is None:
+            _set_activity(tid, launch_attempts=attempts + 1)
             return {"ready": False, "reason": "capacity"}
-        _set_activity(tid, launch_started_at=0)
+        _set_activity(tid, launch_started_at=0, launch_attempts=0)
     iid = inst["InstanceId"]
     state = inst["State"]["Name"]
     if state == "stopping":
@@ -208,6 +247,12 @@ def ensure_running(event: dict, context: Any = None) -> dict:
         return {"ready": False, "reason": inst["State"]["Name"]}
     if not _ssm_online(iid, deadline):
         return {"ready": False, "reason": "ssm"}
+    if not _boot_complete(iid, deadline):
+        if time.time() - inst["LaunchTime"].timestamp() > BOOT_TIMEOUT_S:
+            diag = common.ssm_run(iid, ["systemctl status bench-boot.service --no-pager | tail -20"], timeout_s=60)
+            raise RuntimeError(f"{tid}: {iid} booted but bench-boot.service did not finish within "
+                               f"{BOOT_TIMEOUT_S} s: {diag.get('stdout', '')[-800:]}")
+        return {"ready": False, "reason": "booting"}
     common.touch_target(tid, run_id)
     return {"ready": True, "target_id": tid, "instance_id": iid, "private_ip": inst["PrivateIpAddress"],
             "instance_type": inst["InstanceType"], "lifecycle": lifecycle(inst)}
@@ -339,7 +384,8 @@ def check(event: dict, context: Any = None) -> dict:
         out["recovery"]["interruption_logged"] = True
     if inst is not None and inst["State"]["Name"] not in ("shutting-down", "terminated"):
         _terminate(iid)
-    repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase}, context)
+    repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase,
+                           "alternates": event.get("alternates")}, context)
     out["ready"] = repl["ready"]
     if repl["ready"]:
         out.update(instance_id=repl["instance_id"], private_ip=repl["private_ip"], lifecycle=repl["lifecycle"])

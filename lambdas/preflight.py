@@ -162,9 +162,11 @@ def handler(event: dict, context: Any = None) -> dict:
                 errors.append(f"Hugging Face access to gated {m.hf_repo}@{m.revision[:8]} returned HTTP {code}")
         del token
 
-    # Prices (no fallback: a missing price stops the run).
+    # Prices (no fallback: a missing price stops the run). Alternates are priced too, so a
+    # capacity fallback (g6 -> g5) still gets cost columns.
+    priced = sorted(set(types) | {a for c in cells for a in tmap[c.target].alternates})
     try:
-        prices = cost.snapshot(common.client_in("pricing", "us-east-1"), types, run.region,
+        prices = cost.snapshot(common.client_in("pricing", "us-east-1"), priced, run.region,
                                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     except cost.PriceUnavailable as e:
         errors.append(f"price unavailable: {e}")
@@ -209,7 +211,8 @@ def handler(event: dict, context: Any = None) -> dict:
         membw = cpu and t.instance_type not in membw_done
         if membw:
             membw_done.add(t.instance_type)
-        outline.setdefault(c.target, {"target_id": c.target, "cpu": cpu, "cells": []})["cells"].append({
+        outline.setdefault(c.target, {"target_id": c.target, "cpu": cpu, "alternates": list(t.alternates),
+                                      "cells": []})["cells"].append({
             "cell_id": c.cell_id, "cell_key": spec["cell_key"], "engine": c.engine, "cpu": cpu,
             "spec_uri": f"s3://{common.bucket()}/{prefix}/cells/{spec['cell_key']}.json",
             "amx": cpu, "membw": membw, "quality": qual is not None, "n_levels": len(levels)})

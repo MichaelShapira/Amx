@@ -76,6 +76,10 @@ class TargetStack(Stack):
             block_devices=[ec2.BlockDevice(device_name="/dev/xvda", volume=ec2.BlockDeviceVolume.ebs(
                 target.root_volume_gib, encrypted=True, volume_type=ec2.EbsDeviceVolumeType.GP3,
                 delete_on_termination=True))])
+        # The private subnet goes on the template's network interface: RunInstances rejects an
+        # instance-level SubnetId when the template defines NetworkInterfaces (seen 2026-11-09).
+        lt.node.default_child.add_property_override("LaunchTemplateData.NetworkInterfaces.0.SubnetId",
+                                                    core.private_subnet_id)
         for k, v in {"bench:managed": "true", "bench:target": target.id, "Name": f"amx-gpu-bench-{target.id}"}.items():
             Tags.of(lt).add(k, v)
         ssm.StringParameter(self, "LaunchTemplateParam",

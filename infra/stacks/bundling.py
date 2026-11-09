@@ -3,12 +3,13 @@ linux/arm64, built locally with uv (no Docker needed at synth)."""
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
 
 import jsii
-from aws_cdk import BundlingOptions, DockerImage, ILocalBundling
+from aws_cdk import AssetHashType, BundlingOptions, DockerImage, ILocalBundling
 from aws_cdk import aws_lambda as lambda_
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +37,20 @@ class _UvBundling:
         return True
 
 
+def source_hash() -> str:
+    """Hash of every file that goes into the bundle plus the pinned requirements. CDK's own
+    source fingerprint sees nothing through the `**` + `!dir/**` exclude list (a directory
+    excluded by `**` cannot be re-included), so without this the asset hash never changed
+    and code edits were not deployed (seen 2026-11-09)."""
+    h = hashlib.sha256("\n".join(REQUIREMENTS).encode())
+    for pkg in (*PACKAGES, "config"):
+        for f in sorted((ROOT / pkg).rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
+                h.update(str(f.relative_to(ROOT)).encode())
+                h.update(f.read_bytes())
+    return h.hexdigest()
+
+
 def lambda_code(skip: bool = False) -> lambda_.Code:
     """skip=True (unit tests): the source tree only, no dependency install."""
     if skip:
@@ -43,6 +58,7 @@ def lambda_code(skip: bool = False) -> lambda_.Code:
                                                             "**/__pycache__/**"])
     return lambda_.Code.from_asset(
         str(ROOT), exclude=["**", "!bench/**", "!lambdas/**", "!config/**", "**/__pycache__/**"],
+        asset_hash=source_hash(), asset_hash_type=AssetHashType.CUSTOM,
         bundling=BundlingOptions(image=DockerImage.from_registry("public.ecr.aws/sam/build-python3.12:latest-arm64"),
                                  local=_UvBundling(),
                                  command=["bash", "-c", "pip install -t /asset-output " + " ".join(REQUIREMENTS)

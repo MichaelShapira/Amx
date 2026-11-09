@@ -320,6 +320,9 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     for m in pooled_levels(inp):
         c = cells[m["cell_key"]]
         t = targets[c.target]
+        actual = (res.get("instance_types") or {}).get(c.target)       # capacity fallback, e.g. g6 -> g5
+        if actual and actual != t.instance_type:
+            t = t.model_copy(update={"instance_type": actual})
         row = make_row(m, c, models.get(c.model), t, prices.get(t.instance_type), amx_v.get(m["cell_key"]),
                        qual.get(m["cell_key"]), smoke)
         sla, preset = sla_for(row, run)

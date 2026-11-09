@@ -126,14 +126,15 @@ def aggregate_run(event: dict, context: Any = None) -> dict:
 def target_provenance(events: dict[str, list[dict]]) -> dict:
     """From runs/<run>/targets/<target>.json (written by target_control): the instances that
     served each target, their market (spot / on-demand) and the interruptions seen."""
-    instances, lifecycle, interruptions = {}, {}, {}
+    instances, lifecycle, interruptions, itypes = {}, {}, {}, {}
     for tid, evs in sorted(events.items()):
         launched = [e for e in evs if e.get("event") in ("launched", "started")]
         instances[tid] = sorted({e["instance_id"] for e in launched})
         lifecycle[tid] = launched[-1]["lifecycle"] if launched else None
+        itypes[tid] = launched[-1].get("instance_type") if launched else None
         interruptions[tid] = [{k: e.get(k) for k in ("time", "instance_id", "state_reason", "cell")}
                               for e in evs if e.get("event") == "interrupted"]
-    return {"instances": instances, "lifecycle": lifecycle, "interruptions": interruptions}
+    return {"instances": instances, "lifecycle": lifecycle, "interruptions": interruptions, "instance_types": itypes}
 
 
 def _dataset_items(resolved: dict, split: str) -> list[dict] | None:
