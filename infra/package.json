@@ -1,0 +1,8 @@
+{
+  "name": "amx-gpu-bench-infra",
+  "private": true,
+  "description": "Pinned CDK CLI for the Python CDK app (npx cdk ...)",
+  "devDependencies": {
+    "aws-cdk": "2.1148.0"
+  }
+}

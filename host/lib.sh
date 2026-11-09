@@ -8,6 +8,11 @@
 set -euo pipefail
 
 BENCH_HOME=${BENCH_HOME:-/opt/bench}
+# Written by the instance user data: AWS_DEFAULT_REGION and the bench bucket.
+if [[ -f "$BENCH_HOME/env" ]]; then
+  # shellcheck source=/dev/null
+  source "$BENCH_HOME/env"
+fi
 MODELS_ROOT=${MODELS_ROOT:-/opt/models}
 STATE_DIR=${STATE_DIR:-/var/lib/bench}
 DRY_RUN=${BENCH_DRY_RUN:-0}

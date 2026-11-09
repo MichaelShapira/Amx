@@ -21,6 +21,15 @@ stop_engine() {
   fi
 }
 
+# Log in to ECR when the image (or the export image) lives there; tokens last 12 hours.
+ecr_login() {
+  local image=$1 region=$2 registry
+  [[ "$image" == *.dkr.ecr.*.amazonaws.com/* ]] || return 0
+  registry=${image%%/*}
+  if [[ "$DRY_RUN" == "1" ]]; then run docker login --username AWS --password-stdin "$registry"; return 0; fi
+  aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$registry" >/dev/null
+}
+
 fetch_spec() {
   local src=$1 dst
   if [[ "$src" == s3://* ]]; then
@@ -40,6 +49,7 @@ export_ov() {
   prec=$(jq -r .ov.precision "$spec"); image=$(jq -r '.ov.export_image // empty' "$spec")
   exp=$(jq -c .ov.export "$spec"); mtype=$(jq -r .ov.model_type "$spec")
   [[ -n "$image" ]] || die "cell needs an OpenVINO export but the spec has no export image"
+  ecr_login "$image" "$(jq -r .region "$spec")"
   out="$MODELS_ROOT/ov/$repo/$rev/$prec"
   local cache
   cache="s3://$(jq -r .bucket "$spec")/models/ov/$repo/$rev/$prec"
@@ -97,7 +107,10 @@ start() {
   log "serve: $(jq -r .cell_id "$spec") ($engine)"
   stop_engine
 
-  t=$(now); run docker pull --quiet "$image" >/dev/null; local image_pull_s; image_pull_s=$(elapsed "$t")
+  t=$(now)
+  ecr_login "$image" "$(jq -r .region "$spec")"
+  run docker pull --quiet "$image" >/dev/null
+  local image_pull_s; image_pull_s=$(elapsed "$t")
   t=$(now)
   hf_dir=$("$BENCH_HOME/stage_model.sh" "$(jq -r .weights.repo "$spec")" "$(jq -r .weights.revision "$spec")" \
     "$(jq -r .weights.gated "$spec")" "$(jq -r .bucket "$spec")" "$(jq -r .hf_token_secret "$spec")" \

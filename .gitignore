@@ -22,3 +22,4 @@ reports/local/
 .DS_Store
 .vscode/
 .idea/
+infra/node_modules/

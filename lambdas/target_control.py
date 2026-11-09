@@ -87,11 +87,19 @@ def configure_start(event: dict, context: Any = None) -> dict:
     return {"command_id": cid}
 
 
+POLL_BUDGET_S = 720    # keep polling inside one invocation so the run history stays small
+
+
 def configure_poll(event: dict, context: Any = None) -> dict:
     run_id, cell = event["run_id"], event["cell"]
-    res = common.ssm_poll(event["instance_id"], event["command_id"])
-    if res["status"] in ("Pending", "InProgress", "Delayed"):
-        return {"done": False}
+    deadline = time.time() + POLL_BUDGET_S
+    while True:
+        res = common.ssm_poll(event["instance_id"], event["command_id"])
+        if res["status"] not in ("Pending", "InProgress", "Delayed"):
+            break
+        if time.time() > deadline:
+            return {"done": False}
+        time.sleep(10)
     if res["status"] != "Success":
         common.set_status(run_id, f"CELL#{cell['cell_id']}", "bringup_failed", stderr=res["stderr"][-2000:])
         raise RuntimeError(f"bring-up of {cell['cell_id']} failed ({res['status']}): {res['stderr'][-500:]}")
