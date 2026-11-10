@@ -9,7 +9,7 @@ targets:
   - id: t1-g6
     label: T1
     instance_type: g6.xlarge
-    alternates: [g5.xlarge]
+    alternates: [g5.xlarge, g6.2xlarge]   # same single L4 as g6.xlarge; capacity fallback (1.16x the m8i.4xlarge price)
     ami_ssm: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id
     accelerator: gpu
     root_volume_gib: 200
