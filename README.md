@@ -114,9 +114,13 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   target up for more than 8 hours with no active run. Run configs set
   `stop_targets_after_run: true`.
 - **Images** are built at deploy time with `DockerImageAsset` and pushed to the CDK
-  bootstrap asset repository. They are `linux/amd64`; on Apple Silicon they build under
-  emulation and the first deploy takes a long time. Lambda dependencies are bundled
-  locally with `uv` for `aarch64` (Docker is the fallback).
+  bootstrap asset repository (`-c build_images=false` skips them for Lambda-only
+  changes). They are `linux/amd64`; on Apple Silicon they build under emulation. The
+  CUDA thin-server image is 9.8 GB compressed and about 25 GB extracted: the first full
+  deploy failed with "no space left on device" on a Docker Desktop VM with 21 GB free, and
+  `docker builder prune -af` (build cache only) made room. The full deploy took 25 minutes
+  once the pull succeeded. Lambda dependencies are bundled locally with `uv` for `aarch64`
+  (Docker is the fallback).
 - **Capacity fallback.** After three `InsufficientInstanceCapacity` answers for a target's
   requested type, the launcher alternates with the `alternates` listed in the run config or
   `targets.yaml` (g6.xlarge → g5.xlarge, g6.2xlarge) for up to 30 minutes, then fails that target's cells and the run

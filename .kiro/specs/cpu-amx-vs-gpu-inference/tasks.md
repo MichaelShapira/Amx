@@ -244,9 +244,9 @@ you and list what will be created and what it costs per hour.
     statement, CC BY 4.0 attribution); SLA presets and dataset/policy hashes in the UI.
   - _Requirements: 21.6-21.9, 22.7_
 
-- [ ] 24. Checkpoint: local verification (local checks passed 2026-11-09: ruff, 263 tests,
-  synth of 8 stacks with real bundling, dataset hash `48a1b295…` reproduced, security
-  sweep clean; waiting for your review of `review_sample.md`)
+- [x] 24. Checkpoint: local verification (2026-11-09: ruff, 263 tests, synth of 8 stacks with
+  real bundling, dataset hash `48a1b295…` reproduced, security sweep clean; review sample
+  approved)
   - `ruff`, full `pytest`, `cdk synth` for all stacks, a local dataset build with checks
     passing, and the security sweep from the builder-security policy (search for
     `0.0.0.0`, `-p`/`ports:` publishes, `--host`, ingress rules, public bucket settings;
@@ -255,23 +255,32 @@ you and list what will be created and what it costs per hour.
   - You review `review_sample.md` (100 items) before the test set is frozen.
   - Stop and report results before any AWS change.
 
-- [ ] 25. Deploy and bring up (AWS, account `346399954218`; needs your go-ahead)
+- [x] 25. Deploy and bring up (AWS, account `346399954218`; go-ahead 2026-11-09)
   - [x] 25.1 HF token stored as `amx-gpu-bench/hf-token` in Secrets Manager (2026-11-09),
     Hugging Face user `MichaelShapira`; reused as decided.
   - [x] 25.2 Gemma license accepted: the token gets HTTP 200 for `google/gemma-2-2b-it`
     (checked 2026-11-09), and for D1 and D2.
-  - [ ] 25.3 `cdk deploy` NetworkStack, CoreStack, T1 (g6.xlarge) and T2 (m8i.4xlarge).
-    Verify: instances have no public IP, the endpoint is unreachable from outside the VPC,
-    the S3 bucket denies anonymous access.
+  - [x] 25.3 `cdk deploy` of all 8 stacks (Network, Core with the four images, six target
+    launch templates), 2026-11-10. Verified: no public IPs, IMDSv2 required, no key pairs,
+    targets SG admits 8000 only from the workers SG, bucket returns 403 anonymously.
+    Instances are launched per run (Spot by default) from the launch templates.
     - _Requirements: 4.2, 18.3, 18.5_
   - [ ] 25.4 Bring-up checks from research.md section 12 that the smoke runs depend on
     (AMX flags and `exe.amx_busy` on m8i.4xlarge, GPU driver and CUDA compatibility, vLLM
     0.33.0 healthy on both, prompt-token parity for M1). Record SSE fixtures for task 5.3.
     Log bring-up phases and journal entries.
+    - Done: AMX flags present and oneDNN trace 5,511/5,511 AMX GEMMs on m8i.4xlarge; vLLM
+      healthy on g6.2xlarge (L4) and m8i.4xlarge; zero prompt-token mismatches; bring-up
+      phases logged. `exe.amx_busy` is not exposed on m8i (verdict uses the trace). Open:
+      SSE fixtures from the live engines, journal entries.
     - _Requirements: 12.1, 12.2, 17.1, 17.2_
 
 - [ ] 26. Smoke runs and sample report (deliverable 6)
-  - Upload the frozen dataset to S3.
+  - [x] Upload the frozen dataset to S3 (2026-11-09, `bench upload-artifacts`).
+  - [x] Standard smoke T1 (g6.2xlarge Spot) vs T2 (m8i.4xlarge): `reports/sample/`.
+  - [x] DSPM smoke on T2 (Spot): `reports/sample/dspm/`; T1 had no GPU capacity in that run.
+  - [ ] DSPM smoke with both targets (started 2026-11-10 after the g6.2xlarge alternate
+    was deployed).
   - Standard smoke: `config/runs/smoke-m1.yaml` (M1, T1 vs T2 m8i.4xlarge, BF16,
     C in {1, 4, 16}, 50 requests per level, 1 repeat, quality on).
   - DSPM smoke: `config/runs/dspm-smoke.yaml` (M1 on W1 and W3, T1 vs T2, BF16, 300 test
