@@ -538,6 +538,174 @@ def page_runs():
         st.success("Stopped. Test instances are stopped automatically within 30 minutes.")
 
 
+# ---------------------------------------------------------------------------- GPU vs CPU comparison
+
+GPU_COLORS = ["#2e7d32", "#66bb6a", "#1b5e20", "#a5d6a7"]
+CPU_COLORS = ["#1565c0", "#42a5f5", "#0d47a1", "#90caf9", "#5c6bc0", "#7986cb"]
+
+
+def _group_key(r: dict) -> str:
+    """Rows that answer the same question: one model, one scenario (and length bucket)."""
+    key = L.MODELS.get(r["model"], (r["model"], ""))[0]
+    if r.get("workload"):
+        key += " · " + L.DSPM_WORKLOADS.get(r["workload"], (r["workload"], ""))[0]
+        if r.get("bucket"):
+            key += f" ({r['bucket']} documents)"
+    return key
+
+
+def _unit(rows: list[dict]) -> tuple[str, str, str, str]:
+    """(throughput field, throughput label, cost field, cost label) for a group."""
+    r = rows[0]
+    if r.get("workload"):
+        return "docs_s", "documents per second", "usd_per_gb", "$ per GB scanned"
+    if r.get("kind") == "classifier":
+        return "cls_s", "classifications per second", "usd_per_1m_items", "$ per 1M classifications"
+    return "agg_out_tok_s", "tokens per second", "usd_per_1m_tokens", "$ per 1M tokens"
+
+
+def _series(r: dict) -> str:
+    side = "GPU" if r["accelerator"] == "gpu" else "CPU"
+    return f"{side} · {r['instance_type']} · {L.ENGINES.get(r['engine'], r['engine'])} · {r['precision']}"
+
+
+def _best(rows: list[dict], thr: str):
+    ok = [r for r in rows if r.get("meets_user_sla") and r.get(thr)]
+    return max(ok, key=lambda r: r[thr]) if ok else None
+
+
+def _fmt(v, nd=0) -> str:
+    return "-" if v is None else f"{v:,.{nd}f}"
+
+
+def compare_section(rows: list[dict], sla: dict, limit: int, accuracy: dict | None) -> None:
+    import math
+
+    import altair as alt
+    import pandas as pd
+
+    st.subheader("GPU versus CPU at a glance",
+                 help="Everything here is computed against the targets you set above. GPU is green, CPU is blue. "
+                      "'Best' means the highest-throughput measurement that still meets every target.")
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(_group_key(r), []).append(r)
+    for gname, grows in groups.items():
+        thr, thr_label, cost, cost_label = _unit(grows)
+        lat = "e2e_p99" if grows[0].get("workload") else "ttft_p99"
+        lat_label = "whole decision, 99th pct (ms)" if grows[0].get("workload") else "first word, 99th pct (ms)"
+        lat_target = sla.get("p99_e2e_ms") if grows[0].get("workload") else sla.get("p99_ttft_ms")
+        gpu_rows = [r for r in grows if r["accelerator"] == "gpu"]
+        cpu_rows = [r for r in grows if r["accelerator"] == "cpu" and r.get("amx") != "INVALID"]
+        st.markdown(f"#### {gname}")
+        if not gpu_rows or not cpu_rows:
+            st.info("This run has only one side (GPU or CPU) for this model; a comparison needs both.")
+            continue
+        best_gpu, best_cpu = _best(gpu_rows, thr), _best(cpu_rows, thr)
+
+        # --- head-to-head cards
+        c_gpu, c_cpu = st.columns(2)
+        for col, side, best, other in ((c_gpu, "GPU", best_gpu, best_cpu), (c_cpu, "CPU", best_cpu, best_gpu)):
+            with col:
+                if best is None:
+                    st.error(f"{side}: no measurement meets your targets.")
+                    continue
+                st.markdown(f"**{'🟩' if side == 'GPU' else '🟦'} {side}: {best['instance_type']} · "
+                            f"{L.ENGINES.get(best['engine'], best['engine'])} · {prec_label(best['precision'])}** "
+                            f"at {best['conc']} concurrent requests · ${best['usd_per_hour']:.2f}/hour")
+                ratio = (best[thr] / other[thr]) if other and other.get(thr) else None
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Throughput", f"{_fmt(best[thr])} {thr_label.split(' per ')[0]}/s",
+                          delta=None if side == "GPU" or ratio is None else f"{ratio:.2f}x of GPU",
+                          delta_color="normal", help=f"{thr_label} across all concurrent requests. Higher is better.")
+                lr = (best[lat] / other[lat]) if other and other.get(lat) and best.get(lat) else None
+                m2.metric("Responsiveness", f"{_fmt(best.get(lat))} ms",
+                          delta=None if side == "GPU" or lr is None else f"{lr:.1f}x GPU's wait",
+                          delta_color="inverse", help=f"{lat_label}. Lower is better.")
+                cr = (best[cost] / other[cost]) if other and other.get(cost) and best.get(cost) else None
+                m3.metric("Cost per unit", f"${_fmt(best.get(cost), 2)}",
+                          delta=None if side == "GPU" or cr is None else f"{cr:.1f}x GPU's cost",
+                          delta_color="inverse", help=f"{cost_label} at this load, On-Demand price. Lower is better.")
+                if accuracy:
+                    name = (best.get("workload") or "") + (f"-{best['bucket']}" if best.get("bucket") else "")
+                    a = (accuracy.get(best.get("cell_key") or "") or {}).get(name)
+                    if a:
+                        st.caption(f"Detection accuracy on this scenario: recall {a['recall']['value']:.2f}, "
+                                   f"false positives {a['fpr']['value']:.2f}, F1 {a['f1']:.2f}"
+                                   + (f" · agreement with GPU {a['vs_gpu']['agreement']['value']:.2f}"
+                                      if a.get("vs_gpu") else ""))
+        if best_gpu and best_cpu:
+            n = math.ceil(best_gpu[thr] / best_cpu[thr]) if best_cpu[thr] else None
+            if n:
+                cost_ratio = n * best_cpu["usd_per_hour"] / best_gpu["usd_per_hour"]
+                verdict = ("within your limit: the CPU side is a viable alternative" if n <= limit
+                           else f"above your limit of {limit}: conditional")
+                st.markdown(f"**To match one {best_gpu['instance_type']} you need {n} × {best_cpu['instance_type']}**, "
+                            f"costing {cost_ratio:.1f}x as much per hour, {verdict}.")
+
+        # --- instances needed per CPU option
+        eq = []
+        if best_gpu:
+            for r in cpu_rows:
+                if r.get("meets_user_sla") and r.get(thr):
+                    n = math.ceil(best_gpu[thr] / r[thr])
+                    eq.append({"CPU option": f"{r['instance_type']} · {r['precision']} · {r['conc']} concurrent",
+                               "Instances per GPU": n, "Hourly cost ratio": n * r["usd_per_hour"] / best_gpu["usd_per_hour"],
+                               "Within limit": "yes" if n <= limit else "no"})
+        if eq:
+            bars = alt.Chart(pd.DataFrame(eq)).mark_bar().encode(
+                y=alt.Y("CPU option:N", sort="-x", title=None),
+                x=alt.X("Instances per GPU:Q", title=f"CPU instances needed to match one {best_gpu['instance_type']}"),
+                color=alt.Color("Within limit:N", scale=alt.Scale(domain=["yes", "no"], range=["#1565c0", "#b0bec5"]),
+                                legend=alt.Legend(title="Within your limit")),
+                tooltip=["CPU option", "Instances per GPU", alt.Tooltip("Hourly cost ratio:Q", format=".2f")])
+            rule = alt.Chart(pd.DataFrame({"limit": [limit]})).mark_rule(color="#c62828", strokeDash=[6, 4]).encode(x="limit:Q")
+            st.altair_chart((bars + rule).properties(height=28 * len(eq) + 40), use_container_width=True)
+            st.caption(f"Red line: your limit of {limit} CPU instances per GPU. Only CPU measurements that meet your "
+                       "targets are shown.")
+
+        # --- curves: throughput, responsiveness, cost vs concurrency
+        df = pd.DataFrame(grows)
+        df["Series"] = df.apply(_series, axis=1)
+        df["Meets targets"] = df["meets_user_sla"].map({True: "yes", False: "no"})
+        series = sorted(df["Series"].unique())
+        colors = {}
+        gi = ci = 0
+        for s_ in series:
+            if s_.startswith("GPU"):
+                colors[s_] = GPU_COLORS[gi % len(GPU_COLORS)]
+                gi += 1
+            else:
+                colors[s_] = CPU_COLORS[ci % len(CPU_COLORS)]
+                ci += 1
+        scale = alt.Scale(domain=series, range=[colors[s_] for s_ in series])
+
+        def curve(field: str, title: str, target: float | None = None, log: bool = False, df=df, scale=scale):
+            base = alt.Chart(df.dropna(subset=[field])).encode(
+                x=alt.X("conc:O", title="Concurrent requests"),
+                y=alt.Y(f"{field}:Q", title=title, scale=alt.Scale(type="log") if log else alt.Undefined),
+                color=alt.Color("Series:N", scale=scale, legend=alt.Legend(orient="bottom", columns=1, title=None)),
+                tooltip=["Series", "conc", alt.Tooltip(f"{field}:Q", format=",.2f"), "Meets targets"])
+            chart = base.mark_line() + base.mark_point(size=90, filled=True).encode(
+                shape=alt.Shape("Meets targets:N", scale=alt.Scale(domain=["yes", "no"], range=["circle", "cross"]),
+                                legend=alt.Legend(orient="bottom", title="Meets targets")))
+            if target:
+                chart = chart + alt.Chart(pd.DataFrame({"t": [target]})).mark_rule(
+                    color="#c62828", strokeDash=[6, 4]).encode(y="t:Q")
+            return chart.properties(height=300)
+
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.caption("**Throughput** — higher is better")
+            st.altair_chart(curve(thr, thr_label), use_container_width=True)
+        with k2:
+            st.caption("**Responsiveness** — lower is better; red line = your target")
+            st.altair_chart(curve(lat, lat_label, lat_target), use_container_width=True)
+        with k3:
+            st.caption("**Cost per unit** — lower is better (log scale)")
+            st.altair_chart(curve(cost, cost_label, log=True), use_container_width=True)
+
+
 # ---------------------------------------------------------------------------- Results
 
 def _load_summary(rid: str) -> dict | None:
@@ -594,30 +762,44 @@ def page_results():
         st.warning("Quick check: this run collected fewer than 200 requests per level or fewer than 3 passes, so "
                    "its numbers show the shape of the result, not a basis for a decision. The report labels them SMOKE.")
     rows = summary["rows"]
-    st.subheader("Verdict", help=L.CAPACITY_HELP)
-    for line in _verdict_text(summary):
-        st.markdown("- " + line)
     for j in summary.get("pairing") or []:
-        (st.success if j["fair"] else st.warning)(f"Fair comparison? {j['cpu']} versus {j['gpu']}: {j['reason']}.")
+        head = "Fair comparison" if j["fair"] else "Not a fair comparison"
+        (st.success if j["fair"] else st.warning)(f"{head} — {j['cpu']} versus {j['gpu']}: {j['reason']}.")
 
     st.subheader("Your targets", help=L.SLA_SECTION_HELP)
-    c1, c2, c3, c4 = st.columns(4)
-    sla = {"p99_ttft_ms": c1.number_input(L.SLA_HELP["ttft"][0], 0.0, 1e6, 2000.0, help=L.SLA_HELP["ttft"][1]) or None,
-           "p50_tpot_ms": c2.number_input(L.SLA_HELP["tpot"][0], 0.0, 1e5, 150.0, help=L.SLA_HELP["tpot"][1]) or None,
-           "p99_e2e_ms": c3.number_input(L.SLA_HELP["e2e"][0], 0.0, 1e7, 0.0, help=L.SLA_HELP["e2e"][1]) or None,
-           "max_error_pct": c4.number_input("Max failed requests (%)", 0.0, 100.0, 1.0,
-                                            help="Measurements with more failed requests than this do not count.")}
+    run_sla = (summary.get("run") or {}).get("sla") or {}
+    err_help = "Measurements with more failed requests than this do not count."
     if summary["run"].get("suite") == "dspm":
-        preset = st.radio("Speed requirement", list(L.DSPM_PRESETS), format_func=lambda p: L.DSPM_PRESETS[p][0],
-                          help=L.DSPM_PRESET_HELP, horizontal=True)
-        sla.update(report.SLA_PRESETS[preset])
+        c1, c2 = st.columns([3, 1])
+        presets = list(L.DSPM_PRESETS)
+        run_preset = ((summary["run"].get("dspm") or {}).get("sla_preset")) or "inline_standard"
+        preset = c1.radio("Speed requirement", presets, index=presets.index(run_preset) if run_preset in presets else 1,
+                          format_func=lambda p: L.DSPM_PRESETS[p][0], help=L.DSPM_PRESET_HELP, horizontal=True)
+        sla = {**report.SLA_PRESETS[preset],
+               "max_error_pct": c2.number_input("Max failed requests (%)", 0.0, 100.0, 1.0, help=err_help)}
         prov = summary.get("dspm_hashes") or {}
         st.caption(f"Dataset version {prov.get('dataset_version')}, dataset fingerprint "
                    f"{str(prov.get('dataset_sha256'))[:12]}, policy fingerprint {str(prov.get('policy_sha256'))[:12]}",
                    help="Fingerprints identify the exact test data and classification policy this run used, so two "
                         "runs can be compared only when they match.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        sla = {"p99_ttft_ms": c1.number_input(L.SLA_HELP["ttft"][0], 0.0, 1e6, float(run_sla.get("p99_ttft_ms") or 2000),
+                                              help=L.SLA_HELP["ttft"][1]) or None,
+               "p50_tpot_ms": c2.number_input(L.SLA_HELP["tpot"][0], 0.0, 1e5, float(run_sla.get("p50_tpot_ms") or 150),
+                                              help=L.SLA_HELP["tpot"][1]) or None,
+               "p99_e2e_ms": c3.number_input(L.SLA_HELP["e2e"][0], 0.0, 1e7, float(run_sla.get("p99_e2e_ms") or 0),
+                                             help=L.SLA_HELP["e2e"][1]) or None,
+               "max_error_pct": c4.number_input("Max failed requests (%)", 0.0, 100.0, 1.0, help=err_help)}
+        st.caption("Pre-filled with the targets the run was started with; change them to see how the verdict moves.")
     for r in rows:
         r["meets_user_sla"], r["user_sla_reason"] = report.meets_sla(r, sla)
+    limit = int(((summary.get("run") or {}).get("capacity") or {}).get("max_cpu_instances_per_gpu", 4))
+    compare_section(rows, sla, limit, summary.get("dspm_accuracy"))
+
+    with st.expander("Verdict as written in the report (uses the run's own targets)"):
+        for line in _verdict_text(summary):
+            st.markdown("- " + line)
 
     st.subheader("Measurements")
     model_ids = sorted({r["model"] for r in rows})
