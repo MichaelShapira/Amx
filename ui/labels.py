@@ -83,7 +83,7 @@ CONCURRENCY_HELP = ("How many requests are kept in flight at the same time, per 
                     "for the level where the machine still meets your targets.")
 
 DEPTH = {
-    "quick": ("Quick check — 50 requests per level, 1 pass (results labelled SMOKE)",
+    "quick": ("Quick check — 50 requests per level, 1 pass (not decision-grade)",
               "Enough to see the shape of the numbers in under an hour. Not enough for a decision: the report "
               "labels every number SMOKE."),
     "full": ("Full methodology — 200 requests per level, 3 passes",
@@ -235,3 +235,8 @@ DATA_HELP = {
     "sample": "A random sample from the test set; press again for other examples.",
     "policy": "The classification rules the models are given. Its fingerprint is recorded with every run.",
 }
+
+GRADE_HELP = ("Decision-grade: at least 200 requests per concurrency level and 3 passes, the minimum the methodology "
+              "requires before percentiles are trustworthy. Quick check: anything less; it exercises the whole pipeline "
+              "and shows the shape of the result, but the report labels every number SMOKE (the engineering term for a "
+              "pipeline check) and it should not drive a buying decision.")

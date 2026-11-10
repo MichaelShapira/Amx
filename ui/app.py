@@ -305,14 +305,13 @@ def page_new_run():
                   help=f"Instances ${est['usd']['instances']:.2f} (On-Demand rates; Spot is usually 30-70% less) + "
                        f"network ${est['usd']['nat_gateway']:.2f} + load generator ${est['usd']['lambda']:.2f}. "
                        "Excludes the standing network gateway cost between runs.")
-        c3.metric("Result grade", "Decision-grade" if not rc.is_smoke else "SMOKE (indicative)",
-                  help="Decision-grade needs at least 200 requests per level and 3 passes. Anything less is labelled "
-                       "SMOKE in every report.")
+        c3.metric("Result grade", "Decision-grade" if not rc.is_smoke else "Quick check", help=L.GRADE_HELP)
     except Exception as e:  # noqa: BLE001
         st.caption(f"No estimate: {e}")
     if rc.is_smoke:
-        st.warning("Quick check: every number in the report will be labelled SMOKE. Use it to see the shape of the "
-                   "results, not to decide.")
+        st.warning("Quick check: every number in the report will carry the SMOKE label (the engineering term for a "
+                   "pipeline check). Use it to see the shape of the results, not to decide; choose 'Full methodology' "
+                   "under step 4 for decision-grade numbers.")
 
     if st.button("Start run", type="primary", disabled=bool(missing)) and aws_ready():
         import boto3
@@ -513,10 +512,10 @@ def page_runs():
 
     runs = _runs()
     st.dataframe([{"Run": r["pk"][4:], "Status": r.get("status"), "Last update": r.get("updated_at"),
-                   "Grade": "SMOKE" if r.get("smoke") else "decision-grade", "Instances": r.get("purchase")}
+                   "Grade": "Quick check" if r.get("smoke") else "Decision-grade", "Instances": r.get("purchase")}
                   for r in runs], width="stretch", hide_index=True,
                  column_config={"Status": st.column_config.TextColumn(help=STATUS_HELP),
-                                "Grade": st.column_config.TextColumn(help=L.DEPTH_HELP),
+                                "Grade": st.column_config.TextColumn(help=L.GRADE_HELP),
                                 "Instances": st.column_config.TextColumn(help=L.PURCHASE_HELP)})
     rid = st.selectbox("Run to inspect", [r["pk"][4:] for r in runs]) if runs else None
     if not rid:
@@ -592,7 +591,8 @@ def page_results():
         st.info("No finished run selected.")
         return
     if summary.get("smoke"):
-        st.warning("SMOKE run: a quick check below the methodology's minimums. Indicative numbers only.")
+        st.warning("Quick check: this run collected fewer than 200 requests per level or fewer than 3 passes, so "
+                   "its numbers show the shape of the result, not a basis for a decision. The report labels them SMOKE.")
     rows = summary["rows"]
     st.subheader("Verdict", help=L.CAPACITY_HELP)
     for line in _verdict_text(summary):
