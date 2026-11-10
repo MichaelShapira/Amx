@@ -198,15 +198,19 @@ the uploaded one.
 ```
 
 The UI uses the same YAML and the operator's own credentials, and binds to `127.0.0.1`
-only:
+only (http://127.0.0.1:8501):
 
 ```bash
 cd ui && ../.venv/bin/streamlit run app.py
 ```
 
-Pages: New run (YAML preview, plan, estimate, start), Runs (progress, stop with
-confirmation), Results (table, SLA filters, capacity equivalence, charts, CSV and Markdown
-export, dataset and policy hashes), Migration calculator, Bring-up journal.
+It is written for the person deciding which instance to buy, not for the engineer: a
+seven-step "New run" page in plain language (workload, models, hardware options with a
+fairness check, load, acceptance targets, buying option, review with cost estimate), a
+help icon on every control (`ui/labels.py` holds the texts, `tests/test_ui.py` enforces
+that none is missing), results with a verdict in sentences and explained column headers,
+the migration calculator and the bring-up journal. The YAML the CLI uses sits under
+"Advanced" on each page.
 
 ## Cost per run
 

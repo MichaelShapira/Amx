@@ -174,8 +174,8 @@ def recommend(m: ModelInput, summary: dict | None, sla: SlaInput, *, catalog, li
             return None
         e = report.cost.capacity_equivalence(
             gpu_throughput=report._throughput(best_gpu), cpu_throughput=report._throughput(r),
-            cpu_vcpus=report.INSTANCE_VCPUS.get(r["instance_type"], 0),
-            gpu_vcpus=report.INSTANCE_VCPUS.get(best_gpu["instance_type"], 0),
+            cpu_vcpus=report._vcpus(r["instance_type"]),
+            gpu_vcpus=report._vcpus(best_gpu["instance_type"]),
             cpu_price=r["usd_per_hour"], gpu_price=best_gpu["usd_per_hour"])
         return None if e is None else e.__dict__
 
