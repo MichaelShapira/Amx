@@ -497,8 +497,43 @@ def _runs() -> list[dict]:
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
 
 
-STATUS_HELP = ("running: in progress · complete: report ready under Results · refused: a pre-check failed (see the "
-               "run's errors) · interrupted: an instance was lost and is being replaced")
+RUN_STATUS = {"running": "Running", "complete": "Finished, report ready", "refused": "Refused by the pre-checks",
+              "planned": "Planned"}
+CELL_STATUS = {"planned": "Planned", "configuring": "Starting the model server", "ready": "Serving",
+               "bringup_failed": "Failed to start", "interrupted": "Instance lost, replacing it", "failed": "Failed"}
+LEVEL_STATUS = {"running": "Running", "done": "Done", "failed": "Failed", "incomplete": "Stopped early",
+                "pending": "Waiting to be re-run"}
+RUN_STATUS_HELP = ("Running: in progress. Finished: the report is under Results. Refused: a pre-check failed before "
+                   "anything started (missing capacity, price, data or access); the reason is listed below.")
+CELL_STATUS_HELP = ("Planned: waiting for the instance. Starting the model server: instance up, loading the model. "
+                    "Serving: measurements are running. Instance lost: a Spot interruption; a replacement is being "
+                    "launched and unfinished measurements re-run. Failed: see the error.")
+LEVEL_STATUS_HELP = ("Done: all requests sent and recorded. Running: in progress. Failed: see the error. Stopped early: "
+                     "the request budget could not be finished in the allowed number of waves.")
+
+
+def _hw_name(tid: str, tmap, instance_type: str | None = None) -> str:
+    t = tmap.get(tid)
+    return hardware_label(tid, t, instance_type or t.instance_type) if t else tid
+
+
+def _parse_level(level_key: str, cell_key: str) -> dict:
+    """<model>__<target>__<precision>__<name>__c<C>[__r<rep>] -> readable parts."""
+    rest = level_key[len(cell_key) + 2:].split("__")
+    name = rest[0]
+    conc = next((int(x[1:]) for x in rest[1:] if x.startswith("c") and x[1:].isdigit()), None)
+    rep = next((int(x[1:]) for x in rest[1:] if x.startswith("r") and x[1:].isdigit()), None)
+    if name.endswith("-accuracy"):
+        base = name[:-9]
+        what = "Accuracy pass: " + (L.DSPM_WORKLOADS.get(base.split("-")[0], (base, ""))[0]
+                                    + (f" ({base.split('-', 1)[1]} documents)" if "-" in base else ""))
+    elif name in L.PROMPT_SETS:
+        what = L.PROMPT_SETS[name][0]
+    elif name.split("-")[0] in L.DSPM_WORKLOADS:
+        what = L.DSPM_WORKLOADS[name.split("-")[0]][0] + (f" ({name.split('-', 1)[1]} documents)" if "-" in name else "")
+    else:
+        what = name
+    return {"what": what, "conc": conc, "pass": None if rep is None else rep + 1}
 
 
 def page_runs():
@@ -510,26 +545,66 @@ def page_runs():
 
     from lambdas.common import plain
 
+    models, targets = catalogs()
+    tmap = targets.resolved()
     runs = _runs()
-    st.dataframe([{"Run": r["pk"][4:], "Status": r.get("status"), "Last update": r.get("updated_at"),
-                   "Grade": "Quick check" if r.get("smoke") else "Decision-grade", "Instances": r.get("purchase")}
-                  for r in runs], width="stretch", hide_index=True,
-                 column_config={"Status": st.column_config.TextColumn(help=STATUS_HELP),
+    st.dataframe([{"Run": r["pk"][4:], "Status": RUN_STATUS.get(r.get("status"), r.get("status")),
+                   "Last update": r.get("updated_at"), "Grade": "Quick check" if r.get("smoke") else "Decision-grade",
+                   "Instances": r.get("purchase")} for r in runs], width="stretch", hide_index=True,
+                 column_config={"Status": st.column_config.TextColumn(help=RUN_STATUS_HELP),
                                 "Grade": st.column_config.TextColumn(help=L.GRADE_HELP),
-                                "Instances": st.column_config.TextColumn(help=L.PURCHASE_HELP)})
+                                "Instances": st.column_config.TextColumn(help=L.PURCHASE_HELP),
+                                "Last update": st.column_config.TextColumn(help="UTC time of the last status change.")})
     rid = st.selectbox("Run to inspect", [r["pk"][4:] for r in runs]) if runs else None
     if not rid:
         return
     tbl = boto3.resource("dynamodb", region_name=REGION).Table("amx-gpu-bench")
     items = [plain(x) for x in tbl.query(KeyConditionExpression=Key("pk").eq(f"RUN#{rid}"))["Items"]]
+    meta = next((i for i in items if i["sk"] == "META"), {})
+    if meta.get("status") == "refused":
+        st.error("Refused by the pre-checks: " + "; ".join(str(e) for e in (meta.get("errors") or [])[:10]))
+    cells = [i for i in items if i["sk"].startswith("CELL#")]
     levels = [i for i in items if i["sk"].startswith("LEVEL#")]
     done = sum(1 for i in levels if i.get("status") == "done")
     st.progress(done / max(1, len(levels)), text=f"{done} of {len(levels)} measurements done")
-    st.dataframe([{"Item": i["sk"], "Status": i.get("status"), "Requests done": i.get("completed"),
-                   "Errors": i.get("errors")} for i in sorted(items, key=lambda x: x["sk"])],
-                 width="stretch", hide_index=True,
-                 column_config={"Item": st.column_config.TextColumn(
-                     help="CELL# = one model on one hardware option; LEVEL# = one concurrency level of it; META = the run.")})
+
+    st.markdown("**Models on hardware options**", help="One row per model served on one hardware option. The instance "
+                "is started, the model loaded, then the measurements below run one after another.")
+    cell_rows = []
+    for c in sorted(cells, key=lambda x: x["sk"]):
+        mid, tid, prec = (c["sk"][5:].split("|") + [None, None, None])[:3]
+        cell_rows.append({"Model": L.MODELS.get(mid, (mid, ""))[0], "Hardware option": _hw_name(tid, tmap),
+                          "Number format": prec_label(prec) if prec else "", "Software": L.ENGINES.get(c.get("engine"), c.get("engine")),
+                          "Status": CELL_STATUS.get(c.get("status"), c.get("status")), "Measurements": c.get("n_levels"),
+                          "Error": (c.get("error") or c.get("reason") or c.get("stderr") or "")[:160]})
+    st.dataframe(cell_rows, width="stretch", hide_index=True,
+                 column_config={"Status": st.column_config.TextColumn(help=CELL_STATUS_HELP)})
+
+    st.markdown("**Measurements**", help="One row per concurrency level (and pass) of a model on a hardware option. "
+                "'Requests done' counts the requests sent so far; the accuracy pass of the sensitive-data suite "
+                "classifies every test document once.")
+    level_rows = []
+    for lv in sorted(levels, key=lambda x: x["sk"]):
+        key = lv["sk"][6:]
+        ck = lv.get("cell_key") or "__".join(key.split("__")[:3])
+        mid, tid, _prec = (ck.split("__") + [None, None, None])[:3]
+        parts = _parse_level(key, ck)
+        level_rows.append({"Model": L.MODELS.get(mid, (mid, ""))[0], "Hardware option": _hw_name(tid, tmap),
+                           "What": parts["what"], "Concurrent requests": parts["conc"], "Pass": parts["pass"],
+                           "Status": LEVEL_STATUS.get(lv.get("status"), lv.get("status")),
+                           "Requests done": lv.get("completed"), "Errors": lv.get("errors"),
+                           "Detail": (lv.get("error") or lv.get("reason") or "")[:120]})
+    st.dataframe(level_rows, width="stretch", hide_index=True,
+                 column_config={"Status": st.column_config.TextColumn(help=LEVEL_STATUS_HELP),
+                                "Concurrent requests": st.column_config.NumberColumn(help=L.CONCURRENCY_HELP),
+                                "Pass": st.column_config.NumberColumn(help=L.REPEATS_HELP)})
+    with st.expander("Advanced: raw status records"):
+        st.dataframe([{"Item": i["sk"], "status": i.get("status"), "completed": i.get("completed"),
+                       "errors": i.get("errors")} for i in sorted(items, key=lambda x: x["sk"])],
+                     width="stretch", hide_index=True,
+                     column_config={"Item": st.column_config.TextColumn(
+                         help="Storage keys: META = the run, CELL# = one model on one hardware option, "
+                              "LEVEL# = one concurrency level of it.")})
     if st.checkbox("I want to stop this run", help="Finished measurements are kept and reported.") \
             and st.button("Stop run", type="secondary"):
         arn = stack_outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
