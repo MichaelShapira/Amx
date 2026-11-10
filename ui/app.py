@@ -215,6 +215,12 @@ def page_new_run():
             items = st.select_slider("Documents in the accuracy check", [300, 1000, 3000], value=300,
                                      help=L.DSPM_ITEMS_HELP)
             preset = None
+    with st.expander("Preview the test data for this choice"):
+        st.caption("Full details, filters and the classification policy are on the Test data page.")
+        if suite == "standard":
+            preview_standard(models, prompt_set, chosen, n=3, key="run-std")
+        elif workloads:
+            preview_dspm(workloads, n=3, key="run-dspm", with_filters=False)
 
     # 5. Targets
     st.subheader("5. What counts as acceptable?", help=L.SLA_SECTION_HELP)
@@ -322,6 +328,157 @@ def page_new_run():
         st.caption("The same YAML can be started with `bench run <file>`; `bench validate <file>` checks it offline.")
         st.code(text, language="yaml")
         st.download_button("Download YAML", text, file_name=f"{run['name']}.yaml")
+
+
+# ---------------------------------------------------------------------------- Test data
+
+PROMPTS_DIR = ROOT / "prompts/generated"
+DSPM_DIR = ROOT / "data/dspm/v1"
+
+
+@st.cache_data
+def prompt_manifest() -> dict | None:
+    p = PROMPTS_DIR / "manifest.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+@st.cache_data
+def prompt_set(model_id: str, name: str) -> list[dict]:
+    p = PROMPTS_DIR / model_id / f"{name}.jsonl"
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()] if p.exists() else []
+
+
+@st.cache_data
+def dspm_items(split: str = "test") -> list[dict]:
+    import gzip
+
+    p = DSPM_DIR / f"{split}.jsonl.gz"
+    if not p.exists():
+        return []
+    with gzip.open(p, "rt") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+@st.cache_data
+def dspm_manifest() -> dict | None:
+    p = DSPM_DIR / "manifest.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def _prompt_text(line: dict) -> str:
+    if "pair" in line:
+        return f"Premise: {line['pair'][0]}\n\nHypothesis: {line['pair'][1]}"
+    return line.get("prompt", "")
+
+
+def _sample(items: list, n: int, key: str) -> list:
+    import random
+
+    if st.button("Show other examples", key=f"btn-{key}", help=L.DATA_HELP["sample"]):
+        st.session_state[f"seed-{key}"] = st.session_state.get(f"seed-{key}", 0) + 1
+    rnd = random.Random(st.session_state.get(f"seed-{key}", 0))  # noqa: S311 - sampling for display
+    return rnd.sample(items, min(n, len(items))) if items else []
+
+
+def preview_standard(models, prompt_name: str, model_ids: list[str], n: int = 3, key: str = "std") -> None:
+    man = prompt_manifest()
+    if man is None:
+        st.info("Prompt sets are not built locally (tools/build_prompts.py); the deployed runs use the copies in S3.")
+        return
+    mid = st.selectbox("Shown in the chat format of", model_ids, format_func=lambda m: L.MODELS.get(m, (m, ""))[0],
+                       key=f"pm-{key}", help=L.DATA_HELP["model"])
+    name = prompt_name if prompt_name != "custom" else "short"
+    info = man["sets"].get(f"{mid}/{name}")
+    if info:
+        st.caption(f"{info['n']} prompts of {info['min_tokens']}-{info['max_tokens']} tokens (target {info['target']}); "
+                   f"every request in a measurement draws from this set in a fixed order.")
+    for line in _sample(prompt_set(mid, name), n, key):
+        with st.expander(f"{line['id']} · {line.get('prompt_tokens_expected')} tokens"):
+            st.text(_prompt_text(line)[:3000])
+    qname = "quality-50-nli" if models.get(mid).type == "encoder-classifier" else "quality-50"
+    q = prompt_set(mid, qname)
+    if q:
+        with st.expander(f"Quality check set: {len(q)} items ({qname})"):
+            st.caption("Each model answers these once per hardware option; the report compares the answers with "
+                       "the GPU's (exact match and ROUGE-L for text, label agreement for classifiers).")
+            for line in q[:5]:
+                st.text(f"[{line['id']}{' · ' + line['category'] if line.get('category') else ''}] "
+                        f"{_prompt_text(line)[:400]}")
+
+
+def preview_dspm(workloads: list[str], n: int = 5, key: str = "dspm", with_filters: bool = True) -> None:
+    items = dspm_items("test")
+    man = dspm_manifest()
+    if not items or man is None:
+        st.info("The dataset is not built locally (tools/dspm/build_dataset.py); the deployed runs use the copy in S3.")
+        return
+    counts = man.get("counts") or {}
+    rows = [{"Scenario": L.DSPM_WORKLOADS.get(w, (w, ""))[0], "Documents": sum(
+        1 for x in items if x["workload"] == w),
+             "Sensitive / positive": sum(1 for x in items if x["workload"] == w and x["sensitive"]),
+             "Hard negatives": sum(1 for x in items if x["workload"] == w and x.get("hard_case"))} for w in workloads]
+    st.dataframe(rows, hide_index=True, width="stretch", column_config={
+        "Hard negatives": st.column_config.NumberColumn(help=L.DATA_HELP["hard_case"])})
+    dev = counts.get("split", {}).get("dev") if isinstance(counts.get("split"), dict) else None
+    st.caption(f"Dataset {man.get('version')}, fingerprint {str(man.get('dataset_sha256'))[:12]}, "
+               f"{len(items)} test documents" + (f", {dev} development documents (used only to tune the classifier "
+                                                 f"threshold)." if dev else "."))
+    pool = [x for x in items if x["workload"] in workloads]
+    if with_filters:
+        c1, c2, c3 = st.columns(3)
+        wl = c1.selectbox("Scenario", workloads, format_func=lambda w: L.DSPM_WORKLOADS.get(w, (w, ""))[0],
+                          key=f"wl-{key}", help=L.DATA_HELP["scenario"])
+        labels_ = sorted({x["label"] for x in pool if x["workload"] == wl})
+        lab = c2.selectbox("Expected answer", ["any", *labels_], key=f"lab-{key}", help=L.DATA_HELP["label"])
+        hards = sorted({x["hard_case"] for x in pool if x["workload"] == wl and x.get("hard_case")})
+        hard = c3.selectbox("Hard negative type", ["any", "none", *hards], key=f"hard-{key}", help=L.DATA_HELP["hard_case"])
+        pool = [x for x in pool if x["workload"] == wl and (lab == "any" or x["label"] == lab)
+                and (hard == "any" or (hard == "none" and not x.get("hard_case")) or x.get("hard_case") == hard)]
+        st.caption(f"{len(pool)} documents match.")
+    for x in _sample(pool, n, key):
+        cats = ", ".join(x.get("categories") or []) or "none"
+        hard = f" · hard negative: {x['hard_case']}" if x.get("hard_case") else ""
+        toks = x["tokens"]
+        toks = toks.get("m1-qwen2.5-3b", next(iter(toks.values()))) if isinstance(toks, dict) else toks
+        title = (f"{x['id']} · expected **{x['label']}** · categories: {cats}{hard} · about {toks} tokens, "
+                 f"{x['bytes']} bytes · source {x['source']}")
+        with st.expander(title):
+            st.text(x["text"][:4000] + ("\n[...]" if len(x["text"]) > 4000 else ""))
+            if x.get("spans"):
+                st.caption("Sensitive values in this document: " + "; ".join(
+                    f"{s.get('category', '?')}: {x['text'][s['start']:s['end']][:40]}"
+                    for s in x["spans"][:8] if "start" in s and "end" in s))
+
+
+def page_test_data():
+    st.header("Test data")
+    st.caption("What the models are asked during a run. Each workload type has its own data; nothing is downloaded "
+               "or generated at run time.")
+    suite = st.radio("Workload type", list(L.SUITES), format_func=lambda s: L.SUITES[s][0], horizontal=True,
+                     help=L.SUITE_HELP, key="data-suite")
+    st.write(L.DATA_INTRO[suite])
+    models, _ = catalogs()
+    if suite == "standard":
+        name = st.selectbox("Prompt set", ["short", "medium", "long"], format_func=lambda p: L.PROMPT_SETS[p][0],
+                            help=L.DATA_HELP["set"])
+        ids = [m.id for m in models.models if m.enabled and "standard" in m.suites
+               and (PROMPTS_DIR / m.id / f"{name}.jsonl").exists()]
+        if ids:
+            preview_standard(models, name, ids, n=5, key="data-std")
+        else:
+            st.info("Prompt sets are not built locally (tools/build_prompts.py).")
+    else:
+        preview_dspm(list(L.DSPM_WORKLOADS), n=5, key="data-dspm")
+        pol = ROOT / "config/dspm/policy_v1.md"
+        if pol.exists():
+            with st.expander("The classification policy the models are given", expanded=False):
+                st.caption(L.DATA_HELP["policy"])
+                st.text(pol.read_text())
+        rs = DSPM_DIR / "review_sample.md"
+        if rs.exists():
+            st.download_button("Download the 100-document review sample (Markdown)", rs.read_bytes(), "review_sample.md",
+                               help="A stratified sample with the sensitive values marked, for a human to check the "
+                                    "labels against the policy.")
 
 
 # ---------------------------------------------------------------------------- Runs
@@ -614,10 +771,11 @@ def page_journal():
                        help="Feed it to `bench estimate --journal` to calibrate the rules.")
 
 
-PAGES = {"New run": page_new_run, "Runs": page_runs, "Results": page_results,
+PAGES = {"New run": page_new_run, "Test data": page_test_data, "Runs": page_runs, "Results": page_results,
          "Migration calculator": page_calculator, "Bring-up journal": page_journal}
 st.sidebar.title("GPU vs AMX CPU")
 st.sidebar.caption("Benchmark small models on NVIDIA GPU and Intel AMX CPU instances, then decide which to buy.")
-choice = st.sidebar.radio("Page", list(PAGES), help="New run: define and start a benchmark. Runs: progress. Results: "
-                          "reports and the verdict. Migration calculator: engineering effort. Journal: record real effort.")
+choice = st.sidebar.radio("Page", list(PAGES), help="New run: define and start a benchmark. Test data: what the "
+                          "models are asked. Runs: progress. Results: reports and the verdict. Migration calculator: "
+                          "engineering effort. Journal: record real effort.")
 PAGES[choice]()

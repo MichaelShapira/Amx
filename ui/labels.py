@@ -210,3 +210,28 @@ CALC_HELP = {
     "familiarity": "How much experience the team has tuning CPU inference.",
     "summary": "A summary.json from the Results page. With it, the calculator adds a hardware recommendation per model.",
 }
+
+DATA_INTRO = {
+    "standard": ("The chat suite sends fixed prompts built from public-domain books (Project Gutenberg), cut to a "
+                 "target length and wrapped in each model's own chat format, so every model reads the same text. "
+                 "Answers are generated to a fixed length so that timings are comparable. A separate set of 50 "
+                 "real instructions (databricks-dolly-15k) and 50 sentence pairs (SNLI) checks answer quality "
+                 "against the GPU."),
+    "dspm": ("The sensitive-data suite uses a synthetic dataset built for this benchmark: 3,000 test documents and "
+             "300 development documents with known answers. About half contain sensitive data (government IDs, "
+             "personal details, financial data, health data, credentials, confidential business content); the rest "
+             "do not, and about a third of those are hard negatives that look sensitive but are not (masked card "
+             "numbers, documentation placeholders, public business data, first names alone). Sources: NVIDIA "
+             "Nemotron-PII (CC BY 4.0), Gretel synthetic PII finance (Apache-2.0) and a seeded generator in this "
+             "repository. All values are synthetic; the dataset is kept out of git because scanners flag the fake "
+             "secrets."),
+}
+DATA_HELP = {
+    "set": "Which prompt set to look at; the run uses the one chosen under 'Input length'.",
+    "model": "Prompts are wrapped in each model's chat format, so the exact text differs slightly per model.",
+    "scenario": "Which detection scenario's documents to show.",
+    "label": "Expected answer: what the detector should say about this document.",
+    "hard_case": "Hard negatives: documents that look sensitive but are not; the report shows false positives per type.",
+    "sample": "A random sample from the test set; press again for other examples.",
+    "policy": "The classification rules the models are given. Its fingerprint is recorded with every run.",
+}

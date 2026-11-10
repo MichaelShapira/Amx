@@ -29,7 +29,7 @@ def test_every_input_has_help_text():
     """The reader is a product manager: every control that takes a decision carries a help icon."""
     at = AppTest.from_file(APP, default_timeout=60)
     at.run()
-    for page in ("New run", "Migration calculator"):
+    for page in ("New run", "Test data", "Migration calculator"):
         at.sidebar.radio[0].set_value(page).run()
         assert not at.exception, at.exception
         widgets = [*at.selectbox, *at.multiselect, *at.number_input, *at.checkbox, *at.text_input, *at.text_area]
@@ -57,3 +57,21 @@ def test_new_run_uses_plain_language():
     # the YAML still carries the technical values
     yaml_text = next(c.value for c in at.code if "run:" in c.value)
     assert "suite: dspm" in yaml_text and "- W1" in yaml_text and "sla_preset: inline_standard" in yaml_text
+
+
+@pytest.mark.skipif(not (Path(__file__).resolve().parents[1] / "data/dspm/v1/test.jsonl.gz").exists(),
+                    reason="DSPM dataset not built locally")
+def test_test_data_page_shows_documents_with_expected_answers():
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    at.sidebar.radio[0].set_value("Test data").run()
+    at.radio[0].set_value("dspm").run()
+    assert not at.exception, at.exception
+    titles = [e.label for e in at.expander]
+    assert any("expected **" in t and "tokens" in t for t in titles), titles
+    assert any("classification policy" in t for t in titles)
+    # the New run page previews the data for the chosen scenarios
+    at.sidebar.radio[0].set_value("New run").run()
+    at.radio[0].set_value("dspm").run()
+    assert not at.exception, at.exception
+    assert any("Preview the test data" in e.label for e in at.expander)
