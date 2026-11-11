@@ -63,7 +63,7 @@ p { margin: 0 0 0.8em; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 pre { background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px; overflow: auto;
   white-space: pre-wrap; word-break: break-word; max-height: 420px; }
-button { font: inherit; }
+button { font: inherit; color: inherit; }
 input, select, textarea { font: inherit; color: var(--fg); background: var(--bg-2); border: 1px solid var(--line-2);
   border-radius: var(--radius-s); padding: 8px 10px; outline: none; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -144,7 +144,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 
 /* choice tiles */
 .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-.tile { border: 1.5px solid var(--line); border-radius: var(--radius); padding: 16px 18px; background: var(--bg-2); cursor: pointer; text-align: left;
+.tile { border: 1.5px solid var(--line); border-radius: var(--radius); padding: 16px 18px; background: var(--bg-2); color: var(--fg); cursor: pointer; text-align: left;
   transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s; position: relative; }
 .tile:hover { border-color: var(--accent-2); }
 .tile.selected { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
@@ -161,7 +161,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 
 /* chips */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.chip { padding: 7px 13px; border-radius: 999px; border: 1.5px solid var(--line-2); background: var(--bg-2); cursor: pointer; font-weight: 600; font-size: 13.5px; }
+.chip { padding: 7px 13px; border-radius: 999px; border: 1.5px solid var(--line-2); background: var(--bg-2); color: var(--fg); cursor: pointer; font-weight: 600; font-size: 13.5px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .chip:disabled { opacity: 0.45; cursor: not-allowed; }
 

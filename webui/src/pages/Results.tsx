@@ -81,7 +81,7 @@ export default function Results() {
             {out.comparability.blockers.map((b, i) => <Note key={i} kind="bad"><b>Not comparable.</b> {b}</Note>)}
             {out.comparability.warnings.map((b, i) => <Note key={"w" + i} kind="warn">{b}</Note>)}
             {out.analysis?.pairing.map((p, i) => <Note key={"p" + i} kind={p.fair ? "ok" : "warn"}><b>{p.fair ? "Fair instance pairing" : "Unfair instance pairing"}</b> — {p.reason}.</Note>)}
-            {out.analysis?.smoke && <Note kind="warn">Quick check: these numbers rest on fewer than 200 requests per level or fewer than 3 passes. They show the shape of the result, not a basis for a decision.</Note>}
+            {out.analysis?.smoke && <Note kind="warn">Quick check: these numbers rest on fewer than 200 requests per measurement, or the test was not repeated 3 times. They show the shape of the result, not a basis for a decision.</Note>}
           </div>
 
           {out.analysis && (
@@ -173,7 +173,7 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
         </div>
       )}
       <div className="row between mt">
-        <h3 style={{ margin: 0 }}>Across load levels</h3>
+        <h3 style={{ margin: 0 }}>As the number of requests at a time grows</h3>
         {view === "one" && (
           <select value={shown ?? ""} onChange={(e) => setSeries(e.target.value)}>{g.series.map((s) => <option key={s} value={s}>{s}</option>)}</select>
         )}

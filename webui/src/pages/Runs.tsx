@@ -31,7 +31,7 @@ export default function Runs() {
       {runs && (
         <div className="card">
           <table className="tbl">
-            <thead><tr><th>Run</th><th>Status <Help text="Running: in progress. Finished: the report is under Results. Refused by the pre-checks: nothing started (missing capacity, price, data or access); the reason is shown when you open the run." /></th><th>Grade <Help text="Decision-grade: at least 200 requests per level and 3 passes. Quick check: fewer; the report labels every number SMOKE." /></th><th>Instances</th><th>Last update (UTC)</th><th></th></tr></thead>
+            <thead><tr><th>Run</th><th>Status <Help text="Running: in progress. Finished: the report is under Results. Refused by the pre-checks: nothing started (missing capacity, price, data or access); the reason is shown when you open the run." /></th><th>Grade <Help text="Decision-grade: at least 200 requests per measurement and the test repeated 3 times. Quick check: fewer; the report marks every number as indicative only (SMOKE)." /></th><th>Instances</th><th>Last update (UTC)</th><th></th></tr></thead>
             <tbody>
               {runs.map((r) => (
                 <tr key={r.run_id} style={{ cursor: "pointer" }} onClick={() => nav(`/runs/${r.run_id}`)}>
@@ -71,7 +71,7 @@ export default function Runs() {
                 <thead><tr><th>Model</th><th>Hardware</th><th>Format</th><th>Software</th><th>Status</th><th className="num">Measurements</th><th>Error</th></tr></thead>
                 <tbody>{detail.cells.map((c, i) => <tr key={i}><td>{c.model}</td><td>{c.hardware_label}</td><td>{c.precision}</td><td>{c.engine}</td><td><Badge kind={statusKind(c.status)}>{c.status_label}</Badge></td><td className="num">{c.measurements}</td><td className="small muted">{c.error}</td></tr>)}</tbody>
               </table>
-              <h3 className="mt">Measurements <Help text="One row per concurrency level (and pass) of a model on a hardware option. 'Requests done' counts the requests sent so far; the accuracy pass of the detection use case classifies every test document once." /></h3>
+              <h3 className="mt">Measurements <Help text="One row per measurement: one load setting (requests at a time), one repetition, one model, one hardware option. 'Requests done' counts the requests sent so far; the accuracy pass of the detection use case classifies every test document once." /></h3>
               <table className="tbl">
                 <thead><tr><th>Model</th><th>Hardware</th><th>What</th><th className="num">Concurrent</th><th className="num">Batch</th><th className="num">Pass</th><th>Status</th><th className="num">Requests done</th><th className="num">Errors</th></tr></thead>
                 <tbody>{detail.levels.map((l, i) => <tr key={i}><td>{l.model}</td><td className="small">{l.hardware_label}</td><td>{l.what}</td><td className="num">{l.conc ?? "–"}</td><td className="num">{l.batch > 1 ? l.batch : "–"}</td><td className="num">{l.pass ?? "–"}</td><td><Badge kind={statusKind(l.status)}>{l.status_label}</Badge>{l.detail && <div className="tiny">{l.detail}</div>}</td><td className="num">{l.completed ?? "–"}</td><td className="num">{l.errors ?? "–"}</td></tr>)}</tbody>

@@ -38,7 +38,7 @@ export default function Home() {
           <h3>3 · What you get</h3>
           <p className="muted">
             A verdict per model in one sentence, head-to-head cards for the best GPU and best CPU measurement, charts across
-            load levels, and for sensitive-data detection the accuracy on a dataset with known answers.
+            load settings, and for sensitive-data detection the accuracy on a dataset with known answers.
           </p>
         </div>
       </div>
@@ -48,7 +48,7 @@ export default function Home() {
         <ol className="muted" style={{ lineHeight: 1.8 }}>
           <li><b>Use case.</b> Chat and text generation, or sensitive-data detection (DSPM / DLP). Each has its own test data and its own success criteria.</li>
           <li><b>Test data.</b> See what the models will be asked. For chat: prompts of a chosen length. For detection: the scenarios (bulk scan, inline DLP, …), with real example documents and their expected answers.</li>
-          <li><b>Quick check or full test.</b> A quick check takes under an hour and shows the shape of the result; it is labelled SMOKE and must not drive a decision. A full test collects 200 requests per level, three times, which is what the methodology needs for trustworthy percentiles.</li>
+          <li><b>Quick check or full test.</b> A quick check takes under an hour and shows the shape of the result; it is labelled SMOKE and must not drive a decision. A full test sends 200 requests for every measurement and repeats the whole test three times, which is what the methodology needs for trustworthy percentiles.</li>
           <li><b>Models.</b> One or more; each runs on every hardware option so the comparison is like for like.</li>
           <li><b>Hardware.</b> Pick a GPU and a CPU option. Press <b>Propose</b> and the tool suggests instance sizes with the reason for each: does the model fit in memory, is the price in the fair band against the other side, how many cores feed AMX, is it a single GPU, has this size had capacity problems recently.</li>
           <li><b>Load.</b> Single request, N concurrent requests, or batched requests (for classifiers). Run the hardware options in parallel or one after another. Decide what counts as acceptable: how long until the first word, how long per generated word.</li>

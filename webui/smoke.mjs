@@ -21,7 +21,13 @@ await shot("01-home");
 
 // wizard
 await page.goto(base + "/new");
+await page.evaluate(() => sessionStorage.removeItem("wizard"));
+await page.goto(base + "/new");
 await page.waitForSelector("text=1 · What do you want to size hardware for?");
+await page.click("text=Dark mode");
+await page.waitForTimeout(200);
+await shot("02a-step1-dark");
+await page.click("text=Light mode");
 await page.locator(".tile:has-text('Sensitive-data detection')").first().click();
 await shot("02-step1");
 await page.click("text=Next →");
@@ -42,6 +48,8 @@ const gpuTile = page.locator(".tile.gpu").first();
 await gpuTile.locator(".t").click();
 const cpuTile = page.locator(".tile.cpu").first();
 await cpuTile.locator(".t").click();
+const cpuCount = await page.locator(".tile.cpu").count();
+if (cpuCount !== 3) errors.push(`expected 3 CPU options (vLLM, OpenVINO, PyTorch), got ${cpuCount}`);
 await page.click("button:has-text('Propose')");
 await page.waitForSelector("text=recommended", { timeout: 30000 });
 await shot("05-step5-hardware-propose");
@@ -57,6 +65,8 @@ await page.waitForSelector("text=Wall-clock time", { timeout: 30000 });
 await shot("07-step7-review");
 const review = await text();
 if (!/Decision-grade/.test(review)) errors.push("review does not show decision-grade");
+if (!/requests at a time/.test(review)) errors.push("review load sentence missing");
+if (/per level|passes/.test(review)) errors.push("jargon on the review page: " + review.match(/.{30}(per level|passes).{30}/)?.[0]);
 
 // data page
 await page.goto(base + "/data");

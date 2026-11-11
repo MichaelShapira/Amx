@@ -96,9 +96,9 @@ def comparability(summaries: list[dict]) -> dict:
     if d and shapes[0]["request_mode"] == "concurrent":
         shared = set.intersection(*(set(sh["concurrency"]) for sh in shapes))
         if shared:
-            warnings.append("Different concurrency levels; charts overlap only at " + ", ".join(map(str, sorted(shared))) + ".")
+            warnings.append("Different numbers of concurrent requests; charts overlap only at " + ", ".join(map(str, sorted(shared))) + ".")
         else:
-            blockers.append("No concurrency level in common: the runs never loaded the machines the same way.")
+            blockers.append("No number of concurrent requests in common: the runs never loaded the machines the same way.")
     if shapes[0]["request_mode"] == "batch":
         d, v = differ("batch_sizes")
         if d:

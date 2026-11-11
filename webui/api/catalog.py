@@ -87,16 +87,16 @@ PRESETS = {
     "bulk": ("Bulk scan", "Within 30 seconds; maximize documents per second. Scanning data at rest.", 30000),
 }
 DEPTHS = {
-    "quick": ("Quick check", "50 requests per level, 1 pass. Shows the shape of the result in under an hour; every "
-                             "number is labelled SMOKE and must not drive a decision.", 50, 1),
-    "full": ("Full test", "200 requests per level, 3 passes: the minimum for decision-grade percentiles and a "
-                          "run-to-run variation figure.", 200, 3),
+    "quick": ("Quick check", "50 requests for each measurement, run once. Shows the shape of the result in under an "
+                             "hour; the report marks every number as indicative only (SMOKE), not a basis for a decision.", 50, 1),
+    "full": ("Full test", "200 requests for each measurement, repeated 3 times: the minimum for trustworthy percentiles "
+                          "and for seeing whether a result repeats.", 200, 3),
 }
 REQUEST_MODES = {
     "single": ("Single request", "One request at a time. Shows the best-case latency of each machine."),
-    "concurrent": ("Concurrent requests", "N requests kept in flight at once, as a service under load. Pick the levels "
-                                          "to measure; the verdict looks for the level where the machine still meets "
-                                          "your targets."),
+    "concurrent": ("Concurrent requests", "Several requests in flight at the same time, as a service under load. Pick "
+                                          "how many; each number is measured separately, and the verdict looks for the "
+                                          "highest one where the machine still meets your targets."),
     "batch": ("Batched requests", "Several inputs per request, N requests in flight. Available for classifier and "
                                   "detector models, which score inputs in batches; chat models take one prompt per "
                                   "request and the server batches concurrent requests itself."),

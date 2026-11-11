@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, defaultWizard, fmt, type Candidate, type Plan, type Proposal, type Side, type UseCase, type Wizard } from "../api";
+import { api, defaultWizard, fmt, type Candidate, type Catalog, type Plan, type Proposal, type Side, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
 import DataPreview from "../components/DataPreview";
 import { Badge, Chips, Help, Label, Note, Reasons, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
@@ -16,6 +16,14 @@ export default function NewRun() {
   });
   useEffect(() => { sessionStorage.setItem("wizard", JSON.stringify(w)); }, [w]);
   const set = (patch: Partial<Wizard>) => setW((p) => ({ ...p, ...patch }));
+  useEffect(() => {
+    if (!cat) return;
+    const known = new Set(cat.hardware.map((h) => h.id));
+    const seen = new Set<string>();
+    const cpus = w.cpus.filter((c) => known.has(c.hardware) && !seen.has(c.hardware) && seen.add(c.hardware));
+    const gpu = w.gpu && known.has(w.gpu.hardware) ? w.gpu : null;
+    if (cpus.length !== w.cpus.length || gpu !== w.gpu) set({ cpus, gpu });
+  }, [cat]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!cat) return <Spinner label="Loading the catalog…" />;
 
@@ -118,21 +126,21 @@ function StepDepth({ w, set }: SP) {
   return (
     <div>
       <h2>3 · Quick check or full test?</h2>
-      <p className="muted">More requests give steadier percentiles; three passes show whether a result repeats.</p>
+      <p className="muted">A measurement is one load setting (for example 10 requests at a time) on one hardware option. More requests per measurement give steadier percentiles; repeating the whole test shows whether a result holds.</p>
       <div className="tiles mb">
         {Object.entries(cat.depths).map(([k, d]) => (
-          <Tile key={k} selected={w.depth === k} onClick={() => set({ depth: k as any })} title={d.label} desc={d.help} badge={<Badge kind={k === "full" ? "ok" : "warn"}>{k === "full" ? "decision-grade" : "SMOKE label"}</Badge>} />
+          <Tile key={k} selected={w.depth === k} onClick={() => set({ depth: k as any })} title={d.label} desc={d.help} badge={<Badge kind={k === "full" ? "ok" : "warn"}>{k === "full" ? "decision-grade" : "indicative only"}</Badge>} />
         ))}
-        <Tile selected={w.depth === "custom"} onClick={() => set({ depth: "custom", requests: w.requests ?? 200, passes: w.passes ?? 3 })} title="Custom" desc="Set the request count and passes yourself.">
+        <Tile selected={w.depth === "custom"} onClick={() => set({ depth: "custom", requests: w.requests ?? 200, passes: w.passes ?? 3 })} title="Custom" desc="Choose the number of requests per measurement and how many times to repeat the test.">
           {w.depth === "custom" && (
             <div className="row mt" onClick={(e) => e.stopPropagation()}>
-              <label className="small">Requests per level <input type="number" min={1} max={100000} value={w.requests ?? 200} onChange={(e) => set({ requests: Number(e.target.value) })} style={{ width: 90 }} /></label>
-              <label className="small">Passes <input type="number" min={1} max={10} value={w.passes ?? 3} onChange={(e) => set({ passes: Number(e.target.value) })} style={{ width: 70 }} /></label>
+              <label className="small">Requests per measurement <input type="number" min={1} max={100000} value={w.requests ?? 200} onChange={(e) => set({ requests: Number(e.target.value) })} style={{ width: 90 }} /></label>
+              <label className="small">Repeat the test <input type="number" min={1} max={10} value={w.passes ?? 3} onChange={(e) => set({ passes: Number(e.target.value) })} style={{ width: 70 }} /></label>
             </div>
           )}
         </Tile>
       </div>
-      <Note>{w.depth === "full" || (w.depth === "custom" && (w.requests ?? 0) >= 200 && (w.passes ?? 0) >= 3) ? "This run will be decision-grade." : "This run will be a quick check: every number in the report carries the SMOKE label and must not drive a buying decision."}</Note>
+      <Note>{w.depth === "full" || (w.depth === "custom" && (w.requests ?? 0) >= 200 && (w.passes ?? 0) >= 3) ? "This run will be decision-grade." : "This run will be a quick check: the report marks every number as indicative only (SMOKE); it must not drive a buying decision."}</Note>
     </div>
   );
 }
@@ -289,18 +297,18 @@ function StepLoad({ w, set }: SP) {
       </div>
       {w.request_mode !== "single" && (
         <>
-          <Label help="How many requests are kept in flight at the same time, per hardware option. Each level is a separate measurement. Latency rises and throughput rises with concurrency; the verdict looks for the level where the machine still meets your targets.">Concurrent requests (pick the levels to measure)</Label>
+          <Label help="How many requests are in flight at the same time on each hardware option. Each number you pick is measured separately. Waiting time and throughput both rise with more concurrent requests; the verdict looks for the highest number where the machine still meets your targets.">How many requests at a time? (pick one or more)</Label>
           <Chips options={levels} value={w.concurrency} onChange={(v) => set({ concurrency: v.length ? v : [1] })} labels={(c) => cat.concurrency_hints[String(c)] ? `${c} · ${cat.concurrency_hints[String(c)]}` : String(c)} />
         </>
       )}
       {w.request_mode === "batch" && (
         <div className="mt">
-          <Label help="Inputs per request. Classifiers score a batch in one pass; larger batches raise throughput and latency together.">Inputs per request (batch sizes)</Label>
+          <Label help="How many inputs go into one request. Classifiers score a whole batch in one go; larger batches raise throughput and waiting time together.">Inputs per request (pick one or more)</Label>
           <Chips options={[1, 4, 8, 16, 32, 64]} value={w.batch_sizes} onChange={(v) => set({ batch_sizes: v.length ? v : [8] })} />
         </div>
       )}
       <div className="hr" />
-      <h3>What counts as acceptable? <Help text="The service levels a hardware option must meet to count. The report marks every measurement that meets them, then picks the fastest GPU and the fastest CPU among those. Capacity (can the CPU side match the GPU's throughput with a reasonable number of machines) decides the verdict; cost is shown alongside." /></h3>
+      <h3>What counts as acceptable? <Help text="The limits a hardware option must meet to count. The report marks every measurement that meets them, then picks the fastest GPU and the fastest CPU among those. Capacity (can the CPU side match the GPU's throughput with a reasonable number of machines) decides the verdict; cost is shown alongside." /></h3>
       {w.use_case === "standard" ? (
         <div className="grid c3">
           <div><Label help="The longest acceptable wait before the answer starts appearing, for 99 of 100 requests. 2,000 ms is a common chat target. Empty = no limit.">First word within (ms)</Label>
@@ -317,6 +325,26 @@ function StepLoad({ w, set }: SP) {
       )}
     </div>
   );
+}
+
+function list(xs: (number | string)[]): string {
+  const a = xs.map(String);
+  return a.length <= 1 ? a.join("") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+}
+
+/** "one request at a time", "1, 4 and 16 requests at a time", "batches of 8 and 32 inputs, 4 requests at a time". */
+export function loadSentence(w: Wizard): string {
+  if (w.request_mode === "single") return "one request at a time";
+  const conc = w.concurrency.length === 1 ? `${w.concurrency[0]} request${w.concurrency[0] === 1 ? "" : "s"} at a time` : `${list(w.concurrency)} requests at a time (each measured separately)`;
+  if (w.request_mode === "batch") return `batches of ${list(w.batch_sizes)} inputs per request, ${conc}`;
+  return conc;
+}
+
+export function depthSentence(w: Wizard, cat: Catalog): string {
+  const req = w.depth === "custom" ? w.requests ?? 200 : cat.depths[w.depth].requests;
+  const passes = w.depth === "custom" ? w.passes ?? 3 : cat.depths[w.depth].passes;
+  const grade = req >= 200 && passes >= 3 ? "decision-grade" : "a quick check, indicative only";
+  return `${req} requests for each measurement, ${passes === 1 ? "run once" : `repeated ${passes} times`}: ${grade}`;
 }
 
 function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => void }) {
@@ -342,9 +370,9 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
             <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
             <li>Models: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
             <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}</li>
-            <li>{cat.request_modes[w.request_mode].label}{w.request_mode !== "single" ? ` at ${w.concurrency.join(", ")} concurrent` : ""}{w.request_mode === "batch" ? `, batches of ${w.batch_sizes.join(", ")}` : ""}</li>
-            <li>{w.depth === "custom" ? `${w.requests} requests per level, ${w.passes} passes` : cat.depths[w.depth].label}</li>
-            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word ≤", p50_tpot_ms: "per word ≤", p99_e2e_ms: "whole answer ≤" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
+            <li>Load: {loadSentence(w)}</li>
+            <li>{depthSentence(w, cat)}</li>
+            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: "whole answer within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
           </ul>
           <Label help="A short label for this run; it appears in the run list and in file names.">Run name</Label>
           <input value={w.name} placeholder={`${w.use_case}-${new Date().toISOString().slice(5, 10)}`} onChange={(e) => set({ name: e.target.value })} />
@@ -356,7 +384,7 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
             <div className="grid c3">
               <div className="metric"><div className="k">Wall-clock time</div><div className="v">{plan.estimate.wall_clock_hours.toFixed(1)} h</div><div className="d muted">assumed speeds until measured</div></div>
               <div className="metric"><div className="k">Cost</div><div className="v">{fmt.usd(plan.estimate.usd.total)}</div><div className="d muted">On-Demand rates; Spot is usually 30–70% less</div></div>
-              <div className="metric"><div className="k">Grade</div><div className="v" style={{ fontSize: 18 }}>{plan.grade === "full" ? "Decision-grade" : "Quick check"}</div><div className="d muted">{plan.grade === "full" ? "≥200 requests × 3 passes" : "labelled SMOKE"}</div></div>
+              <div className="metric"><div className="k">Grade</div><div className="v" style={{ fontSize: 18 }}>{plan.grade === "full" ? "Decision-grade" : "Quick check"}</div><div className="d muted">{plan.grade === "full" ? "200+ requests per measurement, repeated 3 times" : "indicative only"}</div></div>
             </div>
           )}
           {plan && (
