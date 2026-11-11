@@ -223,13 +223,20 @@ themes; GPU is always green and CPU always blue.
   help icon.
 - **Test data**: the full dataset browser with filters by scenario, expected answer and hard-negative
   type, and the classification policy.
-- **Runs**: progress per model-on-hardware and per measurement, in words.
+- **Runs**: per hardware option the live instance state, its market (Spot, On-Demand, or On-Demand
+  as a fallback after 10 minutes without Spot capacity), capacity refusals and interruptions;
+  per model-on-hardware what it is waiting for (the instance, the previous model, loading);
+  per measurement the progress. Runs stopped or failed outside the normal path are reconciled
+  with Step Functions.
 - **Results**: one run or several side by side. The comparability check runs on every selection
   (same use case, same data and answer length, same request shape, fair instance pairing) and
   blocks or warns in words. Per model: a verdict sentence, head-to-head GPU and CPU cards with
   deltas, how many CPU instances replace one GPU with the limit drawn, and throughput /
   responsiveness / cost across load levels with the target line; "one at a time" shows a single
-  hardware option. Targets are editable and everything is re-judged.
+  hardware option. Targets are editable and everything is re-judged. **Executive summary**: one
+  button sends the computed findings (never raw data) to the newest Claude Opus available on
+  Amazon Bedrock in the account (discovered at call time, `us.` inference profile) and renders a
+  450-word summary with the exact numbers; cached per selection, one Bedrock call per generation.
 
 `webui/smoke.mjs` drives every page headlessly with Playwright and fails on any console error;
 `tests/test_webui_api.py` covers the API offline.

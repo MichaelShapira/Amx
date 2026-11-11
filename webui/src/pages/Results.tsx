@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, fmt, type CompareOut, type Group, type RunRow, type SummaryInfo } from "../api";
+import Markdown from "react-markdown";
+import { api, fmt, type CompareOut, type ExecSummary, type Group, type RunRow, type SummaryInfo } from "../api";
 import { useCatalog } from "../App";
 import { Badge, Help, Label, Metric, Note, Spinner, Toggle } from "../components/ui";
 import { Curves, InstancesBar } from "../components/Charts";
@@ -118,6 +119,7 @@ export default function Results() {
                   <Toggle value={view} onChange={(v) => setView(v)} options={[{ value: "all", label: "All hardware options" }, { value: "one", label: "One at a time" }]} />
                 </div>
               </div>
+              <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} />
               {out.analysis.groups.map((g) => <GroupView key={g.key} g={g} view={view} series={series} setSeries={setSeries} limit={limit} target={(sla?.[g.units.lat_sla] as number | null | undefined) ?? null} />)}
               {out.analysis.warnings.length > 0 && (
                 <div className="card mt"><h3>Notes from the reports</h3><ul className="muted small">{Array.from(new Set(out.analysis.warnings)).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
@@ -185,6 +187,37 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
           <tbody>{g.points.map((p, i) => <tr key={i}><td><Badge kind={p.side}>{p.side.toUpperCase()}</Badge> {p.series.replace(/^(GPU|CPU) · /, "")}</td><td className="num">{p.conc}</td><td className="num">{p.batch > 1 ? p.batch : "–"}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">{fmt.n(p.latency)}</td><td className="num">{fmt.n(p.e2e_p50)}</td><td className="num">{fmt.usd(p.cost)}</td><td className="num">{fmt.n(p.error_pct, 1)}</td><td>{p.meets ? <Badge kind="ok">yes</Badge> : <Badge kind="bad">{p.reason || "no"}</Badge>}</td><td className="tiny">{p.run_id}</td></tr>)}</tbody>
         </table>
       </details>
+    </div>
+  );
+}
+
+
+function ExecutiveSummary({ runIds, sla, limit, models }: { runIds: string[]; sla: Record<string, number | string | null> | null; limit: number; models: string[] | null }) {
+  const [model, setModel] = useState<{ name: string; call_id: string } | null>(null);
+  const [res, setRes] = useState<ExecSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { api.execModel().then(setModel).catch((e) => setErr(e.message)); }, []);
+  useEffect(() => { setRes(null); }, [runIds.join(","), JSON.stringify(sla), limit, JSON.stringify(models)]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const go = async (force = false) => {
+    setBusy(true); setErr(null);
+    try { setRes(await api.execSummary({ run_ids: runIds, sla: sla ?? undefined, limit, models: models ?? undefined, force })); }
+    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card mt">
+      <div className="row between">
+        <div>
+          <h3 style={{ margin: 0 }}>Executive summary <Help text="A written summary of the findings below, produced by the newest Claude Opus model available on Amazon Bedrock in this account. The model only sees the computed findings (verdicts, best measurements, instance counts, accuracy, caveats) and is instructed to use no number that is not in them. It is regenerated when you change the runs or the targets; each generation is one Bedrock call billed to this account." /></h3>
+          <div className="small muted">{model ? `Written by ${model.name} (Bedrock, ${model.call_id})` : err ? "" : "Looking up the newest Opus on Bedrock…"}{res ? ` · ${res.generated_at.replace("T", " ").slice(0, 16)} UTC · ${res.seconds}s · ${res.usage.inputTokens + res.usage.outputTokens} tokens` : ""}</div>
+        </div>
+        <div className="row">
+          {res && <button className="btn sm" onClick={() => go(true)} disabled={busy}>Rewrite</button>}
+          {!res && <button className="btn primary" onClick={() => go(false)} disabled={busy || !model}>{busy ? <Spinner label="Writing…" /> : "Write the executive summary"}</button>}
+        </div>
+      </div>
+      {err && <Note kind="bad">{err}</Note>}
+      {res && <div className="prose mt"><Markdown>{res.markdown}</Markdown></div>}
     </div>
   );
 }

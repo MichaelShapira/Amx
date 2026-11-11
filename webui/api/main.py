@@ -286,9 +286,107 @@ def _table():
     return boto3.resource("dynamodb", region_name=REGION).Table("amx-gpu-bench")
 
 
-RUN_STATUS = {"running": "Running", "complete": "Finished", "refused": "Refused by the pre-checks", "planned": "Planned"}
-CELL_STATUS = {"planned": "Planned", "configuring": "Starting the model server", "ready": "Serving",
-               "bringup_failed": "Failed to start", "interrupted": "Instance lost, replacing it", "failed": "Failed"}
+RUN_STATUS = {"running": "Running", "complete": "Finished", "refused": "Refused by the pre-checks", "planned": "Starting",
+              "stopped": "Stopped by the operator", "failed": "Failed", "timed_out": "Timed out"}
+SFN_STATUS = {"ABORTED": "stopped", "FAILED": "failed", "TIMED_OUT": "timed_out"}
+CELL_STATUS = {"planned": "Waiting", "configuring": "Loading the model", "ready": "Measuring",
+               "bringup_failed": "Failed to start", "interrupted": "Instance lost, replacing it", "failed": "Failed",
+               "done": "Done"}
+INSTANCE_STATE = {"pending": "Starting", "running": "Running", "stopping": "Stopping", "stopped": "Stopped",
+                  "shutting-down": "Terminating", "terminated": "Terminated"}
+
+
+def _s3_json(key: str):
+    import boto3
+
+    try:
+        return json.loads(boto3.client("s3", region_name=REGION).get_object(Bucket=_outputs()["BucketName"], Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001 - absent until the first event
+        return None
+
+
+def _instance_states(ids: list[str]) -> dict[str, dict]:
+    if not ids:
+        return {}
+    import boto3
+
+    out = {}
+    try:
+        r = boto3.client("ec2", region_name=REGION).describe_instances(InstanceIds=ids)
+        for res in r["Reservations"]:
+            for i in res["Instances"]:
+                out[i["InstanceId"]] = {"state": i["State"]["Name"], "type": i["InstanceType"],
+                                        "lifecycle": "spot" if i.get("InstanceLifecycle") == "spot" else "on-demand",
+                                        "launched_at": i["LaunchTime"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                        "reason": (i.get("StateReason") or {}).get("Message")}
+    except Exception as e:  # noqa: BLE001 - an id may have aged out of describe-instances
+        out["_error"] = {"state": None, "error": str(e)[:120]}
+    out.pop("_error", None)
+    return out
+
+
+def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: dict) -> list[dict]:
+    """Per hardware option: the instance that serves it, its live state, market, whether On-Demand
+    came from a Spot fallback, capacity refusals and interruptions, in one sentence."""
+    out = []
+    for tid in target_ids:
+        events = _s3_json(f"runs/{run_id}/targets/{tid}.json") or []
+        caps = _s3_json(f"runs/{run_id}/capacity/{tid}.json") or []
+        launches = [e for e in events if e.get("event") in ("launched", "started", "reused")]
+        last = launches[-1] if launches else None
+        live = _instance_states([last["instance_id"]]).get(last["instance_id"]) if last else None
+        interruptions = [e for e in events if e.get("event") == "interrupted"]
+        requested = next((e.get("requested") for e in reversed(events) if e.get("requested")), None)
+        lifecycle = (live or {}).get("lifecycle") or (last or {}).get("lifecycle")
+        fallback = bool(requested == "spot" and lifecycle == "on-demand")
+        state = (live or {}).get("state")
+        market = None
+        if lifecycle:
+            market = "Spot" if lifecycle == "spot" else ("On-Demand (fell back from Spot: no Spot capacity for 10 minutes)"
+                                                        if fallback else "On-Demand")
+        if last is None:
+            if caps:
+                tried = sorted({f"{c.get('instance_type')} {c.get('market', '')}".strip() for c in caps})
+                phrase = f"Waiting for capacity: refused {len(caps)} time(s) so far ({', '.join(tried)})"
+            else:
+                phrase = "Finished without an instance" if run_finished else "Requesting an instance"
+        elif live is None:
+            # EC2 forgets terminated instances after about an hour: the run's own log is the record.
+            ended = "Terminated after the run" if lifecycle == "spot" else "Stopped after the run"
+            phrase = f"{ended if run_finished else 'No longer present'} · {market}" if market else ended
+            state = "gone"
+        else:
+            label = INSTANCE_STATE.get(state or "", state or "unknown")
+            phrase = f"{label} · {market}" if market else label
+            if state == "running" and (live or {}).get("launched_at"):
+                phrase += f" · since {live['launched_at'][11:16]} UTC"
+            if interruptions:
+                phrase += f" · {len(interruptions)} Spot interruption(s), replaced"
+            if caps and not interruptions:
+                phrase += f" · after {len(caps)} capacity refusal(s)"
+        out.append({"hardware": tid, "hardware_label": hw.get(tid, {}).get("label", tid),
+                    "instance_id": (last or {}).get("instance_id"), "instance_type": (live or last or {}).get("type") or (last or {}).get("instance_type"),
+                    "state": state, "state_label": INSTANCE_STATE.get(state or "", state), "lifecycle": lifecycle, "requested": requested,
+                    "fallback_from_spot": fallback, "capacity_refusals": len(caps), "interruptions": len(interruptions),
+                    "launched_at": (live or {}).get("launched_at") or (last or {}).get("time"), "status": phrase,
+                    "events": [{k: e.get(k) for k in ("time", "event", "instance_id", "instance_type", "lifecycle", "state_reason")}
+                               for e in events][-8:]})
+    return out
+
+
+def derive_cell_status(cell: dict, siblings: list[dict], target: dict | None, run_status: str) -> str:
+    """'planned' is ambiguous: say what the cell is waiting for."""
+    s = cell.get("status")
+    if s != "planned":
+        return CELL_STATUS.get(s, s)
+    if run_status == "complete":
+        return "Not run"
+    if target and target.get("state") != "running":
+        return "Waiting for the instance" if target.get("instance_id") else "Waiting for an instance (capacity)"
+    busy = [c for c in siblings if c is not cell and c.get("status") in ("configuring", "ready")]
+    if busy:
+        return f"Queued behind {busy[0]['model']}"
+    return "About to start"
 LEVEL_STATUS = {"running": "Running", "done": "Done", "failed": "Failed", "incomplete": "Stopped early",
                 "pending": "Waiting to be re-run"}
 
@@ -306,9 +404,31 @@ def list_runs():
             break
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
     items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    _reconcile(items)
     return [{"run_id": i["pk"][4:], "status": i.get("status"), "status_label": RUN_STATUS.get(i.get("status"), i.get("status")),
              "updated_at": i.get("updated_at"), "grade": "quick" if i.get("smoke") else "full", "purchase": i.get("purchase"),
              "n_cells": i.get("n_cells"), "errors": i.get("errors")} for i in items]
+
+
+def _reconcile(items: list[dict]) -> None:
+    """A run whose Step Functions execution ended without the aggregation step (stopped, failed,
+    timed out) keeps its last status in the table; ask Step Functions and record what happened."""
+    import boto3
+
+    sfn = boto3.client("stepfunctions", region_name=REGION)
+    base = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
+    for i in items:
+        if i.get("status") not in ("running", "planned"):
+            continue
+        try:
+            ex = sfn.describe_execution(executionArn=f"{base}:{i['pk'][4:]}")
+        except Exception:  # noqa: BLE001 - executions older than 90 days are gone; leave the row as is
+            continue
+        new = SFN_STATUS.get(ex["status"])
+        if new:
+            i["status"] = new
+            _table().update_item(Key={"pk": i["pk"], "sk": "META"}, UpdateExpression="SET #s = :s",
+                                 ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": new})
 
 
 def _parse_level(level_key: str, cell_key: str) -> dict:
@@ -359,10 +479,19 @@ def get_run(run_id: str):
                            "status_label": LEVEL_STATUS.get(i.get("status"), i.get("status")),
                            "completed": i.get("completed"), "errors": i.get("errors"), "detail": (i.get("error") or i.get("reason") or "")[:200]})
     done = sum(1 for lv in levels if lv["status"] == "done")
+    finished = meta.get("status") in ("complete", "refused")
+    targets = target_status(run_id, sorted({c["hardware"] for c in cells}), finished, hw) if meta.get("status") != "refused" else []
+    tmap = {t["hardware"]: t for t in targets}
+    for c in cells:
+        sibs = [x for x in cells if x["hardware"] == c["hardware"]]
+        c["status_label"] = derive_cell_status(c, sibs, tmap.get(c["hardware"]), meta.get("status"))
+        if c["status"] == "ready" and all(lv["status"] in ("done", "failed") for lv in levels
+                                          if lv["hardware"] == c["hardware"] and lv["model"] == c["model"]) and levels:
+            c["status_label"] = "Done"
     return {"run_id": run_id, "status": meta.get("status"), "status_label": RUN_STATUS.get(meta.get("status"), meta.get("status")),
             "grade": "quick" if meta.get("smoke") else "full", "purchase": meta.get("purchase"), "updated_at": meta.get("updated_at"),
             "refusal": meta.get("errors") if meta.get("status") == "refused" else None,
-            "progress": {"done": done, "total": len(levels)}, "cells": cells,
+            "progress": {"done": done, "total": len(levels)}, "cells": cells, "targets": targets,
             "levels": sorted(levels, key=lambda x: (x["hardware"], x["model"], x["what"], x["conc"] or 0, x["pass"] or 0)),
             "has_report": meta.get("status") == "complete"}
 
@@ -373,6 +502,8 @@ def stop_run(run_id: str):
 
     arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
     boto3.client("stepfunctions", region_name=REGION).stop_execution(executionArn=f"{arn}:{run_id}", cause="stopped from the UI")
+    _table().update_item(Key={"pk": f"RUN#{run_id}", "sk": "META"}, UpdateExpression="SET #s = :s",
+                         ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "stopped"})
     return {"stopped": run_id}
 
 
@@ -425,6 +556,42 @@ def post_compare(c: CompareIn):
             g["points"] = [p for p in g["points"] if p["series"] in c.series]
     return {"comparability": comp, "sla": sla, "analysis": analysis,
             "runs": [{"run_id": s["run_id"], "shape": compare.shape(s), "smoke": s.get("smoke")} for s in sums]}
+
+
+class SummaryIn(CompareIn):
+    force: bool = False
+
+
+@app.get("/api/executive-summary/model")
+def exec_model():
+    import boto3
+
+    from webui.api import exec_summary
+
+    try:
+        return exec_summary.newest_opus(boto3.client("bedrock", region_name=REGION))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"Bedrock is not reachable: {str(e)[:200]}") from e
+
+
+@app.post("/api/executive-summary")
+def exec_summary_post(c: SummaryIn):
+    """Executive summary of the current comparison, written by the newest Opus on Bedrock.
+    Cached per (runs, targets, limit, models) so re-rendering the page does not re-bill."""
+    from webui.api import exec_summary
+
+    out = post_compare(CompareIn(run_ids=c.run_ids, sla=c.sla, limit=c.limit, models=c.models))
+    if not out["analysis"]:
+        raise HTTPException(400, "the selected runs are not comparable; fix that first")
+    key = "exec:" + json.dumps({"r": sorted(c.run_ids), "s": out["sla"], "l": c.limit, "m": c.models}, sort_keys=True, default=str)
+    if key in _CACHE and not c.force:
+        return _CACHE[key]
+    try:
+        res = exec_summary.write(out["analysis"], out["comparability"], out["sla"], out["runs"])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Bedrock call failed: {str(e)[:300]}") from e
+    _CACHE[key] = res
+    return res
 
 
 @app.get("/api/runs/{run_id}/report.md")

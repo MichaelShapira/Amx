@@ -216,3 +216,10 @@ details summary { cursor: pointer; font-weight: 600; }
 .kbd { font-family: ui-monospace, monospace; background: var(--bg-3); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); font-size: 12.5px; }
 .spin { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* generated prose */
+.prose h2 { font-size: 16px; margin: 18px 0 6px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
+.prose h2:first-child { margin-top: 4px; }
+.prose p, .prose li { color: var(--fg); font-size: 14.5px; }
+.prose ul { padding-left: 20px; }
+.prose strong { font-weight: 650; }

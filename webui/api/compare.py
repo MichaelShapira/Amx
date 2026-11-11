@@ -28,7 +28,7 @@ def shape(summary: dict) -> dict:
     run = summary.get("run") or {}
     s = {"use_case": run.get("suite"), "request_mode": request_mode(run), "concurrency": sorted(run.get("concurrency") or []),
          "batch_sizes": run.get("batch_sizes"), "grade": "quick" if summary.get("smoke") else "full",
-         "requests_per_level": (run.get("per_level") or {}).get("requests"), "passes": run.get("repeats")}
+         "requests_per_measurement": (run.get("per_level") or {}).get("requests"), "repeats": run.get("repeats")}
     if run.get("suite") == "standard":
         s.update(prompt_set=run.get("prompt_set"), answer_tokens=(run.get("sampling") or {}).get("max_new_tokens"),
                  temperature=(run.get("sampling") or {}).get("temperature"))

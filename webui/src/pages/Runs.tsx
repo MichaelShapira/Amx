@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type RunDetail, type RunRow } from "../api";
 import { Badge, Help, Note, Spinner } from "../components/ui";
 
-const statusKind = (s: string) => (s === "complete" || s === "done" || s === "ready" ? "ok" : s === "running" || s === "configuring" || s === "planned" ? "accent" : s === "interrupted" || s === "incomplete" || s === "pending" ? "warn" : "bad");
+const statusKind = (s: string) => (s === "complete" || s === "done" || s === "ready" ? "ok" : s === "running" || s === "configuring" ? "accent" : s === "planned" || s === "stopped" ? undefined : s === "interrupted" || s === "incomplete" || s === "pending" ? "warn" : "bad");
 
 export default function Runs() {
   const { id } = useParams();
@@ -66,7 +66,23 @@ export default function Runs() {
               </div>
               <div className="progress mt"><div style={{ width: `${(100 * detail.progress.done) / Math.max(1, detail.progress.total)}%` }} /></div>
               {detail.refusal && <Note kind="bad" ><b>Refused by the pre-checks:</b> {detail.refusal.join("; ")}</Note>}
-              <h3 className="mt">Models on hardware options <Help text="One row per model served on one hardware option. The instance is started, the model loaded, then the measurements below run one after another." /></h3>
+              {detail.targets.length > 0 && (
+                <>
+                  <h3 className="mt">Instances <Help text="One test instance per hardware option. The state comes live from EC2; the market says whether it is a Spot or an On-Demand instance and, for On-Demand, whether it was a fallback after 10 minutes without Spot capacity. Capacity refusals and Spot interruptions seen during this run are counted." /></h3>
+                  <table className="tbl">
+                    <thead><tr><th>Hardware option</th><th>Instance</th><th>State</th><th>Market</th><th>Status</th></tr></thead>
+                    <tbody>{detail.targets.map((t) => (
+                      <tr key={t.hardware}>
+                        <td><Badge kind={t.hardware_label.startsWith("GPU") ? "gpu" : "cpu"}>{t.hardware_label.startsWith("GPU") ? "GPU" : "CPU"}</Badge> {t.hardware_label.replace(/^(GPU|CPU) · /, "")}</td>
+                        <td className="small">{t.instance_type ?? "–"}{t.instance_id ? <div className="tiny">{t.instance_id}</div> : null}</td>
+                        <td>{t.state ? <Badge kind={t.state === "running" ? "ok" : t.state === "pending" ? "accent" : t.state === "gone" || t.state === "terminated" || t.state === "stopped" ? undefined : "warn"}>{t.state === "gone" ? "Gone" : t.state_label}</Badge> : <Badge kind="warn">{t.capacity_refusals ? "No capacity yet" : "Not launched"}</Badge>}</td>
+                        <td>{t.lifecycle ? <Badge kind={t.lifecycle === "spot" ? "accent" : t.fallback_from_spot ? "warn" : undefined}>{t.lifecycle === "spot" ? "Spot" : t.fallback_from_spot ? "On-Demand (fallback from Spot)" : "On-Demand"}</Badge> : <span className="muted">–</span>}</td>
+                        <td className="small">{t.status}{t.events.length > 0 && <details className="tiny"><summary>history</summary>{t.events.map((e, i) => <div key={i}>{e.time?.slice(11, 19)} {e.event}{e.instance_type ? ` ${e.instance_type}` : ""}{e.lifecycle ? ` (${e.lifecycle})` : ""}{e.state_reason ? ` · ${e.state_reason}` : ""}</div>)}</details>}</td>
+                      </tr>))}</tbody>
+                  </table>
+                </>
+              )}
+              <h3 className="mt">Models on hardware options <Help text="One row per model served on one hardware option. Models on the same instance run one after another: Waiting for the instance → Loading the model → Measuring → Done. 'Queued behind X' means another model is using the instance right now." /></h3>
               <table className="tbl">
                 <thead><tr><th>Model</th><th>Hardware</th><th>Format</th><th>Software</th><th>Status</th><th className="num">Measurements</th><th>Error</th></tr></thead>
                 <tbody>{detail.cells.map((c, i) => <tr key={i}><td>{c.model}</td><td>{c.hardware_label}</td><td>{c.precision}</td><td>{c.engine}</td><td><Badge kind={statusKind(c.status)}>{c.status_label}</Badge></td><td className="num">{c.measurements}</td><td className="small muted">{c.error}</td></tr>)}</tbody>

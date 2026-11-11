@@ -58,13 +58,19 @@ export interface Plan {
 }
 
 export interface RunRow { run_id: string; status: string; status_label: string; updated_at: string; grade: "quick" | "full"; purchase: string; n_cells: number }
+export interface TargetStatus {
+  hardware: string; hardware_label: string; instance_id: string | null; instance_type: string | null; state: string | null; state_label: string | null;
+  lifecycle: "spot" | "on-demand" | null; requested: string | null; fallback_from_spot: boolean; capacity_refusals: number; interruptions: number;
+  launched_at: string | null; status: string; events: { time: string; event: string; instance_id?: string; instance_type?: string; lifecycle?: string; state_reason?: string }[];
+}
+export interface ExecSummary { markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number }; seconds: number; generated_at: string }
 export interface RunDetail {
   run_id: string; status: string; status_label: string; grade: string; purchase: string; updated_at: string; refusal: string[] | null;
-  progress: { done: number; total: number }; has_report: boolean;
+  progress: { done: number; total: number }; has_report: boolean; targets: TargetStatus[];
   cells: { model: string; hardware: string; hardware_label: string; precision: string; engine: string; status: string; status_label: string; measurements: number; error: string }[];
   levels: { model: string; hardware: string; hardware_label: string; what: string; conc: number | null; batch: number; pass: number | null; status: string; status_label: string; completed: number; errors: number; detail: string }[];
 }
-export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; dataset?: string; policy?: string; requests_per_level?: number; passes?: number; test_items?: number }
+export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; dataset?: string; policy?: string; requests_per_measurement?: number; repeats?: number; test_items?: number }
 export interface SummaryInfo { run_id: string; shape: Shape; default_sla: Record<string, number | string>; models: string[]; hardware: string[]; instance_types: string[]; smoke: boolean; warnings: string[] }
 
 export interface Accuracy { recall: number; recall_ci: [number, number]; fpr: number; fpr_ci: [number, number]; precision: number; f1: number; format_adherence: number; agreement_with_gpu: number | null; qualifies_vs_gpu: boolean | null; fit: boolean }
@@ -110,6 +116,9 @@ export const api = {
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
   stop: (id: string) => j<any>(`/api/runs/${id}/stop`, { method: "POST" }),
   summary: (id: string) => j<SummaryInfo>(`/api/runs/${id}/summary`),
+  execModel: () => j<{ model_id: string; call_id: string; name: string; version: string }>("/api/executive-summary/model"),
+  execSummary: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; force?: boolean }) =>
+    j<ExecSummary>("/api/executive-summary", { method: "POST", body: JSON.stringify(body) }),
   compare: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; series?: string[] }) =>
     j<CompareOut>("/api/compare", { method: "POST", body: JSON.stringify(body) }),
 };

@@ -78,6 +78,10 @@ await page.goto(base + "/runs");
 await page.waitForSelector("table.tbl tbody tr", { timeout: 30000 });
 await page.locator("table.tbl tbody tr").first().click();
 await page.waitForSelector("text=Models on hardware options", { timeout: 30000 });
+await page.waitForSelector("text=Instances", { timeout: 30000 });
+const runsText = await text();
+if (/Planned/.test(runsText)) errors.push("'Planned' still shown on the Runs page");
+if (!/(Spot|On-Demand)/.test(runsText)) errors.push("instance market not shown");
 await shot("09-runs");
 
 // results: one run, then two comparable, then an incomparable pair
@@ -91,6 +95,9 @@ const pick = async (re) => { const i = names.findIndex((x) => re.test(x)); if (i
 await pick(/^smoke-m1-t1-t2-20261109T205743Z/);
 await page.waitForSelector("text=Verdict.", { timeout: 60000 });
 await shot("10-results-one");
+await page.click("button:has-text('Write the executive summary')");
+await page.waitForSelector("text=Bottom line", { timeout: 180000 });
+await shot("10b-results-exec-summary");
 const one = await text();
 if (!/To match one/.test(one)) errors.push("verdict sentence missing");
 // add a DSPM run: must be blocked as a different use case
