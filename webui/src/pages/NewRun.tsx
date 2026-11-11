@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, defaultWizard, fmt, type Candidate, type Catalog, type Plan, type Proposal, type Side, type UseCase, type Wizard } from "../api";
+import Markdown from "react-markdown";
+import { api, defaultWizard, fmt, type AiJob, type Catalog, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
 import DataPreview from "../components/DataPreview";
 import { Badge, Chips, Help, Label, Note, Reasons, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
@@ -171,9 +172,17 @@ function StepHardware({ w, set }: SP) {
   const cat = useCatalog()!;
   const gpuHw = cat.hardware.filter((h) => h.accelerator === "gpu");
   const cpuHw = cat.hardware.filter((h) => h.accelerator === "cpu");
-  const [prop, setProp] = useState<Proposal | null>(null);
+  const [sug, setSug] = useState<Suggestion | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sugErr, setSugErr] = useState<string | null>(null);
+  const [ai, setAi] = useState<AiJob | null>(null);
+  const [aiErr, setAiErr] = useState<string | null>(null);
   const chosenModels = cat.models.filter((m) => w.models.includes(m.id));
+  useEffect(() => {
+    if (!ai || ai.status !== "running") return;
+    const t = setInterval(() => api.aiProposeStatus(ai.id).then(setAi).catch((e) => { setAiErr(e.message); setAi(null); }), 2000);
+    return () => clearInterval(t);
+  }, [ai]);
 
   const precsFor = (hwId: string) => {
     const hw = cat.hardware.find((h) => h.id === hwId)!;
@@ -190,14 +199,26 @@ function StepHardware({ w, set }: SP) {
     if (w.gpu?.hardware === hwId) set({ gpu: { ...w.gpu, ...patch } });
     else set({ cpus: w.cpus.map((c) => (c.hardware === hwId ? { ...c, ...patch } : c)) });
   };
-  const propose = async () => {
-    setBusy(true);
-    try { setProp(await api.propose({ models: w.models, precision: w.precision, gpu_type: w.gpu?.instance_type ?? null, cpu_type: w.cpus[0]?.instance_type ?? null })); }
+  const suggest = async () => {
+    if (!w.gpu) return;
+    setBusy(true); setSugErr(null);
+    try { setSug(await api.suggest({ models: w.models, precision: w.precision, gpu_type: w.gpu.instance_type })); }
+    catch (e) { setSugErr((e as Error).message); }
     finally { setBusy(false); }
+  };
+  const aiPropose = async () => {
+    setAiErr(null);
+    try { const { job_id } = await api.aiProposeStart(w); setAi(await api.aiProposeStatus(job_id)); }
+    catch (e) { setAiErr((e as Error).message); }
+  };
+  const useCpu = (t: string) => {
+    if (w.cpus.length) set({ cpus: w.cpus.map((c) => ({ ...c, instance_type: t })) });
+    else set({ cpus: [{ hardware: cpuHw[0].id, instance_type: t, precisions: ["bf16"], alternates: cpuHw[0].alternates }] });
   };
   const gpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "gpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);
   const cpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "cpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);
-  const pair = prop?.pairing ?? null;
+  const currentCpu = w.cpus[0]?.instance_type;
+  const stale = sug && w.gpu && sug.gpu_type !== w.gpu.instance_type;
 
   const sideBlock = (hw: typeof cat.hardware[number], side: Side | undefined, kind: "gpu" | "cpu") => (
     <div key={hw.id} className={`tile ${kind} ${side ? "selected" : ""}`} style={{ cursor: "default" }}>
@@ -208,7 +229,7 @@ function StepHardware({ w, set }: SP) {
       </div>
       {side && (
         <div className="mt">
-          <Label help="The AWS instance size for this option. The report prices results with the On-Demand rate of the size that ran. Press Propose below for suggestions with reasons.">Instance size</Label>
+          <Label help={kind === "gpu" ? "The AWS instance size for the GPU side. Pick it first: the CPU suggestions below are sized against it. The report prices results with the On-Demand rate of the size that ran." : "The AWS instance size for this option. Press Auto suggest below for sizes matched to your GPU choice, with reasons."}>Instance size</Label>
           <select value={side.instance_type} onChange={(e) => setSide(hw.id, { instance_type: e.target.value })} style={{ width: "100%" }}>
             {(kind === "gpu" ? gpuTypes : cpuTypes).map((s) => <option key={s.type} value={s.type}>{s.type} · {instanceLine(s, true)}</option>)}
           </select>
@@ -236,20 +257,25 @@ function StepHardware({ w, set }: SP) {
       <div className="hr" />
       <div className="row between">
         <div>
-          <h3 style={{ margin: 0 }}>Propose instance sizes <Help text="Suggestions for each side, judged against your models and the other side's current choice: does the model fit in memory with room for the KV cache, is the hourly price within the fair band (half to double) of the other side, is it a single GPU, how many cores feed AMX, is it the current generation, and has this size had capacity problems in this zone recently." /></h3>
-          <div className="small muted">Based on {chosenModels.map((m) => m.name).join(", ") || "the chosen models"}{w.cpus[0] ? ` and the CPU choice ${w.cpus[0].instance_type}` : ""}{w.gpu ? ` and the GPU choice ${w.gpu.instance_type}` : ""}.</div>
+          <h3 style={{ margin: 0 }}>Which CPU size matches your GPU? <Help text="Auto suggest sizes the CPU side against the GPU you chose: the model's architecture and size set the minimum memory and number of AMX cores, and the hourly price decides fairness (half to double the GPU's price; the closer, the fairer). You get one best match and at most two alternatives; the rest are folded away. Propose with AI asks the newest Claude Opus on Amazon Bedrock to verify the whole selection against up-to-date facts from the web (prices, hardware, model support) and to recommend keeping or changing it." /></h3>
+          <div className="small muted">
+            {w.gpu ? <>Sized against <b>{w.gpu.instance_type}</b> for {chosenModels.map((m) => m.name).join(", ") || "the chosen models"}{w.precision !== "bf16" ? ` in ${cat.precisions[w.precision]?.label ?? w.precision}` : ""}.</>
+              : <>Tick the GPU option and pick its size first; CPU suggestions are sized against it.</>}
+          </div>
         </div>
-        <button className="btn primary" onClick={propose} disabled={busy || w.models.length === 0}>{busy ? <Spinner label="Thinking…" /> : "Propose"}</button>
+        <div className="row">
+          <button className="btn primary" onClick={suggest} disabled={busy || !w.gpu || w.models.length === 0} title={!w.gpu ? "Pick the GPU size first" : undefined}>{busy ? <Spinner label="Sizing…" /> : "Auto suggest"}</button>
+          <button className="btn" onClick={aiPropose} disabled={!w.gpu || w.cpus.length === 0 || w.models.length === 0 || ai?.status === "running"}
+            title={!w.gpu || w.cpus.length === 0 ? "Choose the GPU size and at least one CPU option first" : "Claude Opus on Bedrock checks the selection with web search (one to three minutes)"}>
+            {ai?.status === "running" ? <Spinner label="Checking…" /> : "Propose with AI"}
+          </button>
+        </div>
       </div>
-      {pair && (
-        <Note kind={pair.fair ? "ok" : "warn"}><b>{pair.fair ? "Fair comparison" : "Not a fair comparison"}</b> — {pair.reason}.</Note>
-      )}
-      {prop && (
-        <div className="grid c2 mt">
-          <CandidateList title="GPU sizes" kind="gpu" list={prop.gpu} current={w.gpu?.instance_type} onPick={(t) => { if (w.gpu) setSide(w.gpu.hardware, { instance_type: t }); else set({ gpu: { hardware: gpuHw[0].id, instance_type: t, precisions: ["bf16"], alternates: gpuHw[0].alternates } }); }} />
-          <CandidateList title="CPU sizes" kind="cpu" list={prop.cpu} current={w.cpus[0]?.instance_type} onPick={(t) => { if (w.cpus.length) set({ cpus: w.cpus.map((c) => ({ ...c, instance_type: t })) }); else set({ cpus: [{ hardware: cpuHw[0].id, instance_type: t, precisions: ["bf16"], alternates: cpuHw[0].alternates }] }); }} />
-        </div>
-      )}
+      {sugErr && <Note kind="bad">{sugErr}</Note>}
+      {aiErr && <Note kind="bad">{aiErr}</Note>}
+      {sug && stale && <Note kind="warn">These suggestions were sized against {sug.gpu_type}; you have since picked {w.gpu!.instance_type}. Press Auto suggest again.</Note>}
+      {sug && <SuggestionView sug={sug} current={currentCpu} onPick={useCpu} />}
+      {ai && <AiReviewView job={ai} onAgain={aiPropose} onPick={useCpu} cpuTypes={cpuTypes.map((s) => s.type)} />}
       <div className="hr" />
       <Label help="Run every hardware option at the same time (fastest; one instance per option is up at once) or one after another (fewer instances running at any moment; the run takes longer). Results are the same either way.">How to run the hardware options</Label>
       <Toggle value={w.parallel_targets ? "par" : "seq"} onChange={(v) => set({ parallel_targets: v === "par" })} options={[{ value: "par", label: "All in parallel" }, { value: "seq", label: "One after another" }]} />
@@ -275,21 +301,74 @@ function StepHardware({ w, set }: SP) {
   );
 }
 
-function CandidateList({ title, kind, list, current, onPick }: { title: string; kind: "gpu" | "cpu"; list: Candidate[]; current?: string; onPick: (t: string) => void }) {
-  const fitBadge = (f: Candidate["fit"]) => f === "recommended" ? <Badge kind="ok">recommended</Badge> : f === "possible" ? <Badge kind="warn">possible</Badge> : <Badge kind="bad">not advisable</Badge>;
+function SuggestCard({ c, current, onPick, big }: { c: Suggested; current?: string; onPick: (t: string) => void; big?: boolean }) {
+  const roleKind = c.role === "match" ? "ok" : c.role === "headroom" ? "accent" : "warn";
   return (
-    <div>
-      <h3><Badge kind={kind}>{title}</Badge></h3>
-      {list.map((c) => (
-        <div key={c.instance_type} className={`tile ${kind} ${current === c.instance_type ? "selected" : ""}`} style={{ marginBottom: 10, cursor: "default" }}>
-          <div className="row between">
-            <div className="t">{c.instance_type} {fitBadge(c.fit)}</div>
-            <button className="btn sm" onClick={() => onPick(c.instance_type)} disabled={current === c.instance_type}>{current === c.instance_type ? "Selected" : "Use this"}</button>
-          </div>
-          <div className="d">{instanceLine(c.spec)}</div>
-          <div className="mt"><Reasons reasons={c.reasons} /></div>
+    <div className={`tile cpu ${current === c.instance_type ? "selected" : ""}`} style={{ cursor: "default" }}>
+      <div className="row between">
+        <div className="t" style={big ? { fontSize: 18 } : undefined}>{c.instance_type} {c.role_label && <Badge kind={roleKind}>{c.role_label}</Badge>}{c.role_help && <Help text={c.role_help} />}</div>
+        <button className="btn sm" onClick={() => onPick(c.instance_type)} disabled={current === c.instance_type}>{current === c.instance_type ? "Selected" : "Use this"}</button>
+      </div>
+      <div className="d">{instanceLine(c.spec)}{c.ratio != null ? ` · the GPU costs ${c.ratio.toFixed(2)}x as much` : ""}</div>
+      <div className="mt"><Reasons reasons={c.reasons} /></div>
+    </div>
+  );
+}
+
+function SuggestionView({ sug, current, onPick }: { sug: Suggestion; current?: string; onPick: (t: string) => void }) {
+  return (
+    <div className="mt">
+      <Note kind="ok">{sug.basis.map((b, i) => <div key={i}>{b}</div>)}</Note>
+      {sug.error && <Note kind="bad">{sug.error}</Note>}
+      {sug.best && <div className="mt"><SuggestCard c={sug.best} current={current} onPick={onPick} big /></div>}
+      {sug.alternatives.length > 0 && <div className="grid c2 mt">{sug.alternatives.map((c) => <SuggestCard key={c.instance_type} c={c} current={current} onPick={onPick} />)}</div>}
+      {sug.others.length > 0 && (
+        <details className="mt"><summary className="small">Other fair sizes ({sug.others.length}) — also inside the price band, but a worse match on price, generation or memory type</summary>
+          <div className="chips mt">{sug.others.map((c) => <button key={c.instance_type} className={"chip " + (current === c.instance_type ? "on" : "")} onClick={() => onPick(c.instance_type)} title={c.reasons.filter((r) => !r.ok).map((r) => r.text).join(" ") || instanceLine(c.spec)}>{c.instance_type} · {instanceLine(c.spec, true)}</button>)}</div>
+        </details>
+      )}
+      {sug.rejected.length > 0 && (
+        <details className="mt"><summary className="small">Not suitable for this test ({sug.rejected.length} shown)</summary>
+          <ul className="small muted mt">{sug.rejected.map((c) => <li key={c.instance_type}><b>{c.instance_type}</b>: {c.reasons.filter((r) => !r.ok).map((r) => r.text).join(" ")}</li>)}</ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function AiReviewView({ job, onAgain, onPick, cpuTypes }: { job: AiJob; onAgain: () => void; onPick: (t: string) => void; cpuTypes: string[] }) {
+  const r = job.result;
+  const stepLine = (s: AiJob["steps"][number]) => s.kind === "search" ? `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})` : `Read: ${s.text}${s.error ? ` (${s.error})` : ""}`;
+  // Instance sizes the review names in its Recommendation section, offered as one-click picks.
+  const named = r ? Array.from(new Set((r.markdown.split(/## Recommendation/)[1] ?? "").split(/## Sources/)[0].match(/\b[a-z]\d[a-z]*\.\d*x?large\b/g) ?? [])).filter((t) => cpuTypes.includes(t)) : [];
+  return (
+    <div className="card mt" style={{ borderColor: "var(--accent)" }}>
+      <div className="row between">
+        <h3 style={{ margin: 0 }}>AI review of the selection <Help text="The newest Claude Opus available on Amazon Bedrock in this account receives the models, the GPU and CPU sizes, the test shape and this tool's own fairness judgement, then searches the web (prices, hardware specs, model and software support) to verify them and recommends keeping or changing the sizes. Everything it reads on the web is treated as data, not instructions; the sources it used are listed so you can check them." /></h3>
+        <div className="row small muted">
+          {job.model && <span>{job.model.name} · Bedrock</span>}
+          {job.status !== "running" && <button className="btn sm" onClick={onAgain}>Review again</button>}
         </div>
-      ))}
+      </div>
+      {job.status === "running" && (
+        <div className="mt">
+          <Spinner label={`Checking with web search… ${job.steps.length} step${job.steps.length === 1 ? "" : "s"} so far, ${Math.round(job.seconds)} s. This usually takes one to three minutes.`} />
+          <ul className="small muted mt">{job.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>
+        </div>
+      )}
+      {job.status === "error" && <Note kind="bad"><b>The AI review failed.</b> {job.error}</Note>}
+      {r && (
+        <>
+          <div className="prose mt"><Markdown>{r.markdown}</Markdown></div>
+          {named.length > 0 && (
+            <div className="row mt small"><span className="muted">Sizes named in the recommendation:</span>{named.map((t) => <button key={t} className="btn sm" onClick={() => onPick(t)}>Use {t}</button>)}</div>
+          )}
+          <details className="mt"><summary className="small">What the reviewer did ({r.tool_calls} web lookups, {r.seconds} s, {(r.usage.inputTokens / 1000).toFixed(0)}k tokens read)</summary>
+            <ul className="small muted mt">{r.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>
+          </details>
+          <div className="tiny muted mt">Written by {r.model.name} ({r.model.call_id}) at {r.generated_at}. The review is advice from a language model grounded in the pages it lists under Sources; check a source before acting on a number.</div>
+        </>
+      )}
     </div>
   );
 }

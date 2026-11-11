@@ -222,10 +222,20 @@ themes; GPU is always green and CPU always blue.
 - **Start here**: what the tool is for, how a run works, how to read the findings and compare runs.
 - **New benchmark**, a seven-step wizard: use case → test data with a live preview of the real
   prompts or documents and their expected answers → quick check or full test → models → hardware,
-  where **Propose** lists instance sizes for each side with the reason for each (does the model fit
-  in memory with room for the KV cache, is the hourly price in the fair band against the other
-  side, single GPU, cores feeding AMX, current generation, recent capacity refusals in this zone),
-  plus parallel or sequential execution and Spot or On-Demand → load (single request, N concurrent,
+  where you pick the GPU size first and **Auto suggest** sizes the CPU side against it: one best
+  match (closest hourly price, the fairest like-for-like), at most two alternatives ("more CPU
+  headroom" at the top of the fair band, "cheaper fair option" at the bottom), the rest folded
+  away. The model's architecture and size set the floor (a 3–4B chat model needs 16 vCPUs and
+  ~7.5 GiB for weights; a classifier needs 8), the price band decides fairness, previous-generation
+  and memory-optimized sizes are only fallbacks. **Propose with AI** sends the models, both sizes,
+  the test shape and the tool's own judgement to the newest Claude Opus on Amazon Bedrock, which
+  verifies them against current web data (prices, hardware specs, model and serving-software
+  support, public benchmarks) and recommends keeping or changing the sizes, with its sources
+  listed; the review runs as a background job (one to three minutes, ~90k input tokens) and the
+  page shows each search and page read as it happens. Claude on Bedrock has no server-side web
+  search, so the app provides `web_search` (DuckDuckGo, no key) and `fetch_page` tools over
+  Converse tool use; fetched content is treated as untrusted data and private or local addresses
+  are refused. Then parallel or sequential execution and Spot or On-Demand → load (single request, N concurrent,
   or batched for classifiers) and acceptance targets → review with the estimate. Every control has a
   help icon.
 - **Test data**: the full dataset browser with filters by scenario, expected answer and hard-negative

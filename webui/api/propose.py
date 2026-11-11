@@ -154,6 +154,141 @@ def cpu_candidates(models: list[dict], precision: str, gpu_type: str | None, cap
     return out[:n]
 
 
+# ----------------------------------------------------------------------------- auto-suggest
+
+# What the model's architecture means for CPU sizing, in one sentence each, and the smallest
+# AMX core count that keeps that kind of model responsive under concurrent load.
+ARCH = {
+    "decoder": ("a chat (decoder) model: every generated token re-reads all the weights, so CPU speed is set by "
+                "memory bandwidth and the number of AMX cores working in parallel", 16),
+    "encoder-decoder": ("an encoder-decoder model: one pass over the input, then token-by-token generation; "
+                        "AMX cores and memory bandwidth both matter", 16),
+    "encoder-classifier": ("a classifier: one pass per input and no generation, so it batches well and a modest "
+                           "number of AMX cores goes a long way", 8),
+    "token-classifier": ("a detector that labels each word in one pass; batches well, a modest number of AMX "
+                         "cores goes a long way", 8),
+}
+ROLES = {
+    "match": ("Best match", "closest in hourly price to the GPU you chose: the fairest like-for-like comparison"),
+    "headroom": ("More CPU headroom", "the largest size still inside the fair band (up to 2x the GPU price): shows "
+                                      "how far the CPU side can go"),
+    "economy": ("Cheaper fair option", "the smallest size still inside the fair band (at least half the GPU price): "
+                                       "the lowest-cost CPU that is still a fair comparison"),
+}
+
+
+def _cpu_fit(models: list[dict], precision: str, t: str, s: dict, gpu_type: str, cat: dict,
+             capacity_notes: dict[str, int]) -> tuple[bool, bool, list[dict]]:
+    """ok (fits the models), warn (fair but with a caveat), and the reasons for one CPU size."""
+    need = _weights_gib(models, precision)
+    big = _largest(models)
+    min_vcpus = max((ARCH.get(m.get("type"), ("", MIN_CPU_VCPUS))[1] for m in models), default=MIN_CPU_VCPUS)
+    reasons, ok, warn = [], True, False
+    mem = s["memory_gib"]
+    if big:
+        if need <= mem * CPU_WEIGHTS_SHARE:
+            reasons.append({"kind": "memory", "ok": True,
+                            "text": f"{big['name']} needs about {need:.1f} GiB for weights in {precision.upper()}; "
+                                    f"{mem:.0f} GiB leaves room for the KV cache and the OS."})
+        else:
+            ok = False
+            reasons.append({"kind": "memory", "ok": False,
+                            "text": f"{big['name']} needs about {need:.1f} GiB in {precision.upper()}; with {mem:.0f} GiB "
+                                    "there is too little left for the KV cache."})
+    if s["vcpus"] < min_vcpus:
+        ok = False
+        reasons.append({"kind": "vcpus", "ok": False,
+                        "text": f"{s['vcpus']} vCPUs ({s['vcpus'] // 2} AMX cores): below the {min_vcpus} vCPUs this kind of "
+                                "model needs to stay responsive under concurrent load."})
+    else:
+        reasons.append({"kind": "vcpus", "ok": True,
+                        "text": f"{s['vcpus']} vCPUs ({s['vcpus'] // 2} physical cores with AMX) share the load."})
+    j = pairing.judge(t, gpu_type, cat)
+    g = cat["instances"][gpu_type]
+    if j["fair"]:
+        reasons.append({"kind": "price", "ok": True,
+                        "text": f"{_usd(s['usd_per_hour'])} against {gpu_type} at {_usd(g['usd_per_hour'])}: the GPU costs "
+                                f"{j['ratio']:.2f}x as much, inside the fair band (0.5x-2x)."})
+    else:
+        warn = True
+        reasons.append({"kind": "price", "ok": False,
+                        "text": f"{_usd(s['usd_per_hour'])} against {gpu_type} at {_usd(g['usd_per_hour'])}: ratio "
+                                f"{j['ratio']:.2f}x, outside the fair band, so the test would measure size, not architecture."})
+    if s["family"].startswith(("m7", "c7", "r7")):
+        warn = True
+        reasons.append({"kind": "generation", "ok": False,
+                        "text": "Sapphire Rapids (previous generation): slower AMX and memory than Granite Rapids (m8i/c8i)."})
+    else:
+        reasons.append({"kind": "generation", "ok": True, "text": "Granite Rapids: the current AMX generation."})
+    if s["family"].startswith("r"):
+        warn = True
+        reasons.append({"kind": "memory", "ok": False,
+                        "text": "Memory-optimized: you pay for memory this model does not need; m8i gives the same cores for less."})
+    if capacity_notes.get(t):
+        reasons.append({"kind": "capacity", "ok": False,
+                        "text": f"Recent runs were refused capacity for {t} in this zone {capacity_notes[t]} time(s)."})
+    return ok, warn, reasons
+
+
+def suggest_cpu(models: list[dict], precision: str, gpu_type: str, capacity_notes: dict[str, int] | None = None,
+                catalog: dict | None = None) -> dict:
+    """CPU sizes for the chosen GPU and models: one best match plus at most two alternatives, each
+    with a role and reasons, and the rest of the fair sizes folded away. Price parity with the GPU
+    decides the best match (that is what makes the comparison fair); memory and AMX core count
+    decide what is eligible at all; the model's architecture sets the core-count floor."""
+    cat = catalog or pairing.load_catalog()
+    notes = capacity_notes or {}
+    g = cat["instances"].get(gpu_type)
+    if not g or not g.get("usd_per_hour"):
+        return {"gpu_type": gpu_type, "best": None, "alternatives": [], "others": [], "basis": [],
+                "error": f"{gpu_type} is not in the instance catalog"}
+    big = _largest(models)
+    basis = []
+    if big:
+        arch = ARCH.get(big.get("type"), ("a model", MIN_CPU_VCPUS))
+        basis.append(f"{big['name']} is {arch[0]}; it needs about {_weights_gib(models, precision):.1f} GiB of memory for "
+                     f"its weights in {precision.upper()} and at least {arch[1]} vCPUs.")
+    basis.append(f"{gpu_type}: {g['gpus']}x {g['gpu_model']} ({g['gpu_memory_gib']:.0f} GiB GPU memory), {g['vcpus']} vCPUs, "
+                 f"{_usd(g['usd_per_hour'])}. A fair CPU partner costs between {_usd(g['usd_per_hour'] / 2)} and "
+                 f"{_usd(g['usd_per_hour'] * 2)}; the closer to {_usd(g['usd_per_hour'])}, the fairer.")
+    if len(models) > 1:
+        basis.append(f"Sized for the largest of the {len(models)} chosen models; the smaller ones fit wherever it fits.")
+    eligible, rejected = [], []
+    for t in pairing.types_for("cpu", cat):
+        s = cat["instances"][t]
+        ok, warn, reasons = _cpu_fit(models, precision, t, s, gpu_type, cat, notes)
+        j = pairing.judge(t, gpu_type, cat)
+        c = {"instance_type": t, "spec": s, "reasons": reasons, "fit": _fit(ok, warn), "ratio": j["ratio"],
+             "fair": bool(j["fair"]), "_dist": abs(math.log(j["ratio"]))}
+        (eligible if ok and j["fair"] else rejected).append(c)
+    # Current generation first, then price parity; r-family only when nothing else fits.
+    current = [c for c in eligible if not c["spec"]["family"].startswith(("m7", "c7", "r7"))]
+    pool = [c for c in (current or eligible) if not c["spec"]["family"].startswith("r")] or current or eligible
+    chosen: list[dict] = []
+    if pool:
+        best = min(pool, key=lambda c: (c["_dist"], c["spec"]["usd_per_hour"]))
+        chosen.append({**best, "role": "match"})
+        bigger = [c for c in pool if c["spec"]["usd_per_hour"] > best["spec"]["usd_per_hour"] * 1.15]
+        smaller = [c for c in pool if c["spec"]["usd_per_hour"] < best["spec"]["usd_per_hour"] / 1.15]
+        if bigger:
+            chosen.append({**max(bigger, key=lambda c: c["spec"]["usd_per_hour"]), "role": "headroom"})
+        if smaller:
+            chosen.append({**min(smaller, key=lambda c: c["spec"]["usd_per_hour"]), "role": "economy"})
+    picked = {c["instance_type"] for c in chosen}
+    others = sorted((c for c in eligible if c["instance_type"] not in picked), key=lambda c: c["_dist"])
+    # Near misses first: sizes in the price band that fail on memory or cores, then the closest in price.
+    rejected.sort(key=lambda c: (not c["fair"], c["_dist"]))
+    for c in chosen + others + rejected:
+        c.pop("_dist", None)
+    for c in chosen:
+        c["role_label"], c["role_help"] = ROLES[c["role"]]
+    return {"gpu_type": gpu_type, "gpu_spec": g, "best": chosen[0] if chosen else None, "alternatives": chosen[1:],
+            "others": others, "rejected": rejected[:8], "basis": basis,
+            "weights_gib": round(_weights_gib(models, precision), 2),
+            "error": None if chosen else "No AMX CPU size fits both the model and the fair price band for this GPU; "
+                                        "pick another GPU size."}
+
+
 def propose(models: list[dict], precision: str, gpu_type: str | None, cpu_type: str | None,
             capacity_notes: dict[str, int] | None = None, catalog: dict | None = None) -> dict:
     """Both lists; each side is proposed against the other side's current choice when there is one."""

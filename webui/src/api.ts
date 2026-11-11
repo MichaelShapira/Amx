@@ -49,6 +49,17 @@ export const defaultWizard: Wizard = {
 export interface Reason { kind: string; ok: boolean; text: string }
 export interface Candidate { instance_type: string; spec: InstanceSpec; fit: "recommended" | "possible" | "not_advisable"; reasons: Reason[] }
 export interface Proposal { gpu: Candidate[]; cpu: Candidate[]; pairing: Pairing | null; weights_gib: number }
+export interface Suggested extends Candidate { ratio: number | null; fair: boolean; role?: "match" | "headroom" | "economy"; role_label?: string; role_help?: string }
+export interface Suggestion {
+  gpu_type: string; gpu_spec?: InstanceSpec; best: Suggested | null; alternatives: Suggested[]; others: Suggested[]; rejected: Suggested[];
+  basis: string[]; weights_gib?: number; error: string | null;
+}
+export interface AiStep { kind: "search" | "fetch"; text: string; n?: number; chars?: number; error?: string | null }
+export interface AiReview {
+  markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number };
+  tool_calls: number; seconds: number; sources: { url: string; title: string }[]; steps: AiStep[]; generated_at: string;
+}
+export interface AiJob { id: string; status: "running" | "done" | "error"; steps: AiStep[]; tool_calls: number; model: AiReview["model"] | null; seconds: number; error: string | null; result: AiReview | null }
 export interface Pairing { cpu: string; gpu: string; ratio: number | null; fair: boolean | null; reason: string; cpu_target?: string; gpu_target?: string }
 
 export interface Plan {
@@ -116,6 +127,10 @@ export const api = {
   },
   propose: (body: { models: string[]; precision: string; gpu_type?: string | null; cpu_type?: string | null }) =>
     j<Proposal>("/api/propose", { method: "POST", body: JSON.stringify(body) }),
+  suggest: (body: { models: string[]; precision: string; gpu_type: string }) =>
+    j<Suggestion>("/api/suggest", { method: "POST", body: JSON.stringify(body) }),
+  aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
+  aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),
   start: (w: Wizard) => j<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify(w) }),
   aws: () => j<{ ok: boolean; account?: string; identity?: string; error?: string }>("/api/aws/status"),

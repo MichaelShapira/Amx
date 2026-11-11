@@ -216,6 +216,92 @@ def post_propose(p: ProposeIn):
     return propose.propose(mods, p.precision, p.gpu_type, p.cpu_type, _capacity_notes())
 
 
+class SuggestIn(BaseModel):
+    models: list[str] = []
+    precision: str = "bf16"
+    gpu_type: str
+
+
+@app.post("/api/suggest")
+def post_suggest(p: SuggestIn):
+    """Auto-suggest: CPU sizes for the chosen GPU and models — one best match, up to two
+    alternatives, the rest folded away."""
+    cat = get_catalog()
+    mods = [m for m in cat["models"] if m["id"] in p.models]
+    if not mods:
+        raise HTTPException(400, "pick at least one model first")
+    if p.gpu_type not in cat["instances"]:
+        raise HTTPException(400, f"{p.gpu_type} is not in the instance catalog")
+    return propose.suggest_cpu(mods, p.precision, p.gpu_type, _capacity_notes())
+
+
+def _ai_context(w: Wizard) -> dict:
+    """What the AI reviewer is told: the wizard state plus the tool's own analysis, in plain facts."""
+    from webui.api import ai_propose
+
+    cat = get_catalog()
+    if not w.gpu or not w.cpus:
+        raise HTTPException(400, "choose the GPU option with its size and at least one CPU option first")
+    mods = [m for m in cat["models"] if m["id"] in w.models]
+    if not mods:
+        raise HTTPException(400, "pick at least one model first")
+    specs = {m.id: m for m in load_models(ROOT / "config/models.yaml").models}
+    hw = {h["id"]: h for h in cat["hardware"]}
+    gpu_spec, cpu_specs = cat["instances"].get(w.gpu["instance_type"]), {c["hardware"]: cat["instances"].get(c["instance_type"]) for c in w.cpus}
+    if not gpu_spec or any(s is None for s in cpu_specs.values()):
+        raise HTTPException(400, "an instance size is not in the catalog")
+    depth = C.DEPTHS.get(w.depth)
+    requests = w.requests if w.depth == "custom" else (depth[2] if depth else 50)
+    passes = w.passes if w.depth == "custom" else (depth[3] if depth else 1)
+    test = {"use case": C.USE_CASES[w.use_case]["name"] if w.use_case in C.USE_CASES else w.use_case,
+            "request shape": C.REQUEST_MODES.get(w.request_mode, (w.request_mode,))[0],
+            "requests at a time (each measured separately)": ", ".join(map(str, sorted(set(int(c) for c in w.concurrency)))) if w.request_mode != "single" else "1",
+            "requests per measurement": requests, "repeated": f"{passes} time(s)", "number format": w.precision}
+    if w.request_mode == "batch":
+        test["inputs per request"] = ", ".join(map(str, w.batch_sizes))
+    if w.use_case == "standard":
+        test["prompts"] = f"{C.PROMPT_SETS.get(w.prompt_set, (w.prompt_set,))[0]}, answers of {w.answer_tokens} tokens"
+        test["targets"] = ", ".join(f"{k} <= {v}" for k, v in (w.sla or {}).items() if v) or "none"
+    else:
+        test["scenarios"] = "; ".join(C.WORKLOADS.get(x, (x,))[0] for x in w.workloads)
+        test["decision deadline"] = C.PRESETS.get(w.preset, (w.preset, "", None))[0]
+    models_ctx = []
+    for m in mods:
+        s = specs.get(m["id"])
+        models_ctx.append({"name": m["name"], "hf_repo": s.hf_repo if s else "?", "kind": m["kind"], "type": m["type"],
+                           "params_b": m["params_b"], "license": m["license"], "max_input_tokens": s.max_input_tokens if s else "?",
+                           "precisions": {p: v["engines"] for p, v in m["precisions"].items()}})
+    sug = propose.suggest_cpu(mods, w.precision, w.gpu["instance_type"], _capacity_notes())
+    sug_small = {"basis": sug["basis"], "best": {"instance_type": sug["best"]["instance_type"]} if sug["best"] else None,
+                 "alternatives": [{"instance_type": a["instance_type"], "role_label": a["role_label"]} for a in sug["alternatives"]]}
+    return {"region": REGION, "az": "use1-az1", "price_snapshot": cat.get("price_snapshot"), "test": test, "models": models_ctx,
+            "gpu": {"instance_type": w.gpu["instance_type"], "spec": gpu_spec, "software": hw.get(w.gpu["hardware"], {}).get("software", [])},
+            "cpus": [{"instance_type": c["instance_type"], "spec": cpu_specs[c["hardware"]],
+                      "software": hw.get(c["hardware"], {}).get("software", [])} for c in w.cpus],
+            "pairing": [pairing.judge(c["instance_type"], w.gpu["instance_type"]) for c in w.cpus],
+            "suggest": sug_small, "capacity_notes": {k: v for k, v in _capacity_notes().items() if k in {w.gpu["instance_type"], *[c["instance_type"] for c in w.cpus]}},
+            "allowed": {"gpu": pairing.types_for("gpu"), "cpu": pairing.types_for("cpu")},
+            "_module": ai_propose}
+
+
+@app.post("/api/propose/ai")
+def post_propose_ai(w: Wizard):
+    """Start the AI review as a background job; poll /api/propose/ai/{id}."""
+    ctx = _ai_context(w)
+    mod = ctx.pop("_module")
+    return {"job_id": mod.start(ctx), "prompt_preview": mod.build_prompt(ctx)}
+
+
+@app.get("/api/propose/ai/{job_id}")
+def get_propose_ai(job_id: str):
+    from webui.api import ai_propose
+
+    s = ai_propose.status(job_id)
+    if s is None:
+        raise HTTPException(404, "unknown or expired job")
+    return s
+
+
 def _capacity_notes() -> dict[str, int]:
     """Instance types refused for capacity in recent runs (from runs/*/capacity/*.json), cached 10 min."""
     now = time.time()
