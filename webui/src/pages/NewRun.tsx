@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
-import { api, defaultWizard, fmt, type AiJob, type Catalog, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
+import { api, defaultWizard, fmt, type AiJob, type Catalog, type InitialSelection, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
 import DataPreview from "../components/DataPreview";
 import { Badge, Chips, Help, Label, Note, Reasons, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
@@ -116,7 +116,7 @@ function StepData({ w, set }: SP) {
         </>
       )}
       <div className="hr" />
-      <h3>Preview <span className="muted small">— real examples of what the models will see</span></h3>
+      <h3>Preview <span className="muted small">— real examples of what the model will see</span></h3>
       <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} compact model={w.models[0]} />
     </div>
   );
@@ -149,14 +149,16 @@ function StepDepth({ w, set }: SP) {
 function StepModels({ w, set }: SP) {
   const cat = useCatalog()!;
   const models = cat.models.filter((m) => m.use_cases.includes(w.use_case));
-  const toggle = (id: string) => set({ models: w.models.includes(id) ? w.models.filter((x) => x !== id) : [...w.models, id] });
+  // One model per benchmark: the hardware step sizes both sides for it (a 0.4B classifier and a
+  // 4B chat model need different machines), and the results stay one question, one answer.
+  const pick = (id: string) => set({ models: [id] });
   return (
     <div>
-      <h2>4 · Which models?</h2>
-      <p className="muted">Each model runs on every hardware option you pick next, so the comparison is like for like. Size is the main driver of speed; the license says whether a commercial decision may rest on the result.</p>
+      <h2>4 · Which model?</h2>
+      <p className="muted">Pick one. The next step sizes the GPU and the CPU for exactly this model: its kind (chat model or classifier) and size decide the memory, the number of cores and the fair instance pair. Run another benchmark for another model; results can be compared side by side afterwards. The license says whether a commercial decision may rest on the result.</p>
       <div className="tiles">
         {models.map((m) => (
-          <Tile key={m.id} selected={w.models.includes(m.id)} onClick={() => toggle(m.id)} title={m.name}
+          <Tile key={m.id} selected={w.models[0] === m.id} onClick={() => pick(m.id)} title={m.name}
             badge={<><Badge>{m.params_b}B</Badge><Badge kind={m.commercial_ok ? "ok" : "warn"}>{m.commercial_ok ? m.license : "research license"}</Badge></>}
             desc={<><div><b>{m.kind}</b>{m.batch_capable ? " · supports batched requests" : ""}</div><div>{m.description}</div></>} />
         ))}
@@ -177,12 +179,36 @@ function StepHardware({ w, set }: SP) {
   const [sugErr, setSugErr] = useState<string | null>(null);
   const [ai, setAi] = useState<AiJob | null>(null);
   const [aiErr, setAiErr] = useState<string | null>(null);
+  const [initial, setInitial] = useState<InitialSelection | null>(null);
+  const [sizing, setSizing] = useState(false);
   const chosenModels = cat.models.filter((m) => w.models.includes(m.id));
+  const model = chosenModels[0];
   useEffect(() => {
     if (!ai || ai.status !== "running") return;
     const t = setInterval(() => api.aiProposeStatus(ai.id).then(setAi).catch((e) => { setAiErr(e.message); setAi(null); }), 2000);
     return () => clearInterval(t);
   }, [ai]);
+  // Pre-select both sides for the chosen model the first time this step is shown for it (or after
+  // the model or number format changed). Manual changes afterwards are kept until the model changes.
+  const sizeKey = model ? `${model.id}|${w.precision}` : null;
+  useEffect(() => {
+    if (!model || !sizeKey || w.sized_for === sizeKey) return;
+    let alive = true;
+    setSizing(true); setSugErr(null);
+    api.initial({ model: model.id, precision: w.precision }).then((r) => {
+      if (!alive) return;
+      setInitial(r);
+      setSug(r.cpu);
+      const gpuBest = r.gpu.best?.instance_type;
+      const cpuBest = r.cpu?.best?.instance_type;
+      const patch: Partial<Wizard> = { sized_for: sizeKey };
+      if (gpuBest) patch.gpu = { hardware: w.gpu?.hardware ?? gpuHw[0].id, instance_type: gpuBest, precisions: w.gpu?.precisions ?? ["bf16"], alternates: r.gpu_alternates };
+      if (cpuBest) patch.cpus = (w.cpus.length ? w.cpus : [{ hardware: cpuHw[0].id, instance_type: cpuBest, precisions: ["bf16"], alternates: cpuHw[0].alternates }]).map((c) => ({ ...c, instance_type: cpuBest }));
+      set(patch);
+    }).catch((e) => alive && setSugErr(e.message)).finally(() => alive && setSizing(false));
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sizeKey, w.sized_for]);
 
   const precsFor = (hwId: string) => {
     const hw = cat.hardware.find((h) => h.id === hwId)!;
@@ -243,8 +269,19 @@ function StepHardware({ w, set }: SP) {
   return (
     <div>
       <h2>5 · Which hardware to compare?</h2>
-      <p className="muted">Tick a GPU option and one or more CPU options (different serving software is a different option). Each becomes one test instance that runs every model you picked. Then pick an instance size, or let the tool propose sizes and explain why.</p>
-      <div className="grid c2">
+      <p className="muted">Both sides are pre-selected for <b>{model?.name ?? "the chosen model"}</b>: the GPU size that holds it and can feed it, and the AMX CPU size that costs about the same. Change either size, tick more CPU options (different serving software is a different option; each becomes one test instance), or ask for suggestions below.</p>
+      {sizing && <Spinner label={`Sizing the hardware for ${model?.name ?? "the model"}…`} />}
+      {initial?.summary && !sizing && (
+        <Note kind="ok"><b>Pre-selected.</b> {initial.summary}
+          {initial.gpu.best && <details className="mt"><summary className="small">Why {initial.gpu.best.instance_type} on the GPU side</summary>
+            <div className="small mt">{initial.gpu.basis.map((b, i) => <div key={i}>{b}</div>)}</div>
+            <div className="mt"><Reasons reasons={initial.gpu.best.reasons} /></div>
+            {initial.gpu.alternatives.length > 0 && <div className="small muted mt">If AWS has no {initial.gpu.best.instance_type} available, the run tries {initial.gpu_alternates.join(" and ")} automatically.</div>}
+            {initial.gpu.rejected.length > 0 && <div className="small muted mt">Not chosen: {initial.gpu.rejected.slice(0, 3).map((c) => `${c.instance_type} (${c.reasons.filter((r) => !r.ok)[0]?.text ?? ""})`).join("; ")}</div>}
+          </details>}
+        </Note>
+      )}
+      <div className="grid c2 mt">
         <div>
           <h3><Badge kind="gpu">GPU side</Badge></h3>
           {gpuHw.map((hw) => sideBlock(hw, w.gpu?.hardware === hw.id ? w.gpu : undefined, "gpu"))}
@@ -460,7 +497,7 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
           <h3>What will run</h3>
           <ul className="muted" style={{ lineHeight: 1.8, paddingLeft: 18 }}>
             <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
-            <li>Models: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
+            <li>Model: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
             <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}{w.purchase === "spot" && w.spot_fallback ? `, On-Demand after ${w.spot_wait_minutes} min without Spot` : ""} · gives up on a hardware option after {w.launch_attempts} failed launch attempts</li>
             <li>Load: {loadSentence(w)}</li>
             <li>{depthSentence(w, cat)}</li>

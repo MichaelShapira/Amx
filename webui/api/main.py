@@ -222,6 +222,22 @@ class SuggestIn(BaseModel):
     gpu_type: str
 
 
+class InitialIn(BaseModel):
+    model: str
+    precision: str = "bf16"
+
+
+@app.post("/api/suggest/initial")
+def post_suggest_initial(p: InitialIn):
+    """What the hardware step pre-selects for the chosen model: GPU best fit, then the CPU best
+    match against it, both with reasons. A classifier and a chat model get different pairs."""
+    cat = get_catalog()
+    mods = [m for m in cat["models"] if m["id"] == p.model]
+    if not mods:
+        raise HTTPException(400, f"unknown model {p.model}")
+    return propose.initial_selection(mods, p.precision, _capacity_notes())
+
+
 @app.post("/api/suggest")
 def post_suggest(p: SuggestIn):
     """Auto-suggest: CPU sizes for the chosen GPU and models — one best match, up to two

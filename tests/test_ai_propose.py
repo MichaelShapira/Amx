@@ -43,8 +43,8 @@ def test_auto_suggest_gives_one_best_match_and_few_alternatives():
 def test_auto_suggest_classifier_allows_smaller_sizes_and_offers_an_economy_pick():
     s = propose.suggest_cpu(models("m3-roberta-large-mnli"), "bf16", "g6.xlarge", {})
     roles = {a["role"]: a["instance_type"] for a in s["alternatives"]}
-    assert s["best"]["instance_type"] == "m8i.4xlarge"
-    assert roles["economy"] == "m8i.2xlarge" and roles["headroom"].endswith("8xlarge")
+    assert s["best"]["instance_type"] == "c8i.4xlarge"          # compute-optimized family for a classifier
+    assert roles["economy"] == "m8i.2xlarge" and roles["headroom"] == "c8i.8xlarge"
     assert "classifier" in s["basis"][0] and "at least 8 vCPUs" in s["basis"][0]
 
 
@@ -53,6 +53,36 @@ def test_auto_suggest_sizes_for_the_largest_model_and_handles_unknown_gpu():
     assert s["best"]["instance_type"] == "m8i.8xlarge" and "largest of the 2 chosen models" in s["basis"][-1]
     bad = propose.suggest_cpu(models("m2-qwen3-4b-2507"), "bf16", "p9.nothing", {})
     assert bad["best"] is None and "not in the instance catalog" in bad["error"]
+
+
+def test_initial_selection_differs_between_a_classifier_and_a_chat_model():
+    """The complaint: BERT and Gemma got the same instances. The GPU pick depends on what the
+    host side must stage (vLLM keeps ~2x the weights in host memory while loading) and the CPU
+    pick on the family that suits the architecture; price parity still decides the size."""
+    bert = propose.initial_selection(models("m3-roberta-large-mnli"), "bf16")
+    gemma = propose.initial_selection(models("m4-gemma-2-2b"), "bf16")
+    qwen = propose.initial_selection(models("m2-qwen3-4b-2507"), "bf16")
+    assert bert["gpu"]["best"]["instance_type"] == "g6.xlarge" and bert["cpu"]["best"]["instance_type"] == "c8i.4xlarge"
+    assert gemma["gpu"]["best"]["instance_type"] == "g6.2xlarge" and gemma["cpu"]["best"]["instance_type"] == "m8i.4xlarge"
+    assert qwen["gpu"]["best"]["instance_type"] == "g6.2xlarge" and qwen["cpu"]["best"]["instance_type"] == "m8i.4xlarge"
+    # Reasons say why: host memory rules g6.xlarge out for Gemma, the c-family is named for the classifier.
+    rejected = {c["instance_type"]: c for c in gemma["gpu"]["rejected"]}
+    assert "g6.xlarge" in rejected and any("host memory" in r["text"] for r in rejected["g6.xlarge"]["reasons"] if not r["ok"])
+    assert any(r["kind"] == "host" and r["ok"] for r in gemma["gpu"]["best"]["reasons"])
+    assert any("Compute-optimized c-family" in r["text"] for r in bert["cpu"]["best"]["reasons"])
+    assert any("General-purpose m-family" in r["text"] for r in gemma["cpu"]["best"]["reasons"])
+    # Alternates for capacity fallback are the same GPU class closest in price; every pick is a single GPU.
+    assert gemma["gpu_alternates"] == ["g5.2xlarge", "g6.4xlarge"] and bert["gpu_alternates"] == ["g6.2xlarge", "g5.xlarge"]
+    assert all(c["spec"]["gpus"] == 1 for c in [gemma["gpu"]["best"], *gemma["gpu"]["alternatives"]])
+    assert gemma["summary"].startswith("For Gemma 2 2B Instruct: g6.2xlarge (1x L4, $0.98/h) against m8i.4xlarge")
+    assert "a fair pairing" in gemma["summary"]
+    assert "host memory while loading" in gemma["gpu"]["basis"][0] and "at least 8 vCPUs" in gemma["gpu"]["basis"][0]
+
+
+def test_initial_endpoint():
+    r = c.post("/api/suggest/initial", json={"model": "d2-roblox-pii-v2"}).json()
+    assert r["gpu"]["best"]["instance_type"] == "g6.xlarge" and r["cpu"]["best"]["instance_type"] == "c8i.4xlarge"
+    assert c.post("/api/suggest/initial", json={"model": "nope"}).status_code == 400
 
 
 def test_suggest_endpoint_validates_input():

@@ -37,13 +37,14 @@ export interface Wizard {
   gpu: Side | null; cpus: Side[]; parallel_targets: boolean; request_mode: "single" | "concurrent" | "batch";
   concurrency: number[]; batch_sizes: number[]; sla: Record<string, number | undefined>; purchase: "spot" | "on-demand";
   spot_fallback: boolean; spot_wait_minutes: number; launch_attempts: number; name: string; allow_unfair: boolean;
+  sized_for: string | null;          // "<model>|<precision>" the hardware step last pre-selected sizes for
 }
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
   preset: "inline_standard", depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
   gpu: null, cpus: [], parallel_targets: true, request_mode: "concurrent", concurrency: [1, 4, 16], batch_sizes: [8],
   sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, spot_wait_minutes: 10, launch_attempts: 30,
-  name: "", allow_unfair: false,
+  name: "", allow_unfair: false, sized_for: null,
 };
 
 export interface Reason { kind: string; ok: boolean; text: string }
@@ -54,6 +55,8 @@ export interface Suggestion {
   gpu_type: string; gpu_spec?: InstanceSpec; best: Suggested | null; alternatives: Suggested[]; others: Suggested[]; rejected: Suggested[];
   basis: string[]; weights_gib?: number; error: string | null;
 }
+export interface GpuSuggestion { best: Suggested | null; alternatives: Suggested[]; others: Suggested[]; rejected: Suggested[]; basis: string[]; weights_gib: number; error: string | null }
+export interface InitialSelection { gpu: GpuSuggestion; cpu: Suggestion | null; summary: string | null; gpu_alternates: string[] }
 export interface AiStep { kind: "search" | "fetch"; text: string; n?: number; chars?: number; error?: string | null }
 export interface AiReview {
   markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number };
@@ -129,6 +132,8 @@ export const api = {
     j<Proposal>("/api/propose", { method: "POST", body: JSON.stringify(body) }),
   suggest: (body: { models: string[]; precision: string; gpu_type: string }) =>
     j<Suggestion>("/api/suggest", { method: "POST", body: JSON.stringify(body) }),
+  initial: (body: { model: string; precision: string }) =>
+    j<InitialSelection>("/api/suggest/initial", { method: "POST", body: JSON.stringify(body) }),
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),
