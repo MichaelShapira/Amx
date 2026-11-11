@@ -183,7 +183,7 @@ you and list what will be created and what it costs per hour.
     `bench stop`; same YAML as the UI.
   - _Requirements: 6.1, 15.4_
 
-- [x] 17. Streamlit UI (`ui/`)
+- [x] 17. UI (`webui/`, React + local FastAPI; replaced the Streamlit app on 2026-11-11)
   - Pages: New run (YAML preview, plan, duration and cost estimate, preflight), Runs
     (progress, stop with confirmation), Results (table, SLA, capacity equivalence, charts,
     CSV/Markdown export), Migration calculator, Bring-up journal.
@@ -279,8 +279,7 @@ you and list what will be created and what it costs per hour.
   - [x] Upload the frozen dataset to S3 (2026-11-09, `bench upload-artifacts`).
   - [x] Standard smoke T1 (g6.2xlarge Spot) vs T2 (m8i.4xlarge): `reports/sample/`.
   - [x] DSPM smoke on T2 (Spot): `reports/sample/dspm/`; T1 had no GPU capacity in that run.
-  - [ ] DSPM smoke with both targets (started 2026-11-10 after the g6.2xlarge alternate
-    was deployed).
+  - [x] DSPM smoke with both targets (`reports/sample/dspm/`, g5.xlarge vs m8i.4xlarge).
   - Standard smoke: `config/runs/smoke-m1.yaml` (M1, T1 vs T2 m8i.4xlarge, BF16,
     C in {1, 4, 16}, 50 requests per level, 1 repeat, quality on).
   - DSPM smoke: `config/runs/dspm-smoke.yaml` (M1 on W1 and W3, T1 vs T2, BF16, 300 test
