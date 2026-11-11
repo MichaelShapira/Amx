@@ -31,7 +31,7 @@ SLA, and cost is shown as information. The spec is in
 | `infra/` | CDK app: `AmxBench-Network`, `AmxBench-Core`, one `AmxBench-Target-<id>` per target |
 | `config/` | `models.yaml`, `targets.yaml`, `migration_effort.yaml`, `runs/*.yaml`, `dspm/` policy and span map |
 | `tools/` | Prompt-set builder, DSPM dataset and request-pool builders, seccomp generator |
-| `ui/` | Local Streamlit app |
+| `webui/` | Local web app: React front end (`src/`) and its Python API (`api/`) |
 | `data/`, `prompts/generated/` | Generated locally, **not in git** |
 
 ## Setup
@@ -57,7 +57,7 @@ Local checks (no AWS calls):
 cd infra && npx cdk synth -c az_name=us-east-1a -c skip_bundling=true -c build_images=false --quiet
 ```
 
-Tests that need torch, moto, streamlit or shellcheck skip when the package is missing.
+Tests that need torch, moto, fastapi or shellcheck skip when the package is missing.
 
 ## Operator IAM
 
@@ -197,20 +197,42 @@ the uploaded one.
 .venv/bin/bench estimate project.yaml --summary reports/<run-id>/summary.json   # migration calculator
 ```
 
-The UI uses the same YAML and the operator's own credentials, and binds to `127.0.0.1`
-only (http://127.0.0.1:8501):
+### The web app
 
 ```bash
-cd ui && ../.venv/bin/streamlit run app.py
+webui/start.sh            # builds the React app once, then serves it with the API at http://127.0.0.1:8601
 ```
 
-It is written for the person deciding which instance to buy, not for the engineer: a
-seven-step "New run" page in plain language (workload, models, hardware options with a
-fairness check, load, acceptance targets, buying option, review with cost estimate), a
-help icon on every control (`ui/labels.py` holds the texts, `tests/test_ui.py` enforces
-that none is missing), results with a verdict in sentences and explained column headers,
-the migration calculator and the bring-up journal. The YAML the CLI uses sits under
-"Advanced" on each page.
+A local application: the Python API (`webui/api/main.py`, FastAPI) binds `127.0.0.1:8601`, serves
+the built front end from `webui/dist`, and makes every AWS call with the operator's own
+credentials. For live-reload development run `npm run dev` inside `webui/` (Vite on
+`127.0.0.1:8600`, proxying `/api` to the API). Nothing listens beyond this machine; to use it from
+another machine, forward the port over SSH.
+
+It is written for the person deciding which instance to buy, not for the engineer. Light and dark
+themes; GPU is always green and CPU always blue.
+
+- **Start here**: what the tool is for, how a run works, how to read the findings and compare runs.
+- **New benchmark**, a seven-step wizard: use case → test data with a live preview of the real
+  prompts or documents and their expected answers → quick check or full test → models → hardware,
+  where **Propose** lists instance sizes for each side with the reason for each (does the model fit
+  in memory with room for the KV cache, is the hourly price in the fair band against the other
+  side, single GPU, cores feeding AMX, current generation, recent capacity refusals in this zone),
+  plus parallel or sequential execution and Spot or On-Demand → load (single request, N concurrent,
+  or batched for classifiers) and acceptance targets → review with the estimate. Every control has a
+  help icon.
+- **Test data**: the full dataset browser with filters by scenario, expected answer and hard-negative
+  type, and the classification policy.
+- **Runs**: progress per model-on-hardware and per measurement, in words.
+- **Results**: one run or several side by side. The comparability check runs on every selection
+  (same use case, same data and answer length, same request shape, fair instance pairing) and
+  blocks or warns in words. Per model: a verdict sentence, head-to-head GPU and CPU cards with
+  deltas, how many CPU instances replace one GPU with the limit drawn, and throughput /
+  responsiveness / cost across load levels with the target line; "one at a time" shows a single
+  hardware option. Targets are editable and everything is re-judged.
+
+`webui/smoke.mjs` drives every page headlessly with Playwright and fails on any console error;
+`tests/test_webui_api.py` covers the API offline.
 
 ## Cost per run
 

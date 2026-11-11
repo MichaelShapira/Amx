@@ -310,6 +310,7 @@ class CoreStack(Stack):
         pf = invoke("Preflight", preflight, {"run_id.$": "$.run_id"},
                     result_selector={"run_id.$": "$.Payload.run_id", "targets.$": "$.Payload.targets",
                                      "purchase.$": "$.Payload.purchase",
+                                     "parallel.$": "$.Payload.max_target_concurrency",
                                      "stop.$": "$.Payload.stop_targets_after_run"}, result_path="$.pf")
         # Per cell. The cell item carries run_id, target_id, purchase, cell, instance_id, private_ip and
         # recovery {attempt, interruption_logged}; a failed step goes to Check, which relaunches a gone
@@ -397,7 +398,8 @@ class CoreStack(Stack):
         ensure.add_catch(target_failed, result_path="$.error")
         running = sfn.Choice(self, "InstanceReady").when(sfn.Condition.boolean_equals("$.inst.r.ready", True), cells) \
             .otherwise(wait_launch.next(ensure))
-        tmap = sfn.Map(self, "Targets", items_path="$.pf.targets", max_concurrency=0, result_path=P.DISCARD,
+        tmap = sfn.Map(self, "Targets", items_path="$.pf.targets", max_concurrency_path="$.pf.parallel",
+                       result_path=P.DISCARD,
                        item_selector={"run_id.$": "$.pf.run_id", "purchase.$": "$.pf.purchase",
                                       "target.$": "$$.Map.Item.Value"})
         tmap.item_processor(ensure.next(running))

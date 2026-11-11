@@ -109,7 +109,10 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             return []
         key = f"artifacts/prompts/{model.id}/{name}.jsonl"
         payload = _gen_payload(model, run) if model.type in GENERATIVE else {"model": model.id}
-        batches = (model.classifier.batch_sizes if model.classifier and model.type not in GENERATIVE else [1])
+        if model.type in GENERATIVE or not model.classifier:
+            batches = [1]
+        else:
+            batches = run.batch_sizes or model.classifier.batch_sizes
         for conc in run.concurrency:
             for b in batches:
                 for rep in range(run.repeats):
@@ -136,9 +139,9 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
                 dev_key = dspm_pool(model, f"dev-{wl}", bkt)
                 add(f"dev-{name}-accuracy", dev_key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl,
                     extra={"split": "dev"})
-            for conc in WORKLOAD_LEVELS[wl]:
-                if conc not in run.concurrency:
-                    continue
+            # The run's concurrency list applies to every scenario; WORKLOAD_LEVELS are the
+            # suggested defaults per scenario, not a filter (a chosen level must never be dropped).
+            for conc in run.concurrency:
                 for rep in range(run.repeats):
                     add(name, key, payload, conc, rep, workload=wl)
     return out

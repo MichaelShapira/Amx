@@ -21,7 +21,6 @@ dev = [
   "pandas>=2.2",
   "rouge-score==0.1.2",
   "matplotlib>=3.9",
-  "streamlit>=1.45",
   "fastapi>=0.115",
   "uvicorn>=0.32",
   "aws-cdk-lib==2.275.0",

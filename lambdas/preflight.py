@@ -241,4 +241,6 @@ def handler(event: dict, context: Any = None) -> dict:
     for tid in templates:
         common.touch_target(tid, run_id)
     return {"run_id": run_id, "targets": list(outline.values()), "purchase": run.purchase.model_dump(),
-            "stop_targets_after_run": run.stop_targets_after_run}
+            "stop_targets_after_run": run.stop_targets_after_run,
+            # Step Functions Map MaxConcurrency: 0 = unlimited (all hardware options at once), 1 = one at a time.
+            "max_target_concurrency": 0 if run.execution.parallel_targets else 1}

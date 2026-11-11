@@ -267,6 +267,12 @@ class DspmCfg(Strict):
     fitness_fpr_max: float = 0.05
 
 
+class ExecutionCfg(Strict):
+    """parallel_targets: run every hardware option at the same time (default) or one after
+    another (fewer instances up at once; the run takes longer)."""
+    parallel_targets: bool = True
+
+
 class RunConfig(Strict):
     name: str
     suite: Suite = "standard"
@@ -293,6 +299,10 @@ class RunConfig(Strict):
     # pairing check (bench/pairing.py) reports whether the CPU and GPU sides are comparable.
     instance_types: dict[str, str] = Field(default_factory=dict)
     alternates: dict[str, list[str]] = Field(default_factory=dict)      # per-target capacity fallbacks
+    # Inputs per request for classifier models (overrides the model's classifier.batch_sizes);
+    # generation models always take one prompt per request (the server batches concurrent ones).
+    batch_sizes: list[int] | None = None
+    execution: ExecutionCfg = Field(default_factory=ExecutionCfg)
     dspm: DspmCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20
@@ -301,6 +311,8 @@ class RunConfig(Strict):
     def _methodology(self) -> RunConfig:
         if not self.concurrency or any(c < 1 or c > 512 for c in self.concurrency):
             raise ValueError("concurrency levels must be between 1 and 512")
+        if self.batch_sizes is not None and (not self.batch_sizes or any(b < 1 or b > 256 for b in self.batch_sizes)):
+            raise ValueError("batch_sizes must be between 1 and 256")
         if self.warmup_requests < 20:
             raise ValueError("at least 20 warm-up requests are required (Requirement 7.3)")
         if self.request_timeout_s > MAX_REQUEST_TIMEOUT_S:
