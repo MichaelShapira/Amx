@@ -6,6 +6,7 @@ import NewRun from "./pages/NewRun";
 import Runs from "./pages/Runs";
 import Results from "./pages/Results";
 import DataPage from "./pages/Data";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 export const CatalogCtx = createContext<Catalog | null>(null);
 export const useCatalog = () => useContext(CatalogCtx);
@@ -46,6 +47,7 @@ export default function App() {
           <div className="tiny" style={{ marginTop: 10 }}>Runs only on this machine (127.0.0.1). AWS calls use your own credentials.</div>
         </aside>
         <main className="main">
+          <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/new" element={<NewRun />} />
@@ -54,6 +56,7 @@ export default function App() {
             <Route path="/runs/:id" element={<Runs />} />
             <Route path="/results" element={<Results />} />
           </Routes>
+          </ErrorBoundary>
         </main>
       </div>
     </CatalogCtx.Provider>

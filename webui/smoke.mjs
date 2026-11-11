@@ -71,7 +71,14 @@ if (/per level|passes/.test(review)) errors.push("jargon on the review page: " +
 // data page
 await page.goto(base + "/data");
 await page.waitForSelector("details.doc", { timeout: 30000 });
+await page.locator(".tile:has-text('Sensitive-data detection')").first().click();
+await page.waitForSelector("text=Expected answer", { timeout: 30000 });
+await page.waitForSelector("details.doc", { timeout: 30000 });
 await shot("08-data");
+await page.locator(".tile:has-text('Chat and text generation')").first().click();
+await page.waitForSelector("text=Shown in the chat format of", { timeout: 30000 });
+await page.waitForSelector("details.doc", { timeout: 30000 });
+if (await page.locator("text=Something went wrong").count()) errors.push("Data page crashed when switching use case");
 
 // runs
 await page.goto(base + "/runs");

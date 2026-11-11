@@ -422,9 +422,10 @@ def _reconcile(items: list[dict]) -> None:
             continue
         try:
             ex = sfn.describe_execution(executionArn=f"{base}:{i['pk'][4:]}")
-        except Exception:  # noqa: BLE001 - executions older than 90 days are gone; leave the row as is
-            continue
-        new = SFN_STATUS.get(ex["status"])
+        except Exception as e:  # noqa: BLE001 - executions older than 90 days are gone; leave the row as is
+            i["reconcile_error"] = str(e)[:80]
+            ex = None
+        new = SFN_STATUS.get(ex["status"]) if ex else None
         if new:
             i["status"] = new
             _table().update_item(Key={"pk": i["pk"], "sk": "META"}, UpdateExpression="SET #s = :s",

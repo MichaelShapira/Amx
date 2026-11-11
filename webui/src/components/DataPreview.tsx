@@ -17,7 +17,9 @@ export default function DataPreview({ useCase, promptSet, workloads, compact, mo
   const [mid, setMid] = useState(model ?? "m1-qwen2.5-3b");
   const [ps, setPs] = useState(promptSet ?? "short");
 
-  useEffect(() => { api.data(useCase).then(setInfo); }, [useCase]);
+  // Clear the previous use case's description before loading the next one: rendering the
+  // detection view with the chat description (or the reverse) crashed on a missing field.
+  useEffect(() => { setInfo(null); setItems(null); api.data(useCase).then(setInfo).catch(() => setInfo({ available: false, reason: "the API is not reachable" })); }, [useCase]);
   useEffect(() => { if (promptSet) setPs(promptSet); }, [promptSet]);
   useEffect(() => { if (workloads && !workloads.includes(wl)) setWl(workloads[0] ?? "W1"); }, [workloads, wl]);
   useEffect(() => {
@@ -29,6 +31,7 @@ export default function DataPreview({ useCase, promptSet, workloads, compact, mo
 
   if (!info) return <Spinner label="Loading the test data…" />;
   if (!info.available) return <div className="note warn">{info.reason}</div>;
+  if ((useCase === "standard") !== (info.kind === "prompts")) return <Spinner label="Loading the test data…" />;
 
   const stdModels = cat?.models.filter((m) => m.use_cases.includes("standard")) ?? [];
   return (
