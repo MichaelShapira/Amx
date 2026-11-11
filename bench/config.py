@@ -249,7 +249,11 @@ class PurchaseCfg(Strict):
     type: Literal["on-demand", "spot"] = "spot"
     spot_fallback_on_demand: bool = True
     spot_max_price_usd: float | None = None          # None: EC2 caps at the On-Demand price
-    spot_capacity_window_s: int = 600                # keep retrying Spot this long before falling back
+    spot_capacity_window_s: int = Field(default=600, ge=60, le=43_200)   # retry Spot this long before falling back
+    # Launch attempts (about one per minute, Spot and On-Demand together) before the run gives
+    # up on a hardware option; the other options continue and the report says which side did
+    # not run and why. Applies to the first launch and to replacements after an interruption.
+    max_launch_attempts: int = Field(default=30, ge=1, le=720)
     max_relaunches_per_cell: int = 3
 
 

@@ -344,6 +344,9 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
                 row["meets_sla"], row["sla_reason"] = False, vs["reason"]
     per_model = analyze(rows, run)
     warnings = collect_warnings(rows, cells, models, amx_v, qual, smoke)
+    not_run = targets_not_run(cells, targets, rows, inp.capacity, run.purchase.max_launch_attempts)
+    for nr in not_run:
+        warnings.append(f"{nr['target']} DID NOT RUN ({nr['side']} side): {nr['reason']}")
     for tid, events in sorted((res.get("interruptions") or {}).items()):
         if events:
             warnings.append(f"{tid}: {len(events)} instance interruption(s); the affected levels were re-run on a "
@@ -357,7 +360,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
             "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
-            "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
+            "not_run": not_run, "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
                                                    "instances", "lifecycle", "interruptions", "purchase", "amis",
                                                    "built_images", "created_at")}}
@@ -410,6 +413,29 @@ def _row_ref(r: dict | None) -> dict | None:
         return None
     return {k: r[k] for k in ("model", "target", "instance_type", "engine", "precision", "variant", "workload",
                               "bucket", "conc", "batch")} | {"throughput": _throughput(r)}
+
+
+def targets_not_run(cells, targets, rows, capacity: dict, max_attempts: int) -> list[dict]:
+    """Planned targets that produced no measurement at all — the GPU side that never got an
+    instance, for example. The reason comes from the capacity log so the report and the UI say
+    *why* instead of leaving the side silently absent (seen 2026-11-11: 25 refusals, 'Not run')."""
+    ran = {r["target"] for r in rows}
+    out = []
+    for tid in sorted({c.target for c in cells.values()} - ran):
+        caps = capacity.get(tid) or []
+        side = "GPU" if targets[tid].accelerator == "gpu" else "CPU"
+        if caps:
+            types = sorted({str(c.get("instance_type")) for c in caps if c.get("instance_type")})
+            markets = sorted({str(c.get("market")) for c in caps if c.get("market")})
+            mk = {"spot": "Spot", "on-demand": "On-Demand"}
+            reason = (f"No capacity: AWS refused {len(caps)} launch request(s) for "
+                      f"{', '.join(types) or 'the requested size'} ({' and '.join(mk.get(m, m) for m in markets) or 'requested market'}); "
+                      f"the run gave up after at most {max_attempts} attempts. There are no {side} numbers in this report.")
+        else:
+            reason = f"No instance served it (no capacity refusal was logged). There are no {side} numbers in this report."
+        out.append({"target": tid, "side": side, "instance_type": targets[tid].instance_type, "refusals": len(caps),
+                    "reason": reason})
+    return out
 
 
 def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
@@ -469,6 +495,9 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
     if s["smoke"]:
         out += ["> **SMOKE RUN.** Fewer requests and repeats than the methodology defaults. Use these numbers "
                 "to check the harness, not to decide.", ""]
+    for nr in s.get("not_run") or []:
+        out += [f"> **{nr['side']} SIDE DID NOT RUN** ({nr['target']}, {nr['instance_type']}): {nr['reason']} "
+                "Nothing in this report compares the two sides.", ""]
     out += [f"Suite **{run['suite']}**, region {run['region']} ({run['az_id']}). Prices are On-Demand from the AWS "
             "Price List API; $/unit figures assume the instance is held at that load for a whole hour. Capacity, "
             "not cost, decides the verdict.", ""]

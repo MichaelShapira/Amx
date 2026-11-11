@@ -248,6 +248,60 @@ def test_purchase_decisions():
     assert decide_after_failure(gone, 3, spot, "levels") == "fail"   # relaunch cap
 
 
+def test_give_up_after_max_launch_attempts_records_why(aws, monkeypatch):
+    """purchase.max_launch_attempts refused launches -> the target is given up with a plain
+    reason: `gave_up` event, every cell `not_run` + reason, META.not_run, and the RuntimeError
+    for the state machine's TargetFailed catch. Seen 2026-11-11 as a bare 'Not run' in the UI."""
+    from lambdas import target_control as tc
+
+    monkeypatch.setattr(tc, "find_instance", lambda tid: None)
+
+    def refused(run_id, tid, purchase, market, instance_type=None):
+        tc._log(run_id, tid, "capacity", {"time": f"2026-11-11T09:{40 + len(seen):02d}:00Z", "market": market,
+                                          "code": "InsufficientInstanceCapacity", "instance_type": instance_type or "g6.2xlarge"})
+        seen.append(market)
+        return None
+
+    seen: list[str] = []
+    monkeypatch.setattr(tc, "_launch", refused)
+    purchase = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True, "max_launch_attempts": 2}
+    cells = [{"cell_id": "d1|t1-g6|bf16"}, {"cell_id": "d2|t1-g6|bf16"}]
+    aws.set_status("r9", "CELL#d1|t1-g6|bf16", "planned")
+    aws.set_status("r9", "CELL#d2|t1-g6|bf16", "planned")
+    aws.set_status("r9", "META", "running")
+    ev = {"run_id": "r9", "target_id": "t1-g6", "purchase": purchase, "alternates": ["g5.xlarge"], "cells": cells}
+    assert tc.ensure_running(ev) == {"ready": False, "reason": "capacity", "attempt": 1, "max_attempts": 2}
+    assert tc.ensure_running(ev) == {"ready": False, "reason": "capacity", "attempt": 2, "max_attempts": 2}
+    with pytest.raises(RuntimeError, match="No capacity: AWS refused 2 launch request"):
+        tc.ensure_running(ev)                                   # third call: attempts == max -> give up, no launch
+    assert len(seen) == 2
+    tbl = boto3.resource("dynamodb", region_name="us-east-1").Table("amx-gpu-bench")
+    for cid in ("d1|t1-g6|bf16", "d2|t1-g6|bf16"):
+        item = tbl.get_item(Key={"pk": "RUN#r9", "sk": f"CELL#{cid}"})["Item"]
+        assert item["status"] == "not_run" and "gave up after 2 attempt(s)" in item["reason"]
+        assert "g6.2xlarge" in item["reason"] and "Spot" in item["reason"]
+    meta = tbl.get_item(Key={"pk": "RUN#r9", "sk": "META"})["Item"]
+    assert [x["target_id"] for x in meta["not_run"]] == ["t1-g6"] and int(meta["not_run"][0]["attempts"]) == 2
+    events = aws.get_json("runs/r9/targets/t1-g6.json")
+    assert events[-1]["event"] == "gave_up" and events[-1]["refusals"] == 2
+    # The attempt counter was reset, so the next run on this target starts from zero.
+    assert int(tc._activity("t1-g6").get("launch_attempts") or 0) == 0
+
+
+def test_capacity_reason_reads_like_a_sentence():
+    from lambdas.target_control import capacity_reason
+
+    caps = [{"time": "2026-11-11T09:38:00Z", "market": "spot", "instance_type": "g6.2xlarge"},
+            {"time": "2026-11-11T09:50:00Z", "market": "on-demand", "instance_type": "g5.xlarge"},
+            {"time": "2026-11-11T10:09:00Z", "market": "spot", "instance_type": "g5.4xlarge"}]
+    r = capacity_reason(caps, 30, {"type": "spot"})
+    assert r.startswith("No capacity: AWS refused 3 launch request(s) over 31 minutes for g5.4xlarge, g5.xlarge, g6.2xlarge "
+                        "(On-Demand and Spot).")
+    assert "gave up after 30 attempt(s), the configured maximum" in r
+    assert "level" not in r and "pass" not in r
+    assert "the requested size" in capacity_reason([], 5, {"type": "on-demand"})
+
+
 def test_worker_raises_when_endpoint_is_dead(aws):
     """Connection failures in a row raise EndpointUnreachable (not counted toward the quota);
     HTTP errors and timeouts are measurements and do not."""

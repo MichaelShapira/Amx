@@ -123,9 +123,15 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   (Docker is the fallback).
 - **Capacity fallback.** After three `InsufficientInstanceCapacity` answers for a target's
   requested type, the launcher alternates with the `alternates` listed in the run config or
-  `targets.yaml` (g6.xlarge → g5.xlarge, g6.2xlarge) for up to 30 minutes, then fails that target's cells and the run
-  continues with the other targets. Every attempt is logged under `runs/<id>/capacity/` and
-  listed in the report; the report rows carry the type that ran. The whole deployment is
+  `targets.yaml` (g6.xlarge → g5.xlarge, g6.2xlarge). One launch attempt is made about every
+  minute; after `run.purchase.max_launch_attempts` refusals (default 30, set in the wizard as
+  "give up on a hardware option after N failed launch attempts") the target is **given up**: its
+  cells are marked `not_run` with a plain-language reason (how many refusals, which sizes and
+  markets, over how long), the run's META row lists it under `not_run`, and the run continues
+  with the other targets. The UI then says "Finished — GPU side did not run" with the reason on
+  the run, the instance row, the model row, the Results verdict and the executive summary; the
+  report opens with a "GPU SIDE DID NOT RUN" banner. Every attempt is logged under
+  `runs/<id>/capacity/` and listed in the report; the report rows carry the type that ran. The whole deployment is
   pinned to one AZ (`use1-az1`) so workers and targets share it; when EC2 says the type is
   available in another AZ, that is a redeploy of the network stack, not a run option.
 - More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`, `t4-m8i-4xl-torch`) are
@@ -159,7 +165,8 @@ on-demand`, or the "Purchase option" radio in the UI) and finds them again by th
 When a cell step fails, the `Check` step looks at the instance:
 
 - instance gone (interrupted, stopped, terminated): record the interruption, launch another
-  instance (Spot again while the 10-minute `spot_capacity_window_s` lasts, then On-Demand if
+  instance (Spot again while `spot_capacity_window_s` lasts — default 10 minutes, the wizard's
+  "fall back to On-Demand when Spot has had no capacity for N minutes" — then On-Demand if
   `spot_fallback_on_demand` is on), re-serve the model, and run only the cell's remaining
   levels; a level cut short is re-run from zero and its partial raw records are dropped;
 - instance healthy and a level failed: mark that level failed and continue with the rest;
@@ -224,7 +231,8 @@ themes; GPU is always green and CPU always blue.
 - **Test data**: the full dataset browser with filters by scenario, expected answer and hard-negative
   type, and the classification policy.
 - **Runs**: per hardware option the live instance state, its market (Spot, On-Demand, or On-Demand
-  as a fallback after 10 minutes without Spot capacity), capacity refusals and interruptions;
+  as a fallback after the run's Spot waiting time without capacity), capacity refusals against
+  the attempt budget, interruptions, and "Did not run" with the reason when a side was given up;
   per model-on-hardware what it is waiting for (the instance, the previous model, loading);
   per measurement the progress. Runs stopped or failed outside the normal path are reconciled
   with Step Functions.

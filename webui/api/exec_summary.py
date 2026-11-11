@@ -22,6 +22,9 @@ Rules:
 - Capacity (how many CPU machines replace one GPU, and whether that is within the stated limit) is the
   decision criterion; cost is context.
 - Mention accuracy and answer-quality findings where present; speed alone is not a recommendation.
+- If "hardware_that_did_not_run" is not empty, say so in the first sentence of the bottom line: which side
+  (GPU or CPU) did not run and why (no capacity), and that the other side's numbers therefore stand alone
+  with no comparison and no GPU-vs-CPU verdict. Never present a one-sided result as a comparison.
 - Structure, with these exact headings in Markdown: "## Bottom line", "## What was tested",
   "## Findings", "## Caveats", "## Recommendation", "## Suggested next step".
 - Bottom line: at most three sentences. Whole summary: at most 450 words.
@@ -88,6 +91,8 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
             "comparability": {k: comparability.get(k) for k in ("ok", "blockers", "warnings")},
+            "hardware_that_did_not_run": [{k: nr.get(k) for k in ("run_id", "side", "target", "instance_type", "reason")}
+                                          for nr in analysis.get("not_run") or []],
             "instance_pairing": analysis.get("pairing"), "findings": groups,
             "notes_from_reports": sorted(set(analysis.get("warnings") or []))[:12]}
 

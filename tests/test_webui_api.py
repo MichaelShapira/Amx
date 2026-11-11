@@ -144,6 +144,90 @@ def test_analysis_verdict_and_equivalence():
     assert out["pairing"][0]["fair"] is True
 
 
+CAPS = [{"time": "2026-11-11T09:38:00Z", "code": "InsufficientInstanceCapacity", "market": "spot", "instance_type": "g6.2xlarge"},
+        {"time": "2026-11-11T09:52:00Z", "code": "InsufficientInstanceCapacity", "market": "on-demand", "instance_type": "g5.xlarge"},
+        {"time": "2026-11-11T10:09:00Z", "code": "InsufficientInstanceCapacity", "market": "spot", "instance_type": "g5.4xlarge"}]
+
+
+def test_a_side_that_never_got_an_instance_says_did_not_run_and_why(monkeypatch):
+    """The 2026-11-11 run: GPU refused 25 times, run finished, UI said 'Not run' with no reason
+    and the instance row still said 'Waiting for capacity'."""
+    from webui.api import main
+
+    s3 = {"runs/r1/capacity/t1-g6.json": CAPS, "runs/r1/targets/t2-m8i-4xl.json": [
+        {"time": "2026-11-11T09:38:02Z", "event": "launched", "instance_id": "i-1", "instance_type": "m8i.8xlarge",
+         "lifecycle": "spot", "requested": "spot"}],
+          "runs/r1/resolved.json": {"purchase": {"type": "spot", "max_launch_attempts": 30, "spot_capacity_window_s": 600}}}
+    monkeypatch.setattr(main, "_s3_json", lambda key: s3.get(key))
+    monkeypatch.setattr(main, "_instance_states", lambda ids: {})
+    main._CACHE.pop("purchase:r1", None)
+    hw = {h["id"]: h for h in main.get_catalog()["hardware"]}
+    # Finished run: the GPU side did not run, in words.
+    gpu, cpu = main.target_status("r1", ["t1-g6", "t2-m8i-4xl"], True, hw)
+    assert gpu["did_not_run"] is True and gpu["state_label"] == "Did not run" and gpu["attempts_max"] == 30
+    assert gpu["status"].startswith("Did not run. AWS had no capacity: it refused 3 launch request(s) over 31 minutes for "
+                                    "g5.4xlarge, g5.xlarge, g6.2xlarge (On-Demand and Spot). The run gave up after its limit of 30 attempts")
+    assert "Waiting" not in gpu["status"]
+    assert cpu["did_not_run"] is False and cpu["state"] == "gone"
+    cells = [{"model": "RoBERTa", "hardware": "t1-g6", "status": "planned", "error": ""},
+             {"model": "RoBERTa", "hardware": "t2-m8i-4xl", "status": "ready", "error": ""}]
+    assert main.derive_cell_status(cells[0], cells, gpu, "complete") == "Not run — no capacity"
+    notes = main.run_notices([gpu, cpu], cells, "complete")
+    assert len(notes) == 1 and notes[0]["kind"] == "bad" and notes[0]["title"] == "The GPU side did not run"
+    assert "no GPU measurement to compare them with" in notes[0]["text"] and "raise the number of attempts" in notes[0]["text"]
+    # Still running: waiting, with the attempt budget, and a warning notice rather than a failure.
+    gpu_running = main.target_status("r1", ["t1-g6"], False, hw)[0]
+    assert gpu_running["did_not_run"] is False
+    assert gpu_running["status"] == ("Waiting for capacity: AWS refused 3 launch request(s) so far for g5.4xlarge, g5.xlarge, g6.2xlarge "
+                                     "(On-Demand and Spot) — the run gives up after 30 attempts")
+    assert main.derive_cell_status(cells[0], cells, gpu_running, "running") == "Waiting for an instance (capacity)"
+    assert main.run_notices([gpu_running], cells, "running")[0]["kind"] == "warn"
+    # A gave_up event written by the Lambda wins over the derived sentence, even mid-run.
+    s3["runs/r1/targets/t1-g6.json"] = [{"time": "2026-11-11T10:10:00Z", "event": "gave_up", "attempts": 30, "reason": "No capacity: AWS refused 25 launch request(s)."}]
+    g = main.target_status("r1", ["t1-g6"], False, hw)[0]
+    assert g["did_not_run"] is True and g["status"] == "Did not run. No capacity: AWS refused 25 launch request(s)."
+    main._CACHE.pop("purchase:r1", None)
+
+
+def test_comparison_marks_a_missing_side_instead_of_pretending_to_compare():
+    def row(acc, itype, conc, thr):
+        return {"model": "d1", "target": "t2-m8i-4xl", "accelerator": acc, "instance_type": itype, "engine": "vllm", "precision": "bf16",
+                "kind": "classifier", "workload": None, "bucket": None, "batch": 1, "conc": conc, "cls_s": thr, "req_s": thr,
+                "ttft_p99": None, "tpot_p50": None, "e2e_p99": 300.0, "e2e_p50": 200.0, "usd_per_hour": 1.7,
+                "usd_per_1m_items": 1.7 / (thr * 3.6), "error_pct": 0.0, "amx": "VERIFIED", "cell_key": "ck", "quality_delta": None}
+    run = {"name": "r", "suite": "standard", "mode": "smoke", "concurrency": [1, 10], "sla": {"p99_e2e_ms": 1000},
+           "cells": [{"target": "t1-g6"}, {"target": "t2-m8i-4xl"}], "instance_types": {"t1-g6": "g6.2xlarge"},
+           "purchase": {"type": "spot", "max_launch_attempts": 30}}
+    s = _summary(run, [row("cpu", "m8i.8xlarge", 1, 20.0), row("cpu", "m8i.8xlarge", 10, 40.0)])
+    s["capacity_errors"] = {"t1-g6": CAPS}
+    s.pop("not_run", None)                                   # an older report: derived from cells + capacity log
+    nr = compare.not_run(s)
+    assert len(nr) == 1 and nr[0]["side"] == "GPU" and nr[0]["instance_type"] == "g6.2xlarge" and nr[0]["refusals"] == 3
+    assert nr[0]["reason"].startswith("No capacity: AWS refused 3 launch request(s) for g5.4xlarge, g5.xlarge, g6.2xlarge (On-Demand and Spot)")
+    out = compare.analyze([s], {"p99_e2e_ms": 1000, "max_error_pct": 1.0}, limit=4)
+    g = out["groups"][0]
+    assert out["not_run"] == nr and g["missing"]["gpu"] == nr[0]["reason"] and g["missing"]["cpu"] is None
+    assert g["best_gpu"] is None and g["verdict"]["missing_side"] == "gpu"
+    assert g["verdict"]["text"].startswith("The GPU side did not run (no capacity), so there is nothing to compare")
+    # A newer report carries not_run itself; it is taken as is.
+    s2 = {**s, "not_run": [{"target": "t1-g6", "side": "GPU", "instance_type": "g6.2xlarge", "refusals": 25, "reason": "written by the report"}]}
+    assert compare.not_run(s2)[0]["reason"] == "written by the report" and compare.not_run(s2)[0]["run_id"] == s["run_id"]
+    # Nothing missing when every planned side measured something.
+    full = _summary(run, [row("cpu", "m8i.8xlarge", 1, 20.0), {**row("gpu", "g6.2xlarge", 1, 80.0), "target": "t1-g6", "amx": None}])
+    full.pop("not_run", None)
+    assert compare.not_run(full) == [] and compare.analyze([full], {"p99_e2e_ms": 1000, "max_error_pct": 1.0})["groups"][0]["missing"] == {"gpu": None, "cpu": None}
+
+
+def test_plan_carries_the_retry_budget_and_spot_wait():
+    w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "purchase": "spot",
+         "spot_fallback": True, "spot_wait_minutes": 25, "launch_attempts": 60}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["run"]["purchase"] == {"type": "spot", "spot_fallback_on_demand": True, "spot_capacity_window_s": 1500, "max_launch_attempts": 60}
+    assert c.post("/api/plan", json={**w, "launch_attempts": 0}).json()["run"]["purchase"]["max_launch_attempts"] == 1
+    d = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU]}).json()
+    assert d["run"]["purchase"]["max_launch_attempts"] == 30 and d["run"]["purchase"]["spot_capacity_window_s"] == 600
+
+
 def test_spa_is_served_when_built():
     r = c.get("/api/aws/status")
     assert r.status_code == 200 and "ok" in r.json()

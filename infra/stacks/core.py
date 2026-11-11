@@ -388,10 +388,13 @@ class CoreStack(Stack):
                                        "recovery": {"attempt": 0, "interruption_logged": False}})
         cells.item_processor(cstart.next(cpoll).next(ready))
         # Launch or start the target's instance; loop while capacity is short or the instance boots.
+        # `cells` lets a give-up (purchase.max_launch_attempts refused launches) mark every cell of the
+        # target as not_run with the reason, instead of leaving them 'planned' with no explanation.
         ensure = invoke("EnsureRunning", control, {"action": "ensure_running", "run_id.$": "$.run_id",
                                                     "target_id.$": "$.target.target_id", "purchase.$": "$.purchase",
                                                     "alternates.$": "$.target.alternates",
-                                                    "instance_type.$": "$.target.instance_type"},
+                                                    "instance_type.$": "$.target.instance_type",
+                                                    "cells.$": "$.target.cells"},
                         result_selector={"r.$": "$.Payload"}, result_path="$.inst")
         wait_launch = sfn.Wait(self, "WaitForInstance", time=sfn.WaitTime.duration(Duration.seconds(60)))
         target_failed = sfn.Pass(self, "TargetFailed")

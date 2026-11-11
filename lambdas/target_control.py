@@ -9,7 +9,11 @@ bench:target tag. Actions (event["action"]):
                   it is pending or capacity is short, so the state machine can wait and
                   call again (every call is idempotent). Spot capacity errors are retried
                   for purchase.spot_capacity_window_s, then an On-Demand instance is
-                  launched when spot_fallback_on_demand is set.
+                  launched when spot_fallback_on_demand is set. After
+                  purchase.max_launch_attempts refused launches the target is given up:
+                  its cells become `not_run` with a plain-language reason, the run's META
+                  row lists it under `not_run`, and the error is raised for the state
+                  machine's TargetFailed catch (the other targets continue).
   configure_start send `serve.sh start <spec>` through SSM; returns the command id
   configure_poll  {done, ok}; on success returns endpoint, api_path and the levels still
                   to run for the cell (levels already done or failed are skipped)
@@ -33,7 +37,7 @@ from lambdas import common
 CAPACITY_CODES = {"InsufficientInstanceCapacity", "InstanceLimitExceeded", "Unsupported",
                   "InsufficientCapacityOnHost", "MaxSpotInstanceCountExceeded", "SpotMaxPriceTooLow",
                   "RequestLimitExceeded"}
-TOTAL_LAUNCH_WINDOW_S = 1800        # give up on a target after this long without a running instance
+DEFAULT_MAX_LAUNCH_ATTEMPTS = 30    # purchase.max_launch_attempts: launch attempts before a target is given up
 CALL_BUDGET_S = 240                 # waiting inside one invocation; the state machine loops otherwise
 LIVE_STATES = ("pending", "running", "stopping", "stopped")
 
@@ -98,6 +102,49 @@ def _set_activity(target_id: str, **vals: Any) -> None:
     common.table().update_item(Key={"pk": f"TARGET#{target_id}", "sk": "ACTIVITY"},
                                UpdateExpression=f"SET {sets}", ExpressionAttributeNames={f"#{k}": k for k in vals},
                                ExpressionAttributeValues={f":{k}": common._ddb(v) for k, v in vals.items()})
+
+
+def capacity_reason(caps: list[dict], attempts: int, purchase: dict, cause: str | None = None) -> str:
+    """One plain sentence for the operator: how often AWS refused, which sizes and markets were
+    tried, over how long. Built from the run's capacity log (runs/<run>/capacity/<target>.json)."""
+    types = sorted({str(c.get("instance_type")) for c in caps if c.get("instance_type")})
+    markets = sorted({str(c.get("market")) for c in caps if c.get("market")})
+    mk = {"spot": "Spot", "on-demand": "On-Demand"}
+    market = " and ".join(mk.get(m, m) for m in markets) or ("Spot" if purchase.get("type", "spot") == "spot" else "On-Demand")
+    span = ""
+    times = sorted(str(c.get("time")) for c in caps if c.get("time"))
+    if len(times) >= 2:
+        try:
+            t0, t1 = (time.mktime(time.strptime(t[:19], "%Y-%m-%dT%H:%M:%S")) for t in (times[0], times[-1]))
+            span = f" over {max(1, round((t1 - t0) / 60))} minutes"
+        except ValueError:
+            span = ""
+    sizes = ", ".join(types) if types else "the requested size"
+    why = cause or f"after {attempts} attempt(s), the configured maximum"
+    return (f"No capacity: AWS refused {len(caps)} launch request(s){span} for {sizes} ({market}). "
+            f"The run gave up {why} and continued with the other hardware options.")
+
+
+def _give_up(run_id: str, tid: str, purchase: dict, attempts: int, cells: list[dict] | None,
+             cause: str | None = None) -> str:
+    """Record that this hardware option will not run in this run: a `gave_up` event on the target
+    log, every cell of the target set to `not_run` with the reason, and the run's META row told
+    which targets did not run — so the UI and the report can say so instead of a bare 'Not run'."""
+    try:
+        caps = common.get_json(f"runs/{run_id}/capacity/{tid}.json")
+    except ClientError:
+        caps = []
+    reason = capacity_reason(caps, attempts, purchase, cause)
+    _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "gave_up", "attempts": attempts,
+                                  "refusals": len(caps), "reason": reason})
+    for cell in cells or []:
+        if cell.get("cell_id"):
+            common.set_status(run_id, f"CELL#{cell['cell_id']}", "not_run", reason=reason)
+    common.table().update_item(Key={"pk": f"RUN#{run_id}", "sk": "META"},
+                               UpdateExpression="SET not_run = list_append(if_not_exists(not_run, :e), :v)",
+                               ExpressionAttributeValues={":e": [], ":v": [{"target_id": tid, "reason": reason,
+                                                                             "attempts": attempts}]})
+    return reason
 
 
 def market_options(purchase: dict) -> dict | None:
@@ -242,15 +289,25 @@ def ensure_running(event: dict, context: Any = None) -> dict:
         started = float(act.get("launch_started_at") or 0) or time.time()
         if not act.get("launch_started_at"):
             _set_activity(tid, launch_started_at=started)
-        if time.time() - started > TOTAL_LAUNCH_WINDOW_S:
-            _set_activity(tid, launch_started_at=0, launch_attempts=0)
-            raise RuntimeError(f"{tid}: no capacity after {TOTAL_LAUNCH_WINDOW_S} s")
         attempts = int(act.get("launch_attempts") or 0)
-        inst = _launch(run_id, tid, purchase, decide_market(purchase, started, time.time()),
-                       pick_instance_type(attempts, event.get("alternates"), requested_type))
+        max_attempts = int(purchase.get("max_launch_attempts") or DEFAULT_MAX_LAUNCH_ATTEMPTS)
+        if attempts >= max_attempts:
+            _set_activity(tid, launch_started_at=0, launch_attempts=0)
+            reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"))
+            raise RuntimeError(f"{tid}: {reason}")
+        try:
+            market = decide_market(purchase, started, time.time())
+        except RuntimeError:
+            # Spot window used up and the fallback is off: nothing left to try.
+            _set_activity(tid, launch_started_at=0, launch_attempts=0)
+            window = int(purchase.get("spot_capacity_window_s", 600)) // 60
+            reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"),
+                              cause=f"after {window} minutes without Spot capacity (falling back to On-Demand is off)")
+            raise RuntimeError(f"{tid}: {reason}") from None
+        inst = _launch(run_id, tid, purchase, market, pick_instance_type(attempts, event.get("alternates"), requested_type))
         if inst is None:
             _set_activity(tid, launch_attempts=attempts + 1)
-            return {"ready": False, "reason": "capacity"}
+            return {"ready": False, "reason": "capacity", "attempt": attempts + 1, "max_attempts": max_attempts}
         _set_activity(tid, launch_started_at=0, launch_attempts=0)
     iid = inst["InstanceId"]
     state = inst["State"]["Name"]
@@ -427,8 +484,15 @@ def check(event: dict, context: Any = None) -> dict:
     if inst is not None and inst["State"]["Name"] not in ("shutting-down", "terminated"):
         _terminate(iid)
     out["reset_levels"] = _reset_endpoint_failures(run_id, cell["cell_key"])
-    repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase,
-                           "instance_type": event.get("instance_type"), "alternates": event.get("alternates")}, context)
+    try:
+        # No `cells` here: the give-up marks only this cell (below), not the target's other cells,
+        # which may have finished on the lost instance.
+        repl = ensure_running({"run_id": run_id, "target_id": tid, "purchase": purchase,
+                               "instance_type": event.get("instance_type"), "alternates": event.get("alternates")}, context)
+    except RuntimeError as e:
+        common.set_status(run_id, f"CELL#{cell['cell_id']}", "failed",
+                          reason=f"replacement instance: {str(e).split(': ', 1)[-1][:400]}")
+        raise
     out["ready"] = repl["ready"]
     if repl["ready"]:
         out.update(instance_id=repl["instance_id"], private_ip=repl["private_ip"], lifecycle=repl["lifecycle"])

@@ -194,6 +194,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .side-card { border-radius: var(--radius); padding: 18px 20px; border: 1.5px solid; }
 .side-card.gpu { border-color: var(--gpu); background: color-mix(in srgb, var(--gpu-soft) 55%, var(--bg-2)); }
 .side-card.cpu { border-color: var(--cpu); background: color-mix(in srgb, var(--cpu-soft) 55%, var(--bg-2)); }
+.side-card.missing { border-color: var(--bad); border-style: dashed; background: color-mix(in srgb, var(--bad-soft) 55%, var(--bg-2)); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 14px; font-size: 13px; color: var(--fg-2); }
+.chart-legend-item { display: inline-flex; align-items: center; white-space: nowrap; }
+.chart-legend-item b { margin-right: 4px; }
 .side-card h3 { display: flex; align-items: center; gap: 10px; }
 
 .hero { background: var(--hero); color: white; border-radius: 20px; padding: 36px 40px; margin-bottom: 22px; position: relative; overflow: hidden; }

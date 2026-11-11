@@ -124,6 +124,27 @@ def test_render_csv_markdown_and_charts():
 
 def test_group_key_strips_only_the_repeat():
     assert report.group_key("m1__t2__bf16__short__c4__r2") == "m1__t2__bf16__short__c4"
+
+
+def test_side_that_never_ran_is_named_with_its_reason():
+    """GPU target planned, refused capacity, no metrics: the summary carries `not_run` with the
+    side and the reason, the warning says DID NOT RUN, and the markdown opens with a banner."""
+    inp = inputs()
+    inp.metrics = [m for m in inp.metrics if m["cell_key"] != GPU]
+    inp.quality = {CPU: inp.quality[CPU]}
+    inp.capacity["t1-g6"] = inp.capacity["t1-g6"] * 3 + [{"time": "2026-11-09T10:20:00Z", "code": "InsufficientInstanceCapacity",
+                                                          "instance_type": "g5.xlarge", "market": "on-demand"}]
+    s = report.build_summary(inp)
+    assert {r["target"] for r in s["rows"]} == {"t2-m8i-4xl"}
+    nr = s["not_run"]
+    assert len(nr) == 1 and nr[0]["target"] == "t1-g6" and nr[0]["side"] == "GPU" and nr[0]["refusals"] == 4
+    assert nr[0]["reason"].startswith("No capacity: AWS refused 4 launch request(s) for g5.xlarge, g6.xlarge")
+    assert "gave up after at most 30 attempts" in nr[0]["reason"] and "no GPU numbers" in nr[0]["reason"]
+    assert any(w.startswith("t1-g6 DID NOT RUN (GPU side)") for w in s["warnings"])
+    md = report.render(s, with_charts=False)["summary.md"].decode()
+    assert "**GPU SIDE DID NOT RUN** (t1-g6, g6.xlarge)" in md and md.index("DID NOT RUN") < md.index("## m1-qwen2.5-3b")
+    # A complete run has nothing to report.
+    assert report.build_summary(inputs())["not_run"] == []
     assert report.group_key("m1__t2__bf16__W1-short-accuracy__c16") == "m1__t2__bf16__W1-short-accuracy__c16"
 
 

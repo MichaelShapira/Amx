@@ -256,7 +256,20 @@ function StepHardware({ w, set }: SP) {
       <div className="mt">
         <Label help="Spot: spare capacity at a discount that AWS may reclaim with two minutes' notice; the run then launches a replacement and re-runs only the unfinished measurements. On-Demand: guaranteed for the run, full price. Cost columns always use On-Demand prices so results stay comparable.">How to buy the test instances</Label>
         <Toggle value={w.purchase} onChange={(v) => set({ purchase: v })} options={[{ value: "spot", label: "Spot (cheaper, may be interrupted)" }, { value: "on-demand", label: "On-Demand (guaranteed)" }]} />
-        {w.purchase === "spot" && <label className="row small mt"><input type="checkbox" checked={w.spot_fallback} onChange={(e) => set({ spot_fallback: e.target.checked })} /> Fall back to On-Demand if Spot has no capacity for 10 minutes</label>}
+        {w.purchase === "spot" && (
+          <div className="row small mt" style={{ alignItems: "center", gap: 8 }}>
+            <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={w.spot_fallback} onChange={(e) => set({ spot_fallback: e.target.checked })} /> Fall back to On-Demand when Spot has had no capacity for</label>
+            <input type="number" min={1} max={720} value={w.spot_wait_minutes} disabled={!w.spot_fallback} onChange={(e) => set({ spot_wait_minutes: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 70 }} /> minutes
+            <Help text="Spot is tried first. If AWS keeps answering 'no capacity', the run switches that hardware option to On-Demand (full price, guaranteed) after this many minutes. Untick to stay on Spot only." />
+          </div>
+        )}
+        <div className="row small mt" style={{ alignItems: "center", gap: 8 }}>
+          <span>Give up on a hardware option after</span>
+          <input type="number" min={1} max={720} value={w.launch_attempts} onChange={(e) => set({ launch_attempts: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 70 }} />
+          <span>failed launch attempts (about one a minute, so roughly {w.launch_attempts} minutes)</span>
+          <Help text="AWS sometimes has no machines of the requested size in the zone, especially GPUs. The run asks again about once a minute, trying the alternate sizes too. After this many refusals it gives up on that hardware option, marks it 'Did not run — no capacity' with the full reason, and finishes the other options. A higher number waits longer for capacity; a lower one fails fast." />
+        </div>
+        {w.launch_attempts < 10 && <Note kind="warn">Fewer than 10 attempts: GPU sizes are often refused several times in a row before one is granted. The GPU side may not run at all.</Note>}
       </div>
     </div>
   );
@@ -369,7 +382,7 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
           <ul className="muted" style={{ lineHeight: 1.8, paddingLeft: 18 }}>
             <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
             <li>Models: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
-            <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}</li>
+            <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}{w.purchase === "spot" && w.spot_fallback ? `, On-Demand after ${w.spot_wait_minutes} min without Spot` : ""} · gives up on a hardware option after {w.launch_attempts} failed launch attempts</li>
             <li>Load: {loadSentence(w)}</li>
             <li>{depthSentence(w, cat)}</li>
             <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: "whole answer within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>

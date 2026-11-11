@@ -90,6 +90,19 @@ def test_smoke_label_when_below_defaults():
     assert _run().is_smoke is True
 
 
+def test_launch_attempt_budget_is_bounded():
+    from bench.config import PurchaseCfg
+
+    assert PurchaseCfg().max_launch_attempts == 30 and PurchaseCfg().spot_capacity_window_s == 600
+    assert PurchaseCfg(max_launch_attempts=1).max_launch_attempts == 1
+    with pytest.raises(ValidationError):
+        PurchaseCfg(max_launch_attempts=0)
+    with pytest.raises(ValidationError):
+        PurchaseCfg(max_launch_attempts=721)
+    with pytest.raises(ValidationError):
+        PurchaseCfg(spot_capacity_window_s=30)
+
+
 def test_warmup_minimum_and_timeout_cap():
     with pytest.raises(ValidationError, match="20 warm-up"):
         _run(warmup_requests=5)

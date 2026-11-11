@@ -160,6 +160,48 @@ def _acc(summary: dict, r: dict) -> dict | None:
             "qualifies_vs_gpu": (a.get("vs_gpu") or {}).get("qualifies"), "fit": bool(a["fitness"]["fit"])}
 
 
+_TARGETS: dict = {}
+
+
+def _accelerator(tid: str) -> str:
+    if not _TARGETS:
+        try:
+            _TARGETS.update({k: v.accelerator for k, v in
+                             report.load_targets(report.ROOT / "config" / "targets.yaml").resolved().items()})
+        except Exception as e:  # noqa: BLE001 - fall back to the id convention below
+            _TARGETS["_error"] = str(e)[:80]
+    return _TARGETS.get(tid) or ("gpu" if "-g" in tid else "cpu")
+
+
+def not_run(summary: dict) -> list[dict]:
+    """Hardware options the run planned but that produced no measurement (the GPU side with no
+    capacity, for example), each with a plain-language reason. Reports written since 2026-11-11
+    carry `not_run`; for older ones it is derived from the run's cells and capacity log."""
+    if summary.get("not_run") is not None:
+        return [{**nr, "run_id": summary["run_id"]} for nr in summary["not_run"]]
+    run = summary.get("run") or {}
+    planned = {c["target"] for c in run.get("cells") or []}
+    ran = {r["target"] for r in summary.get("rows") or []}
+    caps_all = summary.get("capacity_errors") or {}
+    budget = (run.get("purchase") or {}).get("max_launch_attempts")
+    out = []
+    for tid in sorted(planned - ran):
+        caps = caps_all.get(tid) or []
+        side = "GPU" if _accelerator(tid) == "gpu" else "CPU"
+        types = sorted({str(c.get("instance_type")) for c in caps if c.get("instance_type")})
+        mk = {"spot": "Spot", "on-demand": "On-Demand"}
+        markets = sorted({mk.get(str(c.get("market")), str(c.get("market"))) for c in caps if c.get("market")})
+        if caps:
+            reason = (f"No capacity: AWS refused {len(caps)} launch request(s) for {', '.join(types) or 'the requested size'} "
+                      f"({' and '.join(markets) or 'requested market'}); the run gave up"
+                      f"{f' after at most {budget} attempts' if budget else ''}. There are no {side} numbers in this report.")
+        else:
+            reason = f"No instance served it (no capacity refusal was logged). There are no {side} numbers in this report."
+        out.append({"run_id": summary["run_id"], "target": tid, "side": side,
+                    "instance_type": (run.get("instance_types") or {}).get(tid), "refusals": len(caps), "reason": reason})
+    return out
+
+
 def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
     """Rows from every run, re-judged against the given targets, grouped by question."""
     rows = []
@@ -170,6 +212,11 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             r["meets_user_sla"], r["user_sla_reason"] = report.meets_sla(r, sla)
             r["accuracy"] = _acc(s, r)
             rows.append(r)
+    missing = [nr for s in summaries for nr in not_run(s)]
+    # A side counts as missing only when NO selected run measured it.
+    measured_sides = {r["accelerator"] for r in rows}
+    missing_side = {side: next((nr for nr in missing if nr["side"].lower() == side), None)
+                    for side in ("gpu", "cpu") if side not in measured_sides}
     groups: dict[str, dict] = {}
     for r in rows:
         key, label = _group_key(r)
@@ -210,6 +257,14 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                        "text": (f"To match one {best_gpu['instance_type']} you need {n} × {best_cpu['instance_type']}, costing "
                                 f"{ratio:.1f}x as much per hour, " + ("within your limit: the CPU side is a viable alternative."
                                                                      if n <= limit else f"above your limit of {limit}: conditional."))}
+        elif missing_side.get("gpu") and not gpu_rows:
+            verdict = {"text": "The GPU side did not run (no capacity), so there is nothing to compare the CPU numbers "
+                               "with. The CPU figures below stand alone; no verdict is possible.", "within_limit": None,
+                       "missing_side": "gpu"}
+        elif missing_side.get("cpu") and not cpu_rows:
+            verdict = {"text": "The CPU side did not run (no capacity), so there is nothing to compare the GPU numbers "
+                               "with. The GPU figures below stand alone; no verdict is possible.", "within_limit": None,
+                       "missing_side": "cpu"}
         elif best_gpu and not best_cpu:
             verdict = {"text": "No CPU measurement meets your targets; the GPU is the only option that does.", "within_limit": False}
         elif best_cpu and not best_gpu:
@@ -226,6 +281,8 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                   for r in grows]
         out_groups.append({"key": g["key"], "label": g["label"], "units": u, "best_gpu": card(best_gpu), "best_cpu": card(best_cpu),
                            "verdict": verdict, "equivalence": equivalence, "points": points,
+                           "missing": {"gpu": (missing_side.get("gpu") or {}).get("reason") if not gpu_rows else None,
+                                       "cpu": (missing_side.get("cpu") or {}).get("reason") if not cpu_rows else None},
                            "series": sorted({_series_name(r) for r in grows})})
     pairs = []
     for s in summaries:
@@ -235,7 +292,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
     gpu_types = sorted({r["instance_type"] for r in rows if r["accelerator"] == "gpu"})
     cpu_types = sorted({r["instance_type"] for r in rows if r["accelerator"] == "cpu"})
     cross = [pairing.judge(c, g) for c in cpu_types for g in gpu_types]
-    return {"groups": out_groups, "pairing": cross, "run_pairing": pairs,
+    return {"groups": out_groups, "pairing": cross, "run_pairing": pairs, "not_run": missing,
             "warnings": [w for s in summaries for w in (s.get("warnings") or [])],
             "smoke": any(s.get("smoke") for s in summaries)}
 

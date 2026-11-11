@@ -79,6 +79,8 @@ class Wizard(BaseModel):
     sla: dict = {}
     purchase: str = "spot"
     spot_fallback: bool = True
+    spot_wait_minutes: int = 10                # try Spot this long before falling back to On-Demand
+    launch_attempts: int = 30                  # launch attempts (about one a minute) before giving up on a hardware option
     name: str = ""
     allow_unfair: bool = False
 
@@ -108,7 +110,9 @@ def _run_dict(w: Wizard) -> dict:
         "concurrency": conc, "per_level": {"requests": int(requests)}, "repeats": int(passes), "warmup_requests": 20,
         "quality": {"enabled": w.use_case == "standard"},
         "sla": {k: v for k, v in (w.sla or {}).items() if v} | {"max_error_pct": float((w.sla or {}).get("max_error_pct") or 1.0)},
-        "purchase": {"type": w.purchase, "spot_fallback_on_demand": bool(w.spot_fallback)},
+        "purchase": {"type": w.purchase, "spot_fallback_on_demand": bool(w.spot_fallback),
+                     "spot_capacity_window_s": max(1, int(w.spot_wait_minutes)) * 60,
+                     "max_launch_attempts": max(1, int(w.launch_attempts))},
         "execution": {"parallel_targets": bool(w.parallel_targets)},
     }
     if w.request_mode == "batch":
@@ -291,7 +295,7 @@ RUN_STATUS = {"running": "Running", "complete": "Finished", "refused": "Refused 
 SFN_STATUS = {"ABORTED": "stopped", "FAILED": "failed", "TIMED_OUT": "timed_out"}
 CELL_STATUS = {"planned": "Waiting", "configuring": "Loading the model", "ready": "Measuring",
                "bringup_failed": "Failed to start", "interrupted": "Instance lost, replacing it", "failed": "Failed",
-               "done": "Done"}
+               "done": "Done", "not_run": "Not run — no capacity"}
 INSTANCE_STATE = {"pending": "Starting", "running": "Running", "stopping": "Stopping", "stopped": "Stopped",
                   "shutting-down": "Terminating", "terminated": "Terminated"}
 
@@ -325,10 +329,57 @@ def _instance_states(ids: list[str]) -> dict[str, dict]:
     return out
 
 
+def _purchase_cfg(run_id: str) -> dict:
+    """The run's purchase settings (Spot window, attempt budget) from runs/<id>/resolved.json."""
+    key = f"purchase:{run_id}"
+    if key not in _CACHE:
+        res = _s3_json(f"runs/{run_id}/resolved.json") or {}
+        _CACHE[key] = dict(res.get("purchase") or {})
+    return _CACHE[key]
+
+
+def _tried(caps: list[dict]) -> tuple[str, str]:
+    """'g6.2xlarge, g5.xlarge' and 'Spot and On-Demand' from a capacity log."""
+    types = sorted({str(c.get("instance_type")) for c in caps if c.get("instance_type")})
+    mk = {"spot": "Spot", "on-demand": "On-Demand"}
+    markets = sorted({mk.get(str(c.get("market")), str(c.get("market"))) for c in caps if c.get("market")})
+    return ", ".join(types) or "the requested size", " and ".join(markets) or "the requested market"
+
+
+def _minutes_between(caps: list[dict]) -> int | None:
+    times = sorted(str(c.get("time")) for c in caps if c.get("time"))
+    if len(times) < 2:
+        return None
+    try:
+        t0, t1 = (time.mktime(time.strptime(t[:19], "%Y-%m-%dT%H:%M:%S")) for t in (times[0], times[-1]))
+    except ValueError:
+        return None
+    return max(1, round((t1 - t0) / 60))
+
+
+def not_run_reason(caps: list[dict], purchase: dict, gave_up: dict | None) -> str:
+    """Why a hardware option never got an instance, for a reader who is not an engineer."""
+    if gave_up and gave_up.get("reason"):
+        return str(gave_up["reason"])
+    sizes, markets = _tried(caps)
+    span = _minutes_between(caps)
+    budget = purchase.get("max_launch_attempts")
+    if caps:
+        return (f"AWS had no capacity: it refused {len(caps)} launch request(s)"
+                f"{f' over {span} minutes' if span else ''} for {sizes} ({markets}). The run gave up"
+                f"{f' after its limit of {budget} attempts' if budget else ''} and continued with the other hardware options.")
+    return "No instance was ever launched for this hardware option, and no capacity refusal was logged."
+
+
 def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: dict) -> list[dict]:
     """Per hardware option: the instance that serves it, its live state, market, whether On-Demand
-    came from a Spot fallback, capacity refusals and interruptions, in one sentence."""
+    came from a Spot fallback, capacity refusals and interruptions, in one sentence. A hardware
+    option that never got an instance is reported as *did not run*, with the reason — never as a
+    bare 'Not run' or as still waiting once the run is over."""
     out = []
+    purchase = _purchase_cfg(run_id)
+    budget = purchase.get("max_launch_attempts")
+    spot_minutes = int(purchase.get("spot_capacity_window_s") or 600) // 60
     for tid in target_ids:
         events = _s3_json(f"runs/{run_id}/targets/{tid}.json") or []
         caps = _s3_json(f"runs/{run_id}/capacity/{tid}.json") or []
@@ -336,20 +387,28 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
         last = launches[-1] if launches else None
         live = _instance_states([last["instance_id"]]).get(last["instance_id"]) if last else None
         interruptions = [e for e in events if e.get("event") == "interrupted"]
-        requested = next((e.get("requested") for e in reversed(events) if e.get("requested")), None)
+        gave_up = next((e for e in reversed(events) if e.get("event") == "gave_up"), None)
+        requested = next((e.get("requested") for e in reversed(events) if e.get("requested")), None) or purchase.get("type")
         lifecycle = (live or {}).get("lifecycle") or (last or {}).get("lifecycle")
         fallback = bool(requested == "spot" and lifecycle == "on-demand")
         state = (live or {}).get("state")
+        did_not_run, reason = False, None
         market = None
         if lifecycle:
-            market = "Spot" if lifecycle == "spot" else ("On-Demand (fell back from Spot: no Spot capacity for 10 minutes)"
+            market = "Spot" if lifecycle == "spot" else (f"On-Demand (fell back from Spot: no Spot capacity for {spot_minutes} minutes)"
                                                         if fallback else "On-Demand")
         if last is None:
-            if caps:
-                tried = sorted({f"{c.get('instance_type')} {c.get('market', '')}".strip() for c in caps})
-                phrase = f"Waiting for capacity: refused {len(caps)} time(s) so far ({', '.join(tried)})"
+            if gave_up or run_finished:
+                did_not_run = True
+                reason = not_run_reason(caps, purchase, gave_up)
+                phrase = f"Did not run. {reason}"
+                state = "not_run"
+            elif caps:
+                sizes, markets = _tried(caps)
+                phrase = (f"Waiting for capacity: AWS refused {len(caps)} launch request(s) so far for {sizes} ({markets})"
+                          + (f" — the run gives up after {budget} attempts" if budget else ""))
             else:
-                phrase = "Finished without an instance" if run_finished else "Requesting an instance"
+                phrase = "Requesting an instance"
         elif live is None:
             # EC2 forgets terminated instances after about an hour: the run's own log is the record.
             ended = "Terminated after the run" if lifecycle == "spot" else "Stopped after the run"
@@ -366,8 +425,10 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
                 phrase += f" · after {len(caps)} capacity refusal(s)"
         out.append({"hardware": tid, "hardware_label": hw.get(tid, {}).get("label", tid),
                     "instance_id": (last or {}).get("instance_id"), "instance_type": (live or last or {}).get("type") or (last or {}).get("instance_type"),
-                    "state": state, "state_label": INSTANCE_STATE.get(state or "", state), "lifecycle": lifecycle, "requested": requested,
+                    "state": state, "state_label": "Did not run" if did_not_run else INSTANCE_STATE.get(state or "", state),
+                    "lifecycle": lifecycle, "requested": requested,
                     "fallback_from_spot": fallback, "capacity_refusals": len(caps), "interruptions": len(interruptions),
+                    "attempts_max": budget, "did_not_run": did_not_run, "not_run_reason": reason,
                     "launched_at": (live or {}).get("launched_at") or (last or {}).get("time"), "status": phrase,
                     "events": [{k: e.get(k) for k in ("time", "event", "instance_id", "instance_type", "lifecycle", "state_reason")}
                                for e in events][-8:]})
@@ -375,11 +436,13 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
 
 
 def derive_cell_status(cell: dict, siblings: list[dict], target: dict | None, run_status: str) -> str:
-    """'planned' is ambiguous: say what the cell is waiting for."""
+    """'planned' is ambiguous: say what the cell is waiting for — or that it never ran, and why."""
     s = cell.get("status")
     if s != "planned":
         return CELL_STATUS.get(s, s)
-    if run_status == "complete":
+    if target and target.get("did_not_run"):
+        return "Not run — no capacity"
+    if run_status in ("complete", "stopped", "failed", "timed_out"):
         return "Not run"
     if target and target.get("state") != "running":
         return "Waiting for the instance" if target.get("instance_id") else "Waiting for an instance (capacity)"
@@ -387,6 +450,31 @@ def derive_cell_status(cell: dict, siblings: list[dict], target: dict | None, ru
     if busy:
         return f"Queued behind {busy[0]['model']}"
     return "About to start"
+
+
+def run_notices(targets: list[dict], cells: list[dict], run_status: str) -> list[dict]:
+    """The things a reader must not miss, in full sentences: a side that did not run and what
+    that means for the results."""
+    notes = []
+    for t in targets:
+        if not t.get("did_not_run"):
+            continue
+        side = "GPU" if t["hardware_label"].startswith("GPU") else "CPU"
+        others = [x for x in targets if x is not t and not x.get("did_not_run")]
+        other_side = "CPU" if side == "GPU" else "GPU"
+        consequence = (f" The {other_side} results below stand alone: there is no {side} measurement to compare them with."
+                       if others else " Nothing was measured in this run.")
+        notes.append({"kind": "bad", "title": f"The {side} side did not run",
+                      "text": f"{t['hardware_label']}: {t['not_run_reason']}{consequence} "
+                              "Start the run again later, choose another instance size, or raise the number of attempts "
+                              "before giving up."})
+    waiting = [t for t in targets if not t.get("did_not_run") and t.get("instance_id") is None and t.get("capacity_refusals")]
+    if run_status == "running" and waiting:
+        for t in waiting:
+            side = "GPU" if t["hardware_label"].startswith("GPU") else "CPU"
+            notes.append({"kind": "warn", "title": f"The {side} side is waiting for capacity",
+                          "text": f"{t['hardware_label']}: {t['status']}."})
+    return notes
 LEVEL_STATUS = {"running": "Running", "done": "Done", "failed": "Failed", "incomplete": "Stopped early",
                 "pending": "Waiting to be re-run"}
 
@@ -405,9 +493,21 @@ def list_runs():
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
     items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     _reconcile(items)
-    return [{"run_id": i["pk"][4:], "status": i.get("status"), "status_label": RUN_STATUS.get(i.get("status"), i.get("status")),
+    hw = {h["id"]: h for h in get_catalog()["hardware"]}
+
+    def label(i: dict) -> str:
+        base = RUN_STATUS.get(i.get("status"), i.get("status"))
+        nr = i.get("not_run") or []          # written by target_control when a hardware option is given up
+        if nr and i.get("status") == "complete":
+            sides = sorted({"GPU" if hw.get(x.get("target_id"), {}).get("label", "").startswith("GPU") else "CPU" for x in nr})
+            return f"{base} — {' and '.join(sides)} side did not run"
+        return base
+
+    return [{"run_id": i["pk"][4:], "status": i.get("status"), "status_label": label(i),
              "updated_at": i.get("updated_at"), "grade": "quick" if i.get("smoke") else "full", "purchase": i.get("purchase"),
-             "n_cells": i.get("n_cells"), "errors": i.get("errors")} for i in items]
+             "n_cells": i.get("n_cells"), "errors": i.get("errors"),
+             "not_run": [{"hardware": x.get("target_id"), "hardware_label": hw.get(x.get("target_id"), {}).get("label", x.get("target_id")),
+                          "reason": x.get("reason")} for x in (i.get("not_run") or [])]} for i in items]
 
 
 def _reconcile(items: list[dict]) -> None:
@@ -485,13 +585,22 @@ def get_run(run_id: str):
     tmap = {t["hardware"]: t for t in targets}
     for c in cells:
         sibs = [x for x in cells if x["hardware"] == c["hardware"]]
-        c["status_label"] = derive_cell_status(c, sibs, tmap.get(c["hardware"]), meta.get("status"))
+        t = tmap.get(c["hardware"])
+        c["status_label"] = derive_cell_status(c, sibs, t, meta.get("status"))
+        if c["status"] in ("planned", "not_run") and t and t.get("did_not_run"):
+            c["status"] = "not_run"
+            c["error"] = c["error"] or t.get("not_run_reason") or ""
         if c["status"] == "ready" and all(lv["status"] in ("done", "failed") for lv in levels
                                           if lv["hardware"] == c["hardware"] and lv["model"] == c["model"]) and levels:
             c["status_label"] = "Done"
-    return {"run_id": run_id, "status": meta.get("status"), "status_label": RUN_STATUS.get(meta.get("status"), meta.get("status")),
+    notices = run_notices(targets, cells, meta.get("status"))
+    status_label = RUN_STATUS.get(meta.get("status"), meta.get("status"))
+    if meta.get("status") == "complete" and any(t.get("did_not_run") for t in targets):
+        sides = sorted({"GPU" if t["hardware_label"].startswith("GPU") else "CPU" for t in targets if t.get("did_not_run")})
+        status_label = f"Finished — {' and '.join(sides)} side did not run"
+    return {"run_id": run_id, "status": meta.get("status"), "status_label": status_label,
             "grade": "quick" if meta.get("smoke") else "full", "purchase": meta.get("purchase"), "updated_at": meta.get("updated_at"),
-            "refusal": meta.get("errors") if meta.get("status") == "refused" else None,
+            "refusal": meta.get("errors") if meta.get("status") == "refused" else None, "notices": notices,
             "progress": {"done": done, "total": len(levels)}, "cells": cells, "targets": targets,
             "levels": sorted(levels, key=lambda x: (x["hardware"], x["model"], x["what"], x["conc"] or 0, x["pass"] or 0)),
             "has_report": meta.get("status") == "complete"}

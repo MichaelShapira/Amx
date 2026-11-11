@@ -36,13 +36,14 @@ export interface Wizard {
   depth: "quick" | "full" | "custom"; requests: number | null; passes: number | null; models: string[]; precision: string;
   gpu: Side | null; cpus: Side[]; parallel_targets: boolean; request_mode: "single" | "concurrent" | "batch";
   concurrency: number[]; batch_sizes: number[]; sla: Record<string, number | undefined>; purchase: "spot" | "on-demand";
-  spot_fallback: boolean; name: string; allow_unfair: boolean;
+  spot_fallback: boolean; spot_wait_minutes: number; launch_attempts: number; name: string; allow_unfair: boolean;
 }
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
   preset: "inline_standard", depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
   gpu: null, cpus: [], parallel_targets: true, request_mode: "concurrent", concurrency: [1, 4, 16], batch_sizes: [8],
-  sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, name: "", allow_unfair: false,
+  sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, spot_wait_minutes: 10, launch_attempts: 30,
+  name: "", allow_unfair: false,
 };
 
 export interface Reason { kind: string; ok: boolean; text: string }
@@ -57,16 +58,21 @@ export interface Plan {
   estimate: { wall_clock_hours: number; usd: { instances: number; nat_gateway: number; lambda: number; total: number }; note: string } | null;
 }
 
-export interface RunRow { run_id: string; status: string; status_label: string; updated_at: string; grade: "quick" | "full"; purchase: string; n_cells: number }
+export interface RunRow {
+  run_id: string; status: string; status_label: string; updated_at: string; grade: "quick" | "full"; purchase: string; n_cells: number;
+  not_run: { hardware: string; hardware_label: string; reason: string }[];
+}
 export interface TargetStatus {
   hardware: string; hardware_label: string; instance_id: string | null; instance_type: string | null; state: string | null; state_label: string | null;
   lifecycle: "spot" | "on-demand" | null; requested: string | null; fallback_from_spot: boolean; capacity_refusals: number; interruptions: number;
+  attempts_max: number | null; did_not_run: boolean; not_run_reason: string | null;
   launched_at: string | null; status: string; events: { time: string; event: string; instance_id?: string; instance_type?: string; lifecycle?: string; state_reason?: string }[];
 }
+export interface Notice { kind: "bad" | "warn" | "ok"; title: string; text: string }
 export interface ExecSummary { markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number }; seconds: number; generated_at: string }
 export interface RunDetail {
   run_id: string; status: string; status_label: string; grade: string; purchase: string; updated_at: string; refusal: string[] | null;
-  progress: { done: number; total: number }; has_report: boolean; targets: TargetStatus[];
+  notices: Notice[]; progress: { done: number; total: number }; has_report: boolean; targets: TargetStatus[];
   cells: { model: string; hardware: string; hardware_label: string; precision: string; engine: string; status: string; status_label: string; measurements: number; error: string }[];
   levels: { model: string; hardware: string; hardware_label: string; what: string; conc: number | null; batch: number; pass: number | null; status: string; status_label: string; completed: number; errors: number; detail: string }[];
 }
@@ -79,14 +85,15 @@ export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batc
 export interface Group {
   key: string; label: string; units: { thr: string; thr_label: string; cost: string; cost_label: string; lat: string; lat_label: string; lat_sla: string };
   best_gpu: Card | null; best_cpu: Card | null;
-  verdict: { text: string; instances_per_gpu?: number; hourly_cost_ratio?: number; within_limit: boolean | null; limit?: number } | null;
+  verdict: { text: string; instances_per_gpu?: number; hourly_cost_ratio?: number; within_limit: boolean | null; limit?: number; missing_side?: "gpu" | "cpu" } | null;
   equivalence: { series: string; instance_type: string; precision: string; conc: number; instances_per_gpu: number; hourly_cost_ratio: number; within_limit: boolean; run_id: string }[];
-  points: Point[]; series: string[];
+  points: Point[]; series: string[]; missing: { gpu: string | null; cpu: string | null };
 }
+export interface NotRun { run_id: string; target: string; side: "GPU" | "CPU"; instance_type: string | null; refusals: number; reason: string }
 export interface CompareOut {
   comparability: { ok: boolean; blockers: string[]; warnings: string[]; shapes: Shape[] };
   sla: Record<string, number | string | null>;
-  analysis: { groups: Group[]; pairing: Pairing[]; warnings: string[]; smoke: boolean } | null;
+  analysis: { groups: Group[]; pairing: Pairing[]; warnings: string[]; smoke: boolean; not_run: NotRun[] } | null;
   runs: { run_id: string; shape: Shape; smoke: boolean }[];
 }
 

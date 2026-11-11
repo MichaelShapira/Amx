@@ -4,7 +4,7 @@ import Markdown from "react-markdown";
 import { api, fmt, type CompareOut, type ExecSummary, type Group, type RunRow, type SummaryInfo } from "../api";
 import { useCatalog } from "../App";
 import { Badge, Help, Label, Metric, Note, Spinner, Toggle } from "../components/ui";
-import { Curves, InstancesBar } from "../components/Charts";
+import { Curves, InstancesBar, Swatch, seriesKeys, seriesStyles } from "../components/Charts";
 
 export default function Results() {
   const cat = useCatalog();
@@ -80,6 +80,15 @@ export default function Results() {
             {selected.length < 2 && <Note kind="ok">One run selected: all its measurements come from the same test, so they are comparable by construction.</Note>}
             {selected.length >= 2 && out.comparability.ok && <Note kind="ok"><b>Comparable.</b> Same use case, same test data and request shape across the {selected.length} runs.</Note>}
             {out.comparability.blockers.map((b, i) => <Note key={i} kind="bad"><b>Not comparable.</b> {b}</Note>)}
+            {out.analysis?.not_run.map((n, i) => {
+              const sideMeasured = out.analysis!.groups.some((g) => g.points.some((p) => p.side === n.side.toLowerCase()));
+              return (
+                <Note key={"nr" + i} kind="bad">
+                  <b>The {n.side} side did not run{selected.length > 1 ? ` in ${n.run_id}` : ""}.</b> {n.instance_type ? `${n.instance_type}: ` : ""}{n.reason}
+                  {!sideMeasured && <> <b>What follows is a one-sided picture, not a GPU-vs-CPU comparison.</b> Start the run again later, pick another {n.side} size, or raise the number of launch attempts before giving up.</>}
+                </Note>
+              );
+            })}
             {out.comparability.warnings.map((b, i) => <Note key={"w" + i} kind="warn">{b}</Note>)}
             {out.analysis?.pairing.map((p, i) => <Note key={"p" + i} kind={p.fair ? "ok" : "warn"}><b>{p.fair ? "Fair instance pairing" : "Unfair instance pairing"}</b> — {p.reason}.</Note>)}
             {out.analysis?.smoke && <Note kind="warn">Quick check: these numbers rest on fewer than 200 requests per measurement, or the test was not repeated 3 times. They show the shape of the result, not a basis for a decision.</Note>}
@@ -135,6 +144,8 @@ export default function Results() {
 
 function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_gpu"]; other: Group["best_gpu"]; g: Group }) {
   const cat = useCatalog();
+  const missing = g.missing?.[kind];
+  if (!c && missing) return <div className={`side-card ${kind} missing`}><h3><Badge kind="bad">{kind.toUpperCase()} did not run</Badge></h3><div className="small">{missing}</div><div className="muted small mt">Nothing on this side was measured, so the {kind === "gpu" ? "CPU" : "GPU"} card next to it has no comparison figures.</div></div>;
   if (!c) return <div className={`side-card ${kind}`}><h3><Badge kind={kind}>{kind.toUpperCase()}</Badge> No measurement meets your targets</h3><div className="muted small">Relax the targets or look at the charts below to see how far off it is.</div></div>;
   const r = (a: number | null, b: number | null | undefined) => (a && b ? a / b : null);
   const isCpu = kind === "cpu";
@@ -160,6 +171,7 @@ function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_g
 function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; view: "all" | "one"; series: string | null; setSeries: (s: string | null) => void; limit: number; target: number | null }) {
   const shown = view === "one" ? (series && g.series.includes(series) ? series : g.series[0]) : null;
   const pts = shown ? g.points.filter((p) => p.series === shown) : g.points;
+  const styles = seriesStyles(seriesKeys(g.points));
   return (
     <div className="card mt">
       <h2>{g.label}</h2>
@@ -184,7 +196,7 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
       <details className="mt"><summary className="small">All measurements in this group</summary>
         <table className="tbl mt">
           <thead><tr><th>Hardware · software · format</th><th className="num">Concurrent</th><th className="num">Batch</th><th className="num">{g.units.thr_label}</th><th className="num">{g.units.lat_label}</th><th className="num">median (ms)</th><th className="num">{g.units.cost_label}</th><th className="num">errors %</th><th>Meets targets</th><th>Run</th></tr></thead>
-          <tbody>{g.points.map((p, i) => <tr key={i}><td><Badge kind={p.side}>{p.side.toUpperCase()}</Badge> {p.series.replace(/^(GPU|CPU) · /, "")}</td><td className="num">{p.conc}</td><td className="num">{p.batch > 1 ? p.batch : "–"}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">{fmt.n(p.latency)}</td><td className="num">{fmt.n(p.e2e_p50)}</td><td className="num">{fmt.usd(p.cost)}</td><td className="num">{fmt.n(p.error_pct, 1)}</td><td>{p.meets ? <Badge kind="ok">yes</Badge> : <Badge kind="bad">{p.reason || "no"}</Badge>}</td><td className="tiny">{p.run_id}</td></tr>)}</tbody>
+          <tbody>{g.points.map((p, i) => <tr key={i}><td><Swatch style={styles[p.series + (p.batch > 1 ? ` ·b${p.batch}` : "")]} /><Badge kind={p.side}>{p.side.toUpperCase()}</Badge> {p.series.replace(/^(GPU|CPU) · /, "")}</td><td className="num">{p.conc}</td><td className="num">{p.batch > 1 ? p.batch : "–"}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">{fmt.n(p.latency)}</td><td className="num">{fmt.n(p.e2e_p50)}</td><td className="num">{fmt.usd(p.cost)}</td><td className="num">{fmt.n(p.error_pct, 1)}</td><td>{p.meets ? <Badge kind="ok">yes</Badge> : <Badge kind="bad">{p.reason || "no"}</Badge>}</td><td className="tiny">{p.run_id}</td></tr>)}</tbody>
         </table>
       </details>
     </div>
