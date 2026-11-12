@@ -28,10 +28,12 @@ export default function Runs() {
     } catch (e) { setErr((e as Error).message); }
     finally { setDeleting(null); }
   };
+  const [detailErr, setDetailErr] = useState<string | null>(null);
   useEffect(() => {
-    if (!id) { setDetail(null); return; }
+    if (!id) { setDetail(null); setDetailErr(null); return; }
     let alive = true;
-    const tick = () => api.run(id).then((d) => alive && setDetail(d)).catch((e) => alive && setErr(e.message));
+    setDetail(null); setDetailErr(null);
+    const tick = () => api.run(id).then((d) => { if (alive) { setDetail(d); setDetailErr(null); } }).catch((e) => alive && setDetailErr(e.message));
     tick();
     const t = setInterval(tick, 15000);
     return () => { alive = false; clearInterval(t); };
@@ -50,11 +52,16 @@ export default function Runs() {
             <tbody>
               {runs.map((r) => (
                 <tr key={r.run_id} style={{ cursor: "pointer" }} onClick={() => nav(`/runs/${r.run_id}`)}>
-                  <td><b>{r.run_id}</b></td>
+                  <td>
+                    <b>{r.name && r.name !== r.run_id ? r.name : r.run_id}</b>
+                    {r.name && r.name !== r.run_id && <div className="tiny muted">{r.run_id}</div>}
+                    {r.model && <div className="tiny muted">{r.model}</div>}
+                    {r.errors && r.errors.length > 0 && (r.status === "failed" || r.status === "timed_out" || r.status === "refused") && <div className="small" style={{ color: "var(--bad)", maxWidth: 520, whiteSpace: "normal" }}>{r.errors[0]}</div>}
+                  </td>
                   <td><Badge kind={r.not_run?.length ? "bad" : statusKind(r.status)}>{r.status_label}</Badge></td>
-                  <td><Badge kind={r.grade === "full" ? "ok" : "warn"}>{r.grade === "full" ? "Decision-grade" : "Quick check"}</Badge></td>
-                  <td>{r.purchase}</td>
-                  <td className="muted">{r.updated_at}</td>
+                  <td>{r.purchase ? <Badge kind={r.grade === "full" ? "ok" : "warn"}>{r.grade === "full" ? "Decision-grade" : "Quick check"}</Badge> : <span className="muted">–</span>}</td>
+                  <td>{r.purchase ?? "–"}</td>
+                  <td className="muted">{r.updated_at ?? "–"}</td>
                   <td>
                     <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
                       {r.status === "complete" && <Link className="btn sm" to={`/results?runs=${r.run_id}`} onClick={(e) => e.stopPropagation()}>Results →</Link>}
@@ -73,23 +80,29 @@ export default function Runs() {
       {id && (
         <div className="card mt">
           <div className="row between">
-            <h2 style={{ margin: 0 }}>{id}</h2>
+            <div>
+              <h2 style={{ margin: 0 }}>{detail?.name && detail.name !== id ? detail.name : id}</h2>
+              {detail?.name && detail.name !== id && <div className="tiny muted">{id}</div>}
+            </div>
             <div className="row">
               {detail?.has_report && <Link className="btn primary sm" to={`/results?runs=${id}`}>Open results →</Link>}
               {detail?.status === "running" && <button className="btn danger sm" onClick={async () => { if (confirm("Stop this run? Finished measurements are kept.")) { await api.stop(id); } }}>Stop run</button>}
               {detail && detail.status !== "running" && detail.status !== "planned" && <button className="btn danger sm" disabled={deleting === id} onClick={() => remove(id)}>{deleting === id ? "Deleting…" : "Delete run"}</button>}
             </div>
           </div>
-          {!detail && <Spinner />}
+          {!detail && !detailErr && <Spinner label="Loading the run…" />}
+          {!detail && detailErr && <Note kind="bad"><b>Nothing to show for this run.</b> {detailErr} <Link to="/runs">Back to the list</Link>.</Note>}
           {detail && (
             <>
               <div className="row mt small">
-                <Badge kind={detail.targets.some((t) => t.did_not_run) ? "bad" : statusKind(detail.status)}>{detail.status_label}</Badge>
-                <Badge kind={detail.grade === "full" ? "ok" : "warn"}>{detail.grade === "full" ? "Decision-grade" : "Quick check"}</Badge>
-                <span className="muted">{detail.progress.done} of {detail.progress.total} measurements done</span>
+                <Badge kind={detail.failure ? "bad" : detail.targets.some((t) => t.did_not_run) ? "bad" : statusKind(detail.status)}>{detail.status_label}</Badge>
+                {detail.purchase && <Badge kind={detail.grade === "full" ? "ok" : "warn"}>{detail.grade === "full" ? "Decision-grade" : "Quick check"}</Badge>}
+                {detail.progress.total > 0 && <span className="muted">{detail.progress.done} of {detail.progress.total} measurements done</span>}
+                {detail.status === "planned" && <span className="muted">Starting: the pre-checks are running (prices, images, data); this takes about a minute.</span>}
               </div>
-              <div className="progress mt"><div style={{ width: `${(100 * detail.progress.done) / Math.max(1, detail.progress.total)}%` }} /></div>
+              {detail.progress.total > 0 && <div className="progress mt"><div style={{ width: `${(100 * detail.progress.done) / Math.max(1, detail.progress.total)}%` }} /></div>}
               {detail.refusal && <Note kind="bad" ><b>Refused by the pre-checks:</b> {detail.refusal.join("; ")}</Note>}
+              {detail.failure && <Note kind="bad"><b>This run produced nothing.</b> {detail.failure.join(" ")}</Note>}
               {detail.notices?.map((n, i) => <Note key={"n" + i} kind={n.kind}><b>{n.title}.</b> {n.text}</Note>)}
               {detail.targets.length > 0 && (
                 <>
@@ -107,6 +120,7 @@ export default function Runs() {
                   </table>
                 </>
               )}
+              {detail.cells.length > 0 && (<>
               <h3 className="mt">Models on hardware options <Help text="One row per model served on one hardware option. Models on the same instance run one after another: Waiting for the instance → Loading the model → Measuring → Done. 'Queued behind X' means another model is using the instance right now. 'Not run — no capacity' means AWS never granted a machine for that hardware option; the reason is in the last column." /></h3>
               <table className="tbl">
                 <thead><tr><th>Model</th><th>Hardware</th><th>Format</th><th>Software</th><th>Status</th><th className="num">Measurements</th><th>Why</th></tr></thead>
@@ -117,6 +131,7 @@ export default function Runs() {
                 <thead><tr><th>Model</th><th>Hardware</th><th>What</th><th className="num">Concurrent</th><th className="num">Batch</th><th className="num">Pass</th><th>Status</th><th className="num">Requests done</th><th className="num">Errors</th></tr></thead>
                 <tbody>{detail.levels.map((l, i) => <tr key={i}><td>{l.model}</td><td className="small">{l.hardware_label}</td><td>{l.what}</td><td className="num">{l.conc ?? "–"}</td><td className="num">{l.batch > 1 ? l.batch : "–"}</td><td className="num">{l.pass ?? "–"}</td><td><Badge kind={statusKind(l.status)}>{l.status_label}</Badge>{l.detail && <div className="tiny">{l.detail}</div>}</td><td className="num">{l.completed ?? "–"}</td><td className="num">{l.errors ?? "–"}</td></tr>)}</tbody>
               </table>
+              </>)}
             </>
           )}
         </div>

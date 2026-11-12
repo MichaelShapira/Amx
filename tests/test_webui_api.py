@@ -239,7 +239,15 @@ def test_plan_survives_a_hardware_option_that_cannot_serve_the_format():
     assert pl3["ok"] is False and pl3["series"] == [] and pl3["pairing"] == [] and any("No hardware option can serve" in p for p in pl3["problems"])
 
 
-def test_plan_carries_the_retry_budget_and_spot_wait():
+def _backend(supports: bool, commit="b75d598bd40e1fe19fc155d47d2b0f34f4ca09f0"):
+    return {"commit": commit, "local_commit": "head", "supports": {"max_launch_attempts": supports}, "behind": not supports,
+            "error": None, "missing": [] if supports else ["max_launch_attempts"]}
+
+
+def test_plan_carries_the_retry_budget_and_spot_wait(monkeypatch):
+    from webui.api import main
+
+    monkeypatch.setattr(main, "deployed_backend", lambda: _backend(True))
     w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "purchase": "spot",
          "spot_fallback": True, "spot_wait_minutes": 25, "launch_attempts": 60}
     pl = c.post("/api/plan", json=w).json()
@@ -247,6 +255,40 @@ def test_plan_carries_the_retry_budget_and_spot_wait():
     assert c.post("/api/plan", json={**w, "launch_attempts": 0}).json()["run"]["purchase"]["max_launch_attempts"] == 1
     d = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU]}).json()
     assert d["run"]["purchase"]["max_launch_attempts"] == 30 and d["run"]["purchase"]["spot_capacity_window_s"] == 600
+
+
+def test_plan_leaves_out_settings_the_deployed_backend_does_not_know(monkeypatch):
+    """2026-11-12: the deployed preflight (commit b75d598) forbade purchase.max_launch_attempts;
+    every run failed before the pre-checks and vanished from the UI. The plan now omits the
+    field for such a backend and says so."""
+    from webui.api import main
+
+    monkeypatch.setattr(main, "deployed_backend", lambda: _backend(False))
+    w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "launch_attempts": 60}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"] is True and "max_launch_attempts" not in pl["run"]["purchase"]
+    assert any("predates the 'give up after N failed launch attempts' setting" in x and "instead of your 60 attempts" in x
+               and "cdk deploy AmxBench-Core" in x for x in pl["warnings"])
+    # The default value is silently equivalent (30 attempts ~ 30 minutes): no 'instead of' clause.
+    pl2 = c.post("/api/plan", json={**w, "launch_attempts": 30}).json()
+    assert any("predates" in x and "instead of" not in x for x in pl2["warnings"])
+    # The failure sentence a reader sees when it does happen.
+    s = main.failure_sentence("ValidationError", json.dumps({"errorMessage": "1 validation error for RunConfig\npurchase.max_launch_attempts\n  Extra inputs are not permitted [type=extra_forbidden]"}))
+    assert s.startswith("Failed before any measurement: ValidationError: 1 validation error for RunConfig purchase.max_launch_attempts")
+    assert "deployed backend (AmxBench-Core) is older than this app" in s and "Deploy the Core stack" in s
+    assert main.failure_sentence("States.Timeout", None) == "Failed before any measurement: States.Timeout"
+
+
+def test_run_names_become_safe_slugs():
+    from webui.api import main
+
+    assert main.run_slug("My First Test!! (v2)") == "my-first-test-v2"
+    assert main.run_slug("   ") == "" and len(main.run_slug("x" * 80)) == 40
+    r = c.get("/api/runs/slug", params={"name": "Gemma vs L4", "use_case": "standard"}).json()
+    assert r["slug"] == "gemma-vs-l4" and r["run_id"].startswith("gemma-vs-l4-20")
+    assert c.get("/api/runs/slug", params={"name": "", "use_case": "dspm"}).json()["slug"].startswith("dspm-")
+    pl = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "name": "Gemma vs L4"}).json()
+    assert pl["run"]["name"] == "gemma-vs-l4"
 
 
 def test_delete_run_removes_its_objects_and_rows_only(monkeypatch):

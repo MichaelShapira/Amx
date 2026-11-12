@@ -250,6 +250,11 @@ themes; GPU is always green and CPU always blue.
   outputs, capacity and instance logs, the report) and every `RUN#<id>` row in the table — after
   a confirmation that spells this out; a running run must be stopped first, and the shared model
   cache, instances and other runs are untouched (`DELETE /api/runs/<id>`).
+  A run whose execution died before the pre-checks (no table row) is still listed, from Step
+  Functions, with its cause in words. **Deployed backend check**: the plan reads the preflight
+  Lambda's `HARNESS_COMMIT` and leaves out any run setting the deployed Core does not know yet
+  (`RunConfig` forbids unknown fields), with a warning naming the deploy command, so an app
+  newer than the stack never produces runs that fail before they start.
 - **Results**: one run or several side by side. The comparability check runs on every selection
   (same use case, same data and answer length, same request shape, fair instance pairing) and
   blocks or warns in words. Per model: a verdict sentence, head-to-head GPU and CPU cards with

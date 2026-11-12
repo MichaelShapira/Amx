@@ -493,8 +493,11 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
   const [plan, setPlan] = useState<Plan | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const body = useMemo(() => JSON.stringify(w), [w]);
+  // The name does not change the plan; typing it must not re-validate and flicker the estimate.
+  const body = useMemo(() => JSON.stringify({ ...w, name: "" }), [w]);
   useEffect(() => { setPlan(null); setErr(null); api.plan(JSON.parse(body)).then(setPlan).catch((e) => setErr(e.message)); }, [body]);
+  const [slug, setSlug] = useState<{ slug: string; run_id: string } | null>(null);
+  useEffect(() => { const t = setTimeout(() => api.slug(w.name, w.use_case).then(setSlug).catch(() => setSlug(null)), 250); return () => clearTimeout(t); }, [w.name, w.use_case]);
   const start = async () => {
     setStarting(true);
     try { const r = await api.start(w); sessionStorage.removeItem("wizard"); onStarted(r.run_id); }
@@ -504,6 +507,13 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
   return (
     <div>
       <h2>7 · Review and start</h2>
+      <div className="card soft mb">
+        <Label help="A short name for this benchmark, for you. It becomes the first part of the run id (lowercase letters, digits and dashes; spaces become dashes), followed by the start time. Leave it empty for an automatic name.">Name this benchmark</Label>
+        <div className="row" style={{ alignItems: "center", gap: 12 }}>
+          <input value={w.name} placeholder="e.g. roberta-vs-l4 or gemma-first-look" onChange={(e) => set({ name: e.target.value })} style={{ maxWidth: 420 }} autoFocus />
+          <span className="small muted">Run id will be <code>{slug?.run_id ?? "…"}</code></span>
+        </div>
+      </div>
       <div className="grid c2 mb">
         <div className="card soft">
           <h3>What will run</h3>
@@ -515,8 +525,6 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
             <li>{depthSentence(w, cat)}</li>
             <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: "whole answer within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
           </ul>
-          <Label help="A short label for this run; it appears in the run list and in file names.">Run name</Label>
-          <input value={w.name} placeholder={`${w.use_case}-${new Date().toISOString().slice(5, 10)}`} onChange={(e) => set({ name: e.target.value })} />
         </div>
         <div className="card soft">
           <h3>Estimate</h3>

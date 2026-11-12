@@ -136,7 +136,7 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         if side.get("alternates") is not None:
             alts[side["hardware"]] = list(side["alternates"])
     run: dict = {
-        "name": w.name or f"{w.use_case}-{time.strftime('%m%d-%H%M')}", "suite": w.use_case,
+        "name": run_slug(w.name) or f"{w.use_case}-{time.strftime('%m%d-%H%M')}", "suite": w.use_case,
         "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": ACCOUNT, "region": REGION,
         "az_id": "use1-az1", "models": w.models, "cells": cells,
         "prompt_set": w.prompt_set if w.use_case == "standard" else "dspm",
@@ -146,10 +146,17 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         "quality": {"enabled": w.use_case == "standard"},
         "sla": {k: v for k, v in (w.sla or {}).items() if v} | {"max_error_pct": float((w.sla or {}).get("max_error_pct") or 1.0)},
         "purchase": {"type": w.purchase, "spot_fallback_on_demand": bool(w.spot_fallback),
-                     "spot_capacity_window_s": max(1, int(w.spot_wait_minutes)) * 60,
-                     "max_launch_attempts": max(1, int(w.launch_attempts))},
+                     "spot_capacity_window_s": max(1, int(w.spot_wait_minutes)) * 60},
         "execution": {"parallel_targets": bool(w.parallel_targets)},
     }
+    dep = deployed_backend()
+    if dep["supports"].get("max_launch_attempts", True):
+        run["purchase"]["max_launch_attempts"] = max(1, int(w.launch_attempts))
+    elif notes is not None:
+        notes.append(f"The deployed backend (AmxBench-Core, built from commit {str(dep['commit'])[:7]}) predates the "
+                     f"'give up after N failed launch attempts' setting, so this run keeps the fixed 30-minute capacity "
+                     f"window{' instead of your ' + str(w.launch_attempts) + ' attempts' if w.launch_attempts != 30 else ''}. "
+                     "Deploy the Core stack (cd infra && cdk deploy AmxBench-Core) to use it.")
     if w.request_mode == "batch":
         run["batch_sizes"] = sorted(set(int(b) for b in w.batch_sizes)) or [8]
     elif w.request_mode in ("single", "concurrent"):
@@ -407,9 +414,76 @@ def aws_status():
 
         ident = boto3.client("sts", region_name=REGION).get_caller_identity()
         out = _outputs()
-        return {"ok": True, "account": ident["Account"], "identity": ident["Arn"].split("/")[-1], "bucket": out.get("BucketName")}
+        dep = deployed_backend()
+        return {"ok": True, "account": ident["Account"], "identity": ident["Arn"].split("/")[-1], "bucket": out.get("BucketName"),
+                "backend": {"commit": dep["commit"], "local_commit": dep["local_commit"], "behind": dep["behind"], "missing": dep["missing"]}}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:300]}
+
+
+# ----------------------------------------------------------------------------- deployed backend
+
+# Settings the Lambdas only understand once the Core stack built from (or after) this commit is
+# deployed. RunConfig forbids unknown fields, so sending one to an older preflight fails the run
+# before anything starts (seen 2026-11-12: purchase.max_launch_attempts -> "Extra inputs are not
+# permitted", no META row, 'unknown run' in the UI). The plan leaves such a field out and warns.
+FEATURE_COMMITS = {"max_launch_attempts": "2be19638163d809fa83e21a73271a184ff068b4c"}
+PREFLIGHT_FUNCTION = "amx-gpu-bench-preflight"
+
+
+def _git_contains(deployed: str, feature: str) -> bool | None:
+    """Is the feature commit an ancestor of the deployed commit? None when git cannot tell."""
+    import subprocess
+
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", feature, deployed], cwd=ROOT, capture_output=True, timeout=10)
+    except Exception:  # noqa: BLE001 - no git, no repo
+        return None
+    return True if r.returncode == 0 else (False if r.returncode == 1 else None)
+
+
+def deployed_backend() -> dict:
+    """The commit the deployed Lambdas were built from and which newer settings they accept.
+    Cached 5 minutes; unknown means 'assume supported' (the failure is then reported on the run)."""
+    if _CACHE.get("deployed_at", 0) > time.time() - 300:
+        return _CACHE["deployed"]
+    commit, error = None, None
+    try:
+        import boto3
+
+        env = boto3.client("lambda", region_name=REGION).get_function_configuration(FunctionName=PREFLIGHT_FUNCTION)
+        commit = (env.get("Environment") or {}).get("Variables", {}).get("HARNESS_COMMIT")
+    except Exception as e:  # noqa: BLE001 - offline or no permission
+        error = str(e)[:160]
+    supports = {}
+    for feature, fc in FEATURE_COMMITS.items():
+        has = _git_contains(commit, fc) if commit and commit != "unknown" else None
+        supports[feature] = True if has is None else has
+    head = None
+    try:
+        import subprocess
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip() or None
+    except Exception:  # noqa: BLE001
+        head = None
+    behind = bool(commit and head and commit != head and _git_contains(head, commit) is True and _git_contains(commit, head) is False)
+    out = {"commit": commit, "local_commit": head, "supports": supports, "behind": behind, "error": error,
+           "missing": sorted(k for k, v in supports.items() if not v)}
+    _CACHE["deployed"], _CACHE["deployed_at"] = out, time.time()
+    return out
+
+
+def run_slug(name: str) -> str:
+    """A run name as it appears in the run id, S3 prefix and Step Functions execution name:
+    lowercase letters, digits and dashes, at most 40 characters."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return s[:40].rstrip("-")
+
+
+@app.get("/api/runs/slug")
+def preview_slug(name: str = "", use_case: str = "standard"):
+    slug = run_slug(name) or f"{use_case}-{time.strftime('%m%d-%H%M')}"
+    return {"slug": slug, "run_id": f"{slug}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"}
 
 
 @app.post("/api/runs")
@@ -423,6 +497,12 @@ def start_run(w: Wizard):
     run_id = f"{plan['run']['name']}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
     boto3.client("s3", region_name=REGION).put_object(Bucket=out["BucketName"], Key=f"runs/{run_id}/run.yaml",
                                                       Body=plan["yaml"].encode())
+    # The row first, so the run is on the list the moment it starts; preflight overwrites the status.
+    _table().put_item(Item={"pk": f"RUN#{run_id}", "sk": "META", "status": "planned", "name": w.name.strip() or plan["run"]["name"],
+                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "purchase": plan["run"]["purchase"]["type"], "smoke": plan["grade"] == "quick",
+                            "n_cells": len(plan["series"]), "model": (w.models or [None])[0]})
     boto3.client("stepfunctions", region_name=REGION).start_execution(
         stateMachineArn=out["RunStateMachineArn"], name=run_id, input=json.dumps({"run_id": run_id}))
     return {"run_id": run_id}
@@ -635,8 +715,9 @@ def list_runs():
         if "LastEvaluatedKey" not in r:
             break
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
-    items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     _reconcile(items)
+    items += _orphan_executions({i["pk"][4:] for i in items})
+    items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     hw = {h["id"]: h for h in get_catalog()["hardware"]}
 
     def label(i: dict) -> str:
@@ -647,7 +728,8 @@ def list_runs():
             return f"{base} — {' and '.join(sides)} side did not run"
         return base
 
-    return [{"run_id": i["pk"][4:], "status": i.get("status"), "status_label": label(i),
+    return [{"run_id": i["pk"][4:], "name": i.get("name"), "model": C.model_name(i["model"]) if i.get("model") else None,
+             "status": i.get("status"), "status_label": label(i),
              "updated_at": i.get("updated_at"), "grade": "quick" if i.get("smoke") else "full", "purchase": i.get("purchase"),
              "n_cells": i.get("n_cells"), "errors": i.get("errors"),
              "not_run": [{"hardware": x.get("target_id"), "hardware_label": hw.get(x.get("target_id"), {}).get("label", x.get("target_id")),
@@ -672,8 +754,81 @@ def _reconcile(items: list[dict]) -> None:
         new = SFN_STATUS.get(ex["status"]) if ex else None
         if new:
             i["status"] = new
-            _table().update_item(Key={"pk": i["pk"], "sk": "META"}, UpdateExpression="SET #s = :s",
-                                 ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": new})
+            errors = i.get("errors") or []
+            if ex.get("error") or ex.get("cause"):
+                errors = [failure_sentence(ex.get("error"), ex.get("cause"))]
+                i["errors"] = errors
+            stop = ex.get("stopDate")
+            i["updated_at"] = stop.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(stop, "strftime") else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _table().update_item(Key={"pk": i["pk"], "sk": "META"}, UpdateExpression="SET #s = :s, #e = :e, #u = :u",
+                                 ExpressionAttributeNames={"#s": "status", "#e": "errors", "#u": "updated_at"},
+                                 ExpressionAttributeValues={":s": new, ":e": errors, ":u": i["updated_at"]})
+
+
+def _execution_row(ex: dict, sfn) -> dict:
+    """A run known only to Step Functions (its execution died before preflight wrote the META row),
+    shaped like a table row so the list and the run page can show it with its cause."""
+    status = {"RUNNING": "running", "SUCCEEDED": "complete", **SFN_STATUS}.get(ex["status"], ex["status"].lower())
+    errors: list[str] = []
+    if ex["status"] in ("FAILED", "TIMED_OUT", "ABORTED"):
+        try:
+            d = sfn.describe_execution(executionArn=ex["executionArn"])
+            errors = [failure_sentence(d.get("error"), d.get("cause"))]
+        except Exception as e:  # noqa: BLE001
+            errors = [f"Failed before any measurement ({str(e)[:80]})"]
+    when = ex.get("stopDate") or ex.get("startDate")
+    return {"pk": f"RUN#{ex['name']}", "sk": "META", "status": status, "errors": errors, "orphan": True,
+            "updated_at": when.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(when, "strftime") else None,
+            "smoke": None, "purchase": None, "n_cells": 0}
+
+
+def _run_yaml_exists(run_id: str) -> bool:
+    import boto3
+
+    if not RUN_ID.match(run_id):
+        return False
+    try:
+        boto3.client("s3", region_name=REGION).head_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")
+        return True
+    except Exception:  # noqa: BLE001 - 404 or offline
+        return False
+
+
+def _orphan_executions(known: set[str]) -> list[dict]:
+    """Recent executions with no table row: before 2026-11-12 a run that failed in preflight (for
+    example on a config field the deployed Lambda did not know) left no trace in the UI at all."""
+    if _CACHE.get("orphans_at", 0) > time.time() - 30 and _CACHE.get("orphans_known") == known:
+        return _CACHE["orphans"]
+    import boto3
+
+    out: list[dict] = []
+    try:
+        sfn = boto3.client("stepfunctions", region_name=REGION)
+        exs = sfn.list_executions(stateMachineArn=_outputs()["RunStateMachineArn"], maxResults=60)["executions"]
+        # A run the operator deleted also has no row but has no run.yaml either; only runs whose
+        # definition is still in the bucket are shown.
+        out = [_execution_row(ex, sfn) for ex in exs if ex["name"] not in known and _run_yaml_exists(ex["name"])]
+    except Exception as e:  # noqa: BLE001 - offline: the table is the whole truth
+        _CACHE["orphans_error"] = str(e)[:160]
+    _CACHE["orphans"], _CACHE["orphans_at"], _CACHE["orphans_known"] = out, time.time(), known
+    return out
+
+
+def failure_sentence(error: str | None, cause: str | None) -> str:
+    """A Step Functions failure for the reader: the Lambda's own message when the cause is its JSON
+    envelope, plus what to do when it is the backend-is-older-than-the-app case."""
+    msg = cause or ""
+    try:
+        env = json.loads(cause or "")
+        msg = env.get("errorMessage") or env.get("Cause") or msg
+    except (TypeError, ValueError):
+        pass
+    msg = " ".join(str(msg).split())[:400]
+    text = f"Failed before any measurement: {error or 'error'}: {msg}" if msg else f"Failed before any measurement: {error or 'unknown error'}"
+    if "Extra inputs are not permitted" in msg or "extra_forbidden" in msg:
+        text += (" — the deployed backend (AmxBench-Core) is older than this app and does not know a setting this run used. "
+                 "Deploy the Core stack, then start the run again.")
+    return text
 
 
 def _parse_level(level_key: str, cell_key: str) -> dict:
@@ -703,8 +858,22 @@ def get_run(run_id: str):
 
     items = [plain(x) for x in _table().query(KeyConditionExpression=Key("pk").eq(f"RUN#{run_id}"))["Items"]]
     if not items:
-        raise HTTPException(404, "unknown run")
+        # Known only to Step Functions? Then show what it says instead of 'unknown run'.
+        import boto3
+
+        if RUN_ID.match(run_id) and _run_yaml_exists(run_id):
+            try:
+                sfn = boto3.client("stepfunctions", region_name=REGION)
+                arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:") + f":{run_id}"
+                d = sfn.describe_execution(executionArn=arn)
+                items = [_execution_row({**d, "executionArn": arn}, sfn)]
+            except Exception:  # noqa: BLE001 - truly unknown
+                items = []
+    if not items:
+        raise HTTPException(404, "No record of this run: it was deleted, or it was never started.")
     meta = next((i for i in items if i["sk"] == "META"), {})
+    if meta.get("status") in ("running", "planned"):
+        _reconcile([meta])          # a failed or stopped execution shows as such, with its cause
     hw = {h["id"]: h for h in get_catalog()["hardware"]}
     cells, levels = [], []
     for i in items:
@@ -742,9 +911,12 @@ def get_run(run_id: str):
     if meta.get("status") == "complete" and any(t.get("did_not_run") for t in targets):
         sides = sorted({"GPU" if t["hardware_label"].startswith("GPU") else "CPU" for t in targets if t.get("did_not_run")})
         status_label = f"Finished — {' and '.join(sides)} side did not run"
-    return {"run_id": run_id, "status": meta.get("status"), "status_label": status_label,
+    if meta.get("status") in ("failed", "timed_out") and not cells:
+        status_label = "Failed before the pre-checks" if meta.get("status") == "failed" else status_label
+    return {"run_id": run_id, "name": meta.get("name"), "status": meta.get("status"), "status_label": status_label,
             "grade": "quick" if meta.get("smoke") else "full", "purchase": meta.get("purchase"), "updated_at": meta.get("updated_at"),
             "refusal": meta.get("errors") if meta.get("status") == "refused" else None, "notices": notices,
+            "failure": (meta.get("errors") or None) if meta.get("status") in ("failed", "timed_out", "stopped") else None,
             "progress": {"done": done, "total": len(levels)}, "cells": cells, "targets": targets,
             "levels": sorted(levels, key=lambda x: (x["hardware"], x["model"], x["what"], x["conc"] or 0, x["pass"] or 0)),
             "has_report": meta.get("status") == "complete"}
@@ -777,13 +949,25 @@ def delete_run_data(run_id: str) -> dict:
     if not RUN_ID.match(run_id):
         raise HTTPException(400, "not a run id")
     items = _run_items(run_id)
-    if not items:
+    if not items and not _run_yaml_exists(run_id):
         raise HTTPException(404, "unknown run")
     meta = next((i for i in items if i["sk"] == "META"), {})
     if meta:
         _reconcile([meta])          # a run whose execution ended without the final step is not "running"
     if meta.get("status") in ("running", "planned"):
         raise HTTPException(409, "the run is still going: stop it first, then delete it")
+    if not items:
+        # Known only to Step Functions (failed in preflight): make sure it is not still running.
+        import boto3
+
+        try:
+            arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:") + f":{run_id}"
+            if boto3.client("stepfunctions", region_name=REGION).describe_execution(executionArn=arn)["status"] == "RUNNING":
+                raise HTTPException(409, "the run is still going: stop it first, then delete it")
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 - no execution: nothing to protect
+            _CACHE["delete_note"] = str(e)[:120]
     s3 = boto3.client("s3", region_name=REGION)
     bucket = _outputs()["BucketName"]
     keys: list[str] = []
@@ -794,9 +978,9 @@ def delete_run_data(run_id: str) -> dict:
     with _table().batch_writer() as bw:
         for it in items:
             bw.delete_item(Key={"pk": it["pk"], "sk": it["sk"]})
-    for k in (f"summary:{run_id}", f"purchase:{run_id}", "cap_at"):
+    for k in (f"summary:{run_id}", f"purchase:{run_id}", "cap_at", "orphans_at"):
         _CACHE.pop(k, None)
-    return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status")}
+    return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status") or "failed"}
 
 
 @app.delete("/api/runs/{run_id}")

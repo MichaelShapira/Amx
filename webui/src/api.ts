@@ -73,7 +73,8 @@ export interface Plan {
 }
 
 export interface RunRow {
-  run_id: string; status: string; status_label: string; updated_at: string; grade: "quick" | "full"; purchase: string; n_cells: number;
+  run_id: string; name: string | null; model: string | null; status: string; status_label: string; updated_at: string | null;
+  grade: "quick" | "full"; purchase: string | null; n_cells: number; errors: string[] | null;
   not_run: { hardware: string; hardware_label: string; reason: string }[];
 }
 export interface TargetStatus {
@@ -85,8 +86,8 @@ export interface TargetStatus {
 export interface Notice { kind: "bad" | "warn" | "ok"; title: string; text: string }
 export interface ExecSummary { markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number }; seconds: number; generated_at: string }
 export interface RunDetail {
-  run_id: string; status: string; status_label: string; grade: string; purchase: string; updated_at: string; refusal: string[] | null;
-  notices: Notice[]; progress: { done: number; total: number }; has_report: boolean; targets: TargetStatus[];
+  run_id: string; name: string | null; status: string; status_label: string; grade: string; purchase: string; updated_at: string; refusal: string[] | null;
+  failure: string[] | null; notices: Notice[]; progress: { done: number; total: number }; has_report: boolean; targets: TargetStatus[];
   cells: { model: string; hardware: string; hardware_label: string; precision: string; engine: string; status: string; status_label: string; measurements: number; error: string }[];
   levels: { model: string; hardware: string; hardware_label: string; what: string; conc: number | null; batch: number; pass: number | null; status: string; status_label: string; completed: number; errors: number; detail: string }[];
 }
@@ -137,6 +138,7 @@ export const api = {
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
   deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string }>(`/api/runs/${id}`, { method: "DELETE" }),
+  slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),
   start: (w: Wizard) => j<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify(w) }),
   aws: () => j<{ ok: boolean; account?: string; identity?: string; error?: string }>("/api/aws/status"),
