@@ -218,6 +218,27 @@ def test_comparison_marks_a_missing_side_instead_of_pretending_to_compare():
     assert compare.not_run(full) == [] and compare.analyze([full], {"p99_e2e_ms": 1000, "max_error_pct": 1.0})["groups"][0]["missing"] == {"gpu": None, "cpu": None}
 
 
+def test_plan_survives_a_hardware_option_that_cannot_serve_the_format():
+    """The Review page crashed ('reading map') when the OpenVINO option was ticked with a chat
+    model in BF16: resolve_cells raised and the error reply lacked series/pairing/warnings. Now
+    the format is dropped with a note, the option is left out of instance_types, and every reply
+    carries every key."""
+    OV = {"hardware": "t3-m8i-4xl-ov", "instance_type": "m8i.4xlarge", "precisions": ["bf16"]}
+    w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU, OV], "request_mode": "concurrent", "concurrency": [1, 10]}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"] is True and {"series", "pairing", "warnings", "problems", "estimate"} <= set(pl)
+    assert {s["hardware"] for s in pl["series"]} == {"t1-g6", "t2-m8i-4xl"}
+    assert any("runs nothing in this plan" in x and "INT8 compressed (OpenVINO)" in x for x in pl["warnings"])
+    assert "t3-m8i-4xl-ov" not in pl["run"]["instance_types"]
+    # The OpenVINO option with a format it can serve takes part.
+    pl2 = c.post("/api/plan", json={**w, "cpus": [CPU, {**OV, "precisions": ["bf16", "int8-ov"]}]}).json()
+    assert pl2["ok"] is True and {s["hardware"] for s in pl2["series"]} == {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov"}
+    assert any("not available in BF16" in x for x in pl2["warnings"])
+    # Nothing can serve it at all -> a problem, still with every key.
+    pl3 = c.post("/api/plan", json={**w, "models": ["m5-flan-t5-xl"], "gpu": None, "cpus": [CPU]}).json()
+    assert pl3["ok"] is False and pl3["series"] == [] and pl3["pairing"] == [] and any("No hardware option can serve" in p for p in pl3["problems"])
+
+
 def test_plan_carries_the_retry_budget_and_spot_wait():
     w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "purchase": "spot",
          "spot_fallback": True, "spot_wait_minutes": 25, "launch_attempts": 60}

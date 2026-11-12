@@ -86,17 +86,51 @@ class Wizard(BaseModel):
     allow_unfair: bool = False
 
 
-def _run_dict(w: Wizard) -> dict:
+def _available(mid: str, precision: str, hardware: str, cat: dict) -> bool:
+    """Does this number format of this model run on this hardware option's serving software?
+    (Qwen in BF16 runs on vLLM/PyTorch, not on the OpenVINO option; there it is INT8/INT4.)"""
+    m = next((x for x in cat["models"] if x["id"] == mid), None)
+    h = next((x for x in cat["hardware"] if x["id"] == hardware), None)
+    if not m or not h:
+        return True                     # let the config validator report unknown ids
+    spec = m["precisions"].get(precision)
+    return bool(spec) and not spec.get("quality_only") and any(e in h["engines"] for e in spec["engines"])
+
+
+def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
+    """The run config for the wizard state. A number format the hardware option cannot serve for
+    the model is dropped with a note (never a hard failure): ticking the OpenVINO option with a
+    chat model whose BF16 runs only on vLLM must not kill the plan."""
+    cat = get_catalog()
     depth = C.DEPTHS.get(w.depth)
     requests = w.requests if w.depth == "custom" else (depth[2] if depth else 50)
     passes = w.passes if w.depth == "custom" else (depth[3] if depth else 1)
     conc = [1] if w.request_mode == "single" else sorted(set(int(c) for c in w.concurrency)) or [1]
     sides = ([w.gpu] if w.gpu else []) + list(w.cpus)
+    hw = {h["id"]: h for h in cat["hardware"]}
     cells, itypes, alts = [], {}, {}
     for side in sides:
+        before, dropped = len(cells), []
         for p in side.get("precisions") or [w.precision]:
             for mid in w.models:
-                cells.append({"target": side["hardware"], "precision": p, "model": mid})
+                if _available(mid, p, side["hardware"], cat):
+                    cells.append({"target": side["hardware"], "precision": p, "model": mid})
+                else:
+                    dropped.append(f"{hw.get(side['hardware'], {}).get('label', side['hardware'])}: {C.model_name(mid)} is not available "
+                                   f"in {C.PRECISIONS.get(p, (p,))[0]} on this serving software; that measurement is left out.")
+        if len(cells) > before and notes is not None:
+            notes.extend(dropped)
+        if len(cells) == before:
+            # The option runs nothing: leave it out of instance_types/alternates (the config
+            # validator rejects a target without cells) and say so.
+            if notes is not None and w.models:
+                m = next((x for x in cat["models"] if x["id"] == w.models[0]), None)
+                ok = [C.PRECISIONS.get(p, (p,))[0] for p, s in (m or {}).get("precisions", {}).items()
+                      if not s.get("quality_only") and any(e in hw.get(side["hardware"], {}).get("engines", []) for e in s["engines"])]
+                notes.append(f"{hw.get(side['hardware'], {}).get('label', side['hardware'])} runs nothing in this plan: "
+                             + (f"pick one of its number formats for {C.model_name(w.models[0])}: {', '.join(ok)}." if ok
+                                else f"it cannot serve {C.model_name(w.models[0])} at all; untick it."))
+            continue
         if side.get("instance_type"):
             itypes[side["hardware"]] = side["instance_type"]
         if side.get("alternates") is not None:
@@ -146,7 +180,8 @@ def post_plan(w: Wizard):
     """Validate the wizard state and return the plan: series, estimate, fairness, warnings, YAML."""
     import yaml
 
-    run = _dedupe_cells(_run_dict(w))
+    notes: list[str] = []
+    run = _dedupe_cells(_run_dict(w, notes))
     models, targets = load_models(ROOT / "config/models.yaml"), load_targets(ROOT / "config/targets.yaml")
     tmap = targets.resolved()
     problems: list[str] = []
@@ -156,11 +191,17 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one hardware option.")
     if w.use_case == "dspm" and not w.workloads:
         problems.append("Pick at least one detection scenario.")
+    if not run["cells"] and w.models and (w.gpu or w.cpus):
+        problems.append("No hardware option can serve the chosen model in the chosen number formats.")
+    failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
+              "grade": "quick" if run["mode"] == "smoke" else "full", "request_mode": w.request_mode, "yaml": "", "run": run}
+    if problems:
+        return failed
     try:
         rc = RunConfig.model_validate(run)
         cells = resolve_cells(rc, models, targets)
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "problems": problems + [str(e)], "run": run}
+        return {**failed, "problems": problems + [str(e)]}
     sizes = local_pool_sizes()
     rtypes = run_instance_types(rc, cells, tmap)
     series, missing = [], []
@@ -186,7 +227,7 @@ def post_plan(w: Wizard):
         est = estimate(rc, cells, models, tmap, prices, sizes, instance_types=rtypes)
     except Exception as e:  # noqa: BLE001
         problems.append(f"No estimate: {e}")
-    warnings = []
+    warnings = list(notes)
     if rc.is_smoke:
         warnings.append("Quick check: every number will be labelled SMOKE. Use it to see the shape of the results, not to decide.")
     if not any(a == "gpu" for a in acc.values()) or not any(a == "cpu" for a in acc.values()):

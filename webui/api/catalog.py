@@ -62,6 +62,9 @@ PRECISIONS = {
     "w8a8": ("INT8 compressed", "8-bit weights and activations: half the memory, faster on AMX, small quality loss."),
     "int8": ("INT8 compressed (OpenVINO)", "8-bit weights in OpenVINO's format: smaller and faster, small quality loss."),
     "int4": ("INT4 compressed (OpenVINO)", "4-bit weights: smallest and fastest, larger quality loss."),
+    # The model catalog names the OpenVINO exports int8-ov / int4-ov.
+    "int8-ov": ("INT8 compressed (OpenVINO)", "8-bit weights in OpenVINO's format: smaller and faster, small quality loss."),
+    "int4-ov": ("INT4 compressed (OpenVINO)", "4-bit weights: smallest and fastest, larger quality loss."),
     "fp32": ("FP32 reference", "Full 32-bit precision; used only as the quality reference."),
 }
 

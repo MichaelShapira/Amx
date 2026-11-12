@@ -188,6 +188,16 @@ function StepHardware({ w, set }: SP) {
     const t = setInterval(() => api.aiProposeStatus(ai.id).then(setAi).catch((e) => { setAiErr(e.message); setAi(null); }), 2000);
     return () => clearInterval(t);
   }, [ai]);
+
+  const precsFor = (hwId: string) => {
+    const hw = cat.hardware.find((h) => h.id === hwId)!;
+    const set_ = new Set<string>();
+    for (const m of chosenModels) for (const [p, spec] of Object.entries(m.precisions)) if (spec.engines.some((e) => hw.engines.includes(e)) && !spec.quality_only) set_.add(p);
+    return [...set_];
+  };
+  // The default number format for a hardware option: BF16 when its serving software can run the
+  // model in BF16, otherwise the first format it can (the OpenVINO option serves chat models in INT8).
+  const defaultPrecs = (hwId: string) => { const ok = precsFor(hwId); return ok.includes("bf16") ? ["bf16"] : ok.slice(0, 1); };
   // Pre-select both sides for the chosen model the first time this step is shown for it (or after
   // the model or number format changed). Manual changes afterwards are kept until the model changes.
   const sizeKey = model ? `${model.id}|${w.precision}` : null;
@@ -201,25 +211,26 @@ function StepHardware({ w, set }: SP) {
       setSug(r.cpu);
       const gpuBest = r.gpu.best?.instance_type;
       const cpuBest = r.cpu?.best?.instance_type;
+      // Number formats carried over from another model may not exist for this one: keep the valid ones, else the default.
+      const fixPrecs = (hwId: string, cur: string[] | undefined) => { const ok = precsFor(hwId); const kept = (cur ?? []).filter((p) => ok.includes(p)); return kept.length ? kept : defaultPrecs(hwId); };
       const patch: Partial<Wizard> = { sized_for: sizeKey };
-      if (gpuBest) patch.gpu = { hardware: w.gpu?.hardware ?? gpuHw[0].id, instance_type: gpuBest, precisions: w.gpu?.precisions ?? ["bf16"], alternates: r.gpu_alternates };
-      if (cpuBest) patch.cpus = (w.cpus.length ? w.cpus : [{ hardware: cpuHw[0].id, instance_type: cpuBest, precisions: ["bf16"], alternates: cpuHw[0].alternates }]).map((c) => ({ ...c, instance_type: cpuBest }));
+      const gpuId = w.gpu?.hardware ?? gpuHw[0].id;
+      if (gpuBest) patch.gpu = { hardware: gpuId, instance_type: gpuBest, precisions: fixPrecs(gpuId, w.gpu?.precisions), alternates: r.gpu_alternates };
+      if (cpuBest) {
+        // Tick the first CPU option whose serving software can run this model (vLLM cannot serve every model).
+        const firstOk = cpuHw.find((h) => precsFor(h.id).length > 0) ?? cpuHw[0];
+        const base = w.cpus.length ? w.cpus : [{ hardware: firstOk.id, instance_type: cpuBest, precisions: [] as string[], alternates: firstOk.alternates }];
+        patch.cpus = base.map((c) => ({ ...c, instance_type: cpuBest, precisions: fixPrecs(c.hardware, c.precisions) }));
+      }
       set(patch);
     }).catch((e) => alive && setSugErr(e.message)).finally(() => alive && setSizing(false));
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sizeKey, w.sized_for]);
-
-  const precsFor = (hwId: string) => {
-    const hw = cat.hardware.find((h) => h.id === hwId)!;
-    const set_ = new Set<string>();
-    for (const m of chosenModels) for (const [p, spec] of Object.entries(m.precisions)) if (spec.engines.some((e) => hw.engines.includes(e)) && !spec.quality_only) set_.add(p);
-    return [...set_];
-  };
-  const toggleGpu = (hw: typeof gpuHw[number]) => set({ gpu: w.gpu?.hardware === hw.id ? null : { hardware: hw.id, instance_type: w.gpu?.instance_type ?? hw.default_instance_type, precisions: ["bf16"], alternates: hw.alternates } });
+  const toggleGpu = (hw: typeof gpuHw[number]) => set({ gpu: w.gpu?.hardware === hw.id ? null : { hardware: hw.id, instance_type: w.gpu?.instance_type ?? hw.default_instance_type, precisions: defaultPrecs(hw.id), alternates: w.gpu?.alternates ?? hw.alternates } });
   const toggleCpu = (hw: typeof cpuHw[number]) => {
     const on = w.cpus.find((c) => c.hardware === hw.id);
-    set({ cpus: on ? w.cpus.filter((c) => c.hardware !== hw.id) : [...w.cpus, { hardware: hw.id, instance_type: w.cpus[0]?.instance_type ?? hw.default_instance_type, precisions: ["bf16"], alternates: hw.alternates }] });
+    set({ cpus: on ? w.cpus.filter((c) => c.hardware !== hw.id) : [...w.cpus, { hardware: hw.id, instance_type: w.cpus[0]?.instance_type ?? hw.default_instance_type, precisions: defaultPrecs(hw.id), alternates: hw.alternates }] });
   };
   const setSide = (hwId: string, patch: Partial<Side>) => {
     if (w.gpu?.hardware === hwId) set({ gpu: { ...w.gpu, ...patch } });
@@ -260,7 +271,8 @@ function StepHardware({ w, set }: SP) {
             {(kind === "gpu" ? gpuTypes : cpuTypes).map((s) => <option key={s.type} value={s.type}>{s.type} · {instanceLine(s, true)}</option>)}
           </select>
           <Label help="Number formats to test on this hardware. BF16 is the like-for-like baseline; compressed formats (INT8, INT4) are faster and cheaper on CPUs and the report shows what they cost in answer quality.">Number formats</Label>
-          <Chips options={precsFor(hw.id)} value={side.precisions} onChange={(v) => setSide(hw.id, { precisions: v.length ? v : ["bf16"] })} labels={(p) => cat.precisions[p]?.label ?? p} />
+          {precsFor(hw.id).length === 0 && <Note kind="warn">This serving software cannot run {model?.name ?? "the chosen model"} at all. Untick it, or pick another model.</Note>}
+          <Chips options={precsFor(hw.id)} value={side.precisions} onChange={(v) => setSide(hw.id, { precisions: v.length ? v : defaultPrecs(hw.id) })} labels={(p) => cat.precisions[p]?.label ?? p} />
         </div>
       )}
     </div>
@@ -519,14 +531,14 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
           {plan && (
             <table className="tbl mt">
               <thead><tr><th>Model</th><th>Hardware</th><th>Format</th><th className="num">Measurements</th></tr></thead>
-              <tbody>{plan.series.map((s, i) => <tr key={i}><td>{s.model}</td><td><Badge kind={s.accelerator}>{s.accelerator.toUpperCase()}</Badge> {s.instance_type} · {s.engine}</td><td>{s.precision}</td><td className="num">{s.measurements}</td></tr>)}</tbody>
+              <tbody>{(plan.series ?? []).map((s, i) => <tr key={i}><td>{s.model}</td><td><Badge kind={s.accelerator}>{s.accelerator.toUpperCase()}</Badge> {s.instance_type} · {s.engine}</td><td>{s.precision}</td><td className="num">{s.measurements}</td></tr>)}</tbody>
             </table>
           )}
         </div>
       </div>
-      {plan?.pairing.map((p, i) => <Note key={i} kind={p.fair ? "ok" : "warn"}><b>{p.fair ? "Fair comparison" : "Not a fair comparison"}</b> — {p.reason}.</Note>)}
-      {plan?.warnings.map((x, i) => <Note key={"w" + i} kind="warn">{x}</Note>)}
-      {plan?.problems.map((x, i) => <Note key={"p" + i} kind="bad">{x}</Note>)}
+      {Array.from(new Map((plan?.pairing ?? []).map((p) => [p.reason, p])).values()).map((p, i) => <Note key={i} kind={p.fair ? "ok" : "warn"}><b>{p.fair ? "Fair comparison" : "Not a fair comparison"}</b> — {p.reason}.</Note>)}
+      {(plan?.warnings ?? []).map((x, i) => <Note key={"w" + i} kind="warn">{x}</Note>)}
+      {(plan?.problems ?? []).map((x, i) => <Note key={"p" + i} kind="bad">{x}</Note>)}
       {plan && !plan.ok && plan.problems.some((p) => p.startsWith("Unfair pairing")) && (
         <label className="row small mt"><input type="checkbox" checked={w.allow_unfair} onChange={(e) => set({ allow_unfair: e.target.checked })} /> I understand the sizes are not comparable; start anyway</label>
       )}
