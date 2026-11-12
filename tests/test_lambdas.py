@@ -288,6 +288,59 @@ def test_give_up_after_max_launch_attempts_records_why(aws, monkeypatch):
     assert int(tc._activity("t1-g6").get("launch_attempts") or 0) == 0
 
 
+def test_one_run_per_target_at_a_time(aws, monkeypatch):
+    """2026-11-12: a second run reused the first run's GPU instance, its serve.sh removed the
+    container the first run was loading, and the two runs then terminated each other's CPU
+    instances in turn. ensure_running now takes a per-target lock: a target held by another live
+    run answers busy (no launch, no attempt counted); a dead holder is taken over."""
+    from lambdas import target_control as tc
+
+    launched: list[str] = []
+    monkeypatch.setattr(tc, "find_instance", lambda tid: None)
+    monkeypatch.setattr(tc, "_launch", lambda run_id, tid, purchase, market, instance_type=None:
+                        launched.append(run_id) or {"InstanceId": "i-new", "State": {"Name": "running"}, "InstanceType": "g6.xlarge",
+                                                    "PrivateIpAddress": "10.0.0.9", "LaunchTime": __import__("datetime").datetime.now(
+                                                        __import__("datetime").timezone.utc), "Placement": {"AvailabilityZone": "us-east-1a"}})
+    monkeypatch.setattr(tc, "_instance", lambda iid: {"InstanceId": iid, "State": {"Name": "running"}, "InstanceType": "g6.xlarge",
+                                                      "PrivateIpAddress": "10.0.0.9", "LaunchTime": __import__("datetime").datetime.now(
+                                                          __import__("datetime").timezone.utc)})
+    monkeypatch.setattr(tc, "_ssm_online", lambda iid, deadline: True)
+    monkeypatch.setattr(tc, "_boot_complete", lambda iid, deadline: True)
+    sfn_status = {"r-first": "RUNNING"}
+    monkeypatch.setattr(tc, "_execution_status", lambda execution_id, run_id: sfn_status.get(run_id) if execution_id else None)
+    aws.set_status("r-first", "META", "running")
+    aws.set_status("r-second", "META", "running")
+    ex = "arn:aws:states:us-east-1:123456789012:execution:amx-gpu-bench-run:r-second"
+    purchase = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True, "max_launch_attempts": 30}
+    # The first run takes the target.
+    first = tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex.replace("r-second", "r-first")})
+    assert first["ready"] is True and tc._activity("t1-g6")["active_run_id"] == "r-first"
+    # The second run must wait: busy, nothing launched, no launch attempt counted, one `queued` event.
+    for _ in range(3):
+        out = tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex})
+        assert out == {"ready": False, "reason": "busy", "busy_run_id": "r-first"}
+    assert launched == ["r-first"] and int(tc._activity("t1-g6").get("launch_attempts") or 0) == 0
+    events = aws.get_json("runs/r-second/targets/t1-g6.json")
+    assert [e["event"] for e in events] == ["queued"] and events[0]["behind"] == "r-first"
+    # The first run's own calls still go through (it holds the lock).
+    assert tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase})["ready"] is True
+    # Step Functions says the holder has ended: the second run takes over, even though META still says running.
+    sfn_status["r-first"] = "SUCCEEDED"
+    out = tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex})
+    assert out["ready"] is True and tc._activity("t1-g6")["active_run_id"] == "r-second"
+    # Without Step Functions (no execution id): META status decides, with a staleness cut-off.
+    act = {"active_run_id": "r-third", "last_activity_at": time.time() - 60}
+    aws.set_status("r-third", "META", "running")
+    assert tc.owner_is_active("r-third", act, None) is True
+    assert tc.owner_is_active("r-third", {**act, "last_activity_at": time.time() - tc.STALE_LOCK_S - 1}, None) is False
+    aws.set_status("r-third", "META", "complete")
+    assert tc.owner_is_active("r-third", act, None) is False
+    # claim_target is atomic: a holder that changed between the check and the claim wins.
+    tc._set_activity("t1-g6", active_run_id="r-x")
+    assert tc.claim_target("t1-g6", "r-second", previous="r-first") is False
+    assert tc.claim_target("t1-g6", "r-second", previous="r-x") is True
+
+
 def test_capacity_reason_reads_like_a_sentence():
     from lambdas.target_control import capacity_reason
 

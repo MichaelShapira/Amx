@@ -5,9 +5,11 @@ Each target stack owns a launch template; the instance itself is launched here p
 On-Demand or Spot (one-time, terminate on interruption), and found again by its
 bench:target tag. Actions (event["action"]):
 
-  ensure_running  find the target's instance or launch one; returns {"ready": false} while
-                  it is pending or capacity is short, so the state machine can wait and
-                  call again (every call is idempotent). Spot capacity errors are retried
+  ensure_running  take the target's lock (one run per hardware option at a time; while
+                  another live run holds it, returns {"ready": false, "reason": "busy"}),
+                  then find the target's instance or launch one; returns {"ready": false}
+                  while it is pending or capacity is short, so the state machine can wait
+                  and call again (every call is idempotent). Spot capacity errors are retried
                   for purchase.spot_capacity_window_s, then an On-Demand instance is
                   launched when spot_fallback_on_demand is set. After
                   purchase.max_launch_attempts refused launches the target is given up:
@@ -263,12 +265,90 @@ def _boot_complete(iid: str, deadline: float) -> bool:
     return False
 
 
+STALE_LOCK_S = 2700                 # a lock whose run cannot be verified and has not heartbeated this long is stale
+
+
+def _run_status(run_id: str) -> str | None:
+    item = common.table().get_item(Key={"pk": f"RUN#{run_id}", "sk": "META"}).get("Item") or {}
+    return item.get("status")
+
+
+def _execution_status(execution_id: str | None, run_id: str) -> str | None:
+    """Step Functions' view of another run's execution (RUNNING, SUCCEEDED, FAILED, ...), or None
+    when the caller's execution id is not known or the lookup is not permitted."""
+    if not execution_id or ":execution:" not in execution_id:
+        return None
+    arn = execution_id.rsplit(":", 1)[0] + ":" + run_id
+    try:
+        return common.client("stepfunctions").describe_execution(executionArn=arn)["status"]
+    except Exception:  # noqa: BLE001 - ExecutionDoesNotExist, AccessDenied: fall back to the table
+        return None
+
+
+def owner_is_active(owner: str, act: dict, execution_id: str | None, now: float | None = None) -> bool:
+    """Is the run holding a target still using it? Step Functions is authoritative when reachable;
+    otherwise the run's META status, with a staleness cut-off so a run that died without
+    reconciliation cannot hold a target forever."""
+    now = now or time.time()
+    ex = _execution_status(execution_id, owner)
+    if ex is not None:
+        return ex == "RUNNING"
+    if _run_status(owner) not in ("running", "planned"):
+        return False
+    return now - float(act.get("last_activity_at") or 0) < STALE_LOCK_S
+
+
+def claim_target(tid: str, run_id: str, previous: str | None) -> bool:
+    """Take the target's lock for this run, atomically: succeeds only if nobody holds it, we hold it,
+    or the stale holder we just checked still holds it (another run cannot slip in between)."""
+    cond = "attribute_not_exists(active_run_id) OR active_run_id = :me"
+    vals: dict[str, Any] = {":me": run_id, ":t": int(time.time())}
+    if previous and previous != run_id:
+        cond += " OR active_run_id = :prev"
+        vals[":prev"] = previous
+    try:
+        common.table().update_item(Key={"pk": f"TARGET#{tid}", "sk": "ACTIVITY"},
+                                   UpdateExpression="SET active_run_id = :me, last_activity_at = :t",
+                                   ConditionExpression=cond, ExpressionAttributeValues=vals)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _log_queued(run_id: str, tid: str, owner: str) -> None:
+    """One `queued` event per owner, so the UI can say which run this one is waiting for."""
+    try:
+        events = common.get_json(f"runs/{run_id}/targets/{tid}.json")
+    except ClientError:
+        events = []
+    last = events[-1] if events else {}
+    if last.get("event") == "queued" and last.get("behind") == owner:
+        return
+    _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "queued", "behind": owner})
+
+
 def ensure_running(event: dict, context: Any = None) -> dict:
     run_id, tid = event["run_id"], event["target_id"]
     purchase = event.get("purchase") or {}
     deadline = time.time() + CALL_BUDGET_S
     requested_type = event.get("instance_type")
     acceptable = {t for t in (requested_type, *(event.get("alternates") or [])) if t}
+    # One run per hardware option at a time. Two runs sharing a target each ran `serve.sh start`
+    # (which removes the previous container) and `replaced` each other's instances (seen
+    # 2026-11-12: a Gemma run killed a RoBERTa run's GPU container mid-load, then the two runs
+    # terminated each other's CPU instances in turn). A run whose target is held by another live
+    # run waits; the state machine calls again every minute. Waiting is not a launch attempt.
+    act = _activity(tid)
+    owner = act.get("active_run_id")
+    if owner and owner != run_id and owner_is_active(owner, act, event.get("execution_id")):
+        _log_queued(run_id, tid, owner)
+        return {"ready": False, "reason": "busy", "busy_run_id": owner}
+    if not claim_target(tid, run_id, owner):
+        act = _activity(tid)
+        _log_queued(run_id, tid, str(act.get("active_run_id")))
+        return {"ready": False, "reason": "busy", "busy_run_id": act.get("active_run_id")}
     inst = find_instance(tid)
     if inst is not None and not event.get("keep_lifecycle"):
         # A stopped On-Demand instance counts as the wrong market for a Spot run too: restarting it
@@ -285,7 +365,7 @@ def ensure_running(event: dict, context: Any = None) -> dict:
             _terminate(inst["InstanceId"])
             inst = None
     if inst is None:
-        act = _activity(tid)
+        act = _activity(tid)                 # re-read: claim_target just wrote it
         started = float(act.get("launch_started_at") or 0) or time.time()
         if not act.get("launch_started_at"):
             _set_activity(tid, launch_started_at=started)

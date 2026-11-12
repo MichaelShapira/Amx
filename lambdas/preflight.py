@@ -239,7 +239,10 @@ def handler(event: dict, context: Any = None) -> dict:
     common.set_status(run_id, "META", "running", smoke=run.is_smoke, n_cells=len(cells),
                       purchase=run.purchase.type)
     for tid in templates:
-        common.touch_target(tid, run_id)
+        # Heartbeat only: the target lock (active_run_id) is taken by target_control.ensure_running,
+        # which first checks that no other live run holds it. Claiming here let a second run steal a
+        # target another run was using (2026-11-12).
+        common.touch_target(tid)
     return {"run_id": run_id, "targets": list(outline.values()), "purchase": run.purchase.model_dump(),
             "stop_targets_after_run": run.stop_targets_after_run,
             # Step Functions Map MaxConcurrency: 0 = unlimited (all hardware options at once), 1 = one at a time.
