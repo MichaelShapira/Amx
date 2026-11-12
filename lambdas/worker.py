@@ -186,4 +186,4 @@ def _count(event: dict, n: int, errors: int, unprocessed: list[list[int]]) -> No
     common.table().update_item(Key={"pk": f"RUN#{event['run_id']}", "sk": f"LEVEL#{event['level_key']}"},
                                UpdateExpression=expr, ExpressionAttributeValues=vals)
     if event.get("target_id"):
-        common.touch_target(event["target_id"])
+        common.touch_target(event["target_id"], event["run_id"])

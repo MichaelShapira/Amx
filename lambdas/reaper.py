@@ -46,9 +46,11 @@ def handler(event: dict, context: Any = None) -> dict:
         for res in page["Reservations"]:
             for inst in res["Instances"]:
                 tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-                tid = tags.get("bench:target", "")
-                act = common.table().get_item(Key={"pk": f"TARGET#{tid}", "sk": "ACTIVITY"}).get("Item") or {}
-                reason = decide(inst, common.plain(act), active=_active(act.get("active_run_id")), now=now,
+                tid, run_id = tags.get("bench:target", ""), tags.get("bench:run", "")
+                # Instances are per run: the run that launched it (bench:run) is the one that may
+                # still be using it, and the heartbeat row is per (target, run).
+                act = common.table().get_item(Key=common.activity_key(tid, run_id)).get("Item") or {} if run_id else {}
+                reason = decide(inst, common.plain(act), active=_active(run_id or None), now=now,
                                 idle_min=idle_min, max_uptime_h=max_up)
                 if reason:
                     # One-time Spot instances cannot be stopped; they are ephemeral by design

@@ -3,13 +3,13 @@ Spot interruptions, stop or terminate instances.
 
 Each target stack owns a launch template; the instance itself is launched here per run,
 On-Demand or Spot (one-time, terminate on interruption), and found again by its
-bench:target tag. Actions (event["action"]):
+bench:target and bench:run tags (one instance per hardware option PER RUN). Actions (event["action"]):
 
-  ensure_running  take the target's lock (one run per hardware option at a time; while
-                  another live run holds it, returns {"ready": false, "reason": "busy"}),
-                  then find the target's instance or launch one; returns {"ready": false}
-                  while it is pending or capacity is short, so the state machine can wait
-                  and call again (every call is idempotent). Spot capacity errors are retried
+  ensure_running  find this run's instance for the target (tags bench:target + bench:run;
+                  instances are per run, so runs never share or disturb each other's) or
+                  launch one; returns {"ready": false} while it is pending or capacity is
+                  short, so the state machine can wait and call again (every call is
+                  idempotent). Spot capacity errors are retried
                   for purchase.spot_capacity_window_s, then an On-Demand instance is
                   launched when spot_fallback_on_demand is set. After
                   purchase.max_launch_attempts refused launches the target is given up:
@@ -59,10 +59,14 @@ def _instance(iid: str) -> dict | None:
     return r["Reservations"][0]["Instances"][0] if r["Reservations"] else None
 
 
-def find_instance(target_id: str) -> dict | None:
-    """The target's live instance (newest launch), found by tag."""
+def find_instance(target_id: str, run_id: str) -> dict | None:
+    """THIS run's live instance for the hardware option (newest launch), found by tags. Instances
+    are per run: two runs on the same hardware option each get their own, in parallel. (Until
+    2026-11-13 the lookup was per target only, so a second run adopted the first run's instance,
+    removed its serving container and replaced its instance.)"""
     r = _ec2().describe_instances(Filters=[
-        {"Name": "tag:bench:target", "Values": [target_id]}, {"Name": "tag:bench:managed", "Values": ["true"]},
+        {"Name": "tag:bench:target", "Values": [target_id]}, {"Name": "tag:bench:run", "Values": [run_id]},
+        {"Name": "tag:bench:managed", "Values": ["true"]},
         {"Name": "instance-state-name", "Values": list(LIVE_STATES)}])
     insts = [i for res in r["Reservations"] for i in res["Instances"]]
     return max(insts, key=lambda i: i["LaunchTime"]) if insts else None
@@ -95,14 +99,15 @@ def _in_target_log(run_id: str, target_id: str, instance_id: str) -> bool:
     return any(e.get("instance_id") == instance_id for e in events)
 
 
-def _activity(target_id: str) -> dict:
-    item = common.table().get_item(Key={"pk": f"TARGET#{target_id}", "sk": "ACTIVITY"}).get("Item") or {}
+def _activity(target_id: str, run_id: str) -> dict:
+    """Launch bookkeeping and heartbeat for one hardware option in one run (common.activity_key)."""
+    item = common.table().get_item(Key=common.activity_key(target_id, run_id)).get("Item") or {}
     return common.plain(item)
 
 
-def _set_activity(target_id: str, **vals: Any) -> None:
+def _set_activity(target_id: str, run_id: str, **vals: Any) -> None:
     sets = ", ".join(f"#{k} = :{k}" for k in vals)
-    common.table().update_item(Key={"pk": f"TARGET#{target_id}", "sk": "ACTIVITY"},
+    common.table().update_item(Key=common.activity_key(target_id, run_id),
                                UpdateExpression=f"SET {sets}", ExpressionAttributeNames={f"#{k}": k for k in vals},
                                ExpressionAttributeValues={f":{k}": common._ddb(v) for k, v in vals.items()})
 
@@ -266,99 +271,23 @@ def _boot_complete(iid: str, deadline: float) -> bool:
     return False
 
 
-STALE_LOCK_S = 2700                 # a lock whose run cannot be verified and has not heartbeated this long is stale
-
-
-def _run_status(run_id: str) -> str | None:
-    item = common.table().get_item(Key={"pk": f"RUN#{run_id}", "sk": "META"}).get("Item") or {}
-    return item.get("status")
-
-
-def _execution_status(execution_id: str | None, run_id: str) -> str | None:
-    """Step Functions' view of another run's execution (RUNNING, SUCCEEDED, FAILED, ...), or None
-    when the caller's execution id is not known or the lookup is not permitted."""
-    if not execution_id or ":execution:" not in execution_id:
-        return None
-    arn = execution_id.rsplit(":", 1)[0] + ":" + run_id
-    try:
-        return common.client("stepfunctions").describe_execution(executionArn=arn)["status"]
-    except Exception:  # noqa: BLE001 - ExecutionDoesNotExist, AccessDenied: fall back to the table
-        return None
-
-
-def owner_is_active(owner: str, act: dict, execution_id: str | None, now: float | None = None) -> bool:
-    """Is the run holding a target still using it? Step Functions is authoritative when reachable;
-    otherwise the run's META status, with a staleness cut-off so a run that died without
-    reconciliation cannot hold a target forever."""
-    now = now or time.time()
-    ex = _execution_status(execution_id, owner)
-    if ex is not None:
-        return ex == "RUNNING"
-    if _run_status(owner) not in ("running", "planned"):
-        return False
-    return now - float(act.get("last_activity_at") or 0) < STALE_LOCK_S
-
-
-def claim_target(tid: str, run_id: str, previous: str | None) -> bool:
-    """Take the target's lock for this run, atomically: succeeds only if nobody holds it, we hold it,
-    or the stale holder we just checked still holds it (another run cannot slip in between)."""
-    cond = "attribute_not_exists(active_run_id) OR active_run_id = :me"
-    vals: dict[str, Any] = {":me": run_id, ":t": int(time.time())}
-    if previous and previous != run_id:
-        cond += " OR active_run_id = :prev"
-        vals[":prev"] = previous
-    try:
-        common.table().update_item(Key={"pk": f"TARGET#{tid}", "sk": "ACTIVITY"},
-                                   UpdateExpression="SET active_run_id = :me, last_activity_at = :t",
-                                   ConditionExpression=cond, ExpressionAttributeValues=vals)
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-def _log_queued(run_id: str, tid: str, owner: str) -> None:
-    """One `queued` event per owner, so the UI can say which run this one is waiting for."""
-    try:
-        events = common.get_json(f"runs/{run_id}/targets/{tid}.json")
-    except ClientError:
-        events = []
-    last = events[-1] if events else {}
-    if last.get("event") == "queued" and last.get("behind") == owner:
-        return
-    _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "queued", "behind": owner})
-
-
 def ensure_running(event: dict, context: Any = None) -> dict:
     run_id, tid = event["run_id"], event["target_id"]
     purchase = event.get("purchase") or {}
     deadline = time.time() + CALL_BUDGET_S
     requested_type = event.get("instance_type")
     acceptable = {t for t in (requested_type, *(event.get("alternates") or [])) if t}
-    # One run per hardware option at a time. Two runs sharing a target each ran `serve.sh start`
-    # (which removes the previous container) and `replaced` each other's instances (seen
-    # 2026-11-12: a Gemma run killed a RoBERTa run's GPU container mid-load, then the two runs
-    # terminated each other's CPU instances in turn). A run whose target is held by another live
-    # run waits; the state machine calls again every minute. Waiting is not a launch attempt.
-    act = _activity(tid)
-    owner = act.get("active_run_id")
-    if owner and owner != run_id and owner_is_active(owner, act, event.get("execution_id")):
-        _log_queued(run_id, tid, owner)
-        return {"ready": False, "reason": "busy", "busy_run_id": owner}
-    if not claim_target(tid, run_id, owner):
-        act = _activity(tid)
-        _log_queued(run_id, tid, str(act.get("active_run_id")))
-        return {"ready": False, "reason": "busy", "busy_run_id": act.get("active_run_id")}
-    inst = find_instance(tid)
+    # Instances are per run (bench:run tag): several runs on the same hardware option each launch
+    # their own and never touch each other's.
+    inst = find_instance(tid, run_id)
     if inst is not None and not event.get("keep_lifecycle"):
         # A stopped On-Demand instance counts as the wrong market for a Spot run too: restarting it
         # would bill On-Demand for a run that asked for Spot (seen 2026-11-09).
         wrong_market = lifecycle(inst) != purchase.get("type", "spot")
         wrong_type = bool(acceptable) and inst["InstanceType"] not in acceptable
         if wrong_market or wrong_type:
-            # The run asks for another market or instance type than the instance left by an earlier
-            # run: replace it (models are re-staged from the S3 cache).
+            # This run's instance does not match what the run asks for (cannot normally happen; a
+            # safety net): replace it (models are re-staged from the S3 cache).
             _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "replaced",
                                           "instance_id": inst["InstanceId"], "instance_type": inst["InstanceType"],
                                           "lifecycle": lifecycle(inst), "requested": purchase.get("type"),
@@ -366,30 +295,30 @@ def ensure_running(event: dict, context: Any = None) -> dict:
             _terminate(inst["InstanceId"])
             inst = None
     if inst is None:
-        act = _activity(tid)                 # re-read: claim_target just wrote it
+        act = _activity(tid, run_id)
         started = float(act.get("launch_started_at") or 0) or time.time()
         if not act.get("launch_started_at"):
-            _set_activity(tid, launch_started_at=started)
+            _set_activity(tid, run_id, launch_started_at=started)
         attempts = int(act.get("launch_attempts") or 0)
         max_attempts = int(purchase.get("max_launch_attempts") or DEFAULT_MAX_LAUNCH_ATTEMPTS)
         if attempts >= max_attempts:
-            _set_activity(tid, launch_started_at=0, launch_attempts=0)
+            _set_activity(tid, run_id, launch_started_at=0, launch_attempts=0)
             reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"))
             raise RuntimeError(f"{tid}: {reason}")
         try:
             market = decide_market(purchase, started, time.time())
         except RuntimeError:
             # Spot window used up and the fallback is off: nothing left to try.
-            _set_activity(tid, launch_started_at=0, launch_attempts=0)
+            _set_activity(tid, run_id, launch_started_at=0, launch_attempts=0)
             window = int(purchase.get("spot_capacity_window_s", 600)) // 60
             reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"),
                               cause=f"after {window} minutes without Spot capacity (falling back to On-Demand is off)")
             raise RuntimeError(f"{tid}: {reason}") from None
         inst = _launch(run_id, tid, purchase, market, pick_instance_type(attempts, event.get("alternates"), requested_type))
         if inst is None:
-            _set_activity(tid, launch_attempts=attempts + 1)
+            _set_activity(tid, run_id, launch_attempts=attempts + 1)
             return {"ready": False, "reason": "capacity", "attempt": attempts + 1, "max_attempts": max_attempts}
-        _set_activity(tid, launch_started_at=0, launch_attempts=0)
+        _set_activity(tid, run_id, launch_started_at=0, launch_attempts=0)
     iid = inst["InstanceId"]
     state = inst["State"]["Name"]
     if state == "stopping":
@@ -596,9 +525,10 @@ def check(event: dict, context: Any = None) -> dict:
 
 
 def stop(event: dict, context: Any = None) -> dict:
-    tid = event["target_id"]
-    inst = find_instance(tid)
-    common.table().update_item(Key={"pk": f"TARGET#{tid}", "sk": "ACTIVITY"}, UpdateExpression="REMOVE active_run_id")
+    """End of the run: this run's instance for the hardware option is stopped (On-Demand) or
+    terminated (Spot). Other runs' instances on the same hardware option are untouched."""
+    tid, run_id = event["target_id"], event["run_id"]
+    inst = find_instance(tid, run_id)
     if inst is None:
         return {"stopped": None}
     if lifecycle(inst) == "spot":

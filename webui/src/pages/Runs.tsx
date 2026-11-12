@@ -121,7 +121,7 @@ export default function Runs() {
                 </>
               )}
               {detail.cells.length > 0 && (<>
-              <h3 className="mt">Models on hardware options <Help text="One row per model served on one hardware option. Models on the same instance run one after another: Waiting for the instance → Loading the model → Measuring → Done. 'Queued behind X' means another model is using the instance right now. 'Not run — no capacity' means AWS never granted a machine for that hardware option; the reason is in the last column." /></h3>
+              <h3 className="mt">Models on hardware options <Help text="One row per model served on one hardware option. Models on the same instance run one after another: Waiting for the instance → Loading the model → Measuring → Done. 'Queued behind X' means another model of this run is using the instance right now. 'Not run — no capacity' means AWS never granted a machine for that hardware option; the reason is in the last column." /></h3>
               <table className="tbl">
                 <thead><tr><th>Model</th><th>Hardware</th><th>Format</th><th>Software</th><th>Status</th><th className="num">Measurements</th><th>Why</th></tr></thead>
                 <tbody>{detail.cells.map((c, i) => <tr key={i}><td>{c.model}</td><td>{c.hardware_label}</td><td>{c.precision}</td><td>{c.engine}</td><td><Badge kind={statusKind(c.status)}>{c.status_label}</Badge></td><td className="num">{c.status === "not_run" ? "0" : c.measurements}</td><td className={"small " + (c.status === "not_run" ? "" : "muted")} style={{ maxWidth: 420 }}>{c.error}</td></tr>)}</tbody>

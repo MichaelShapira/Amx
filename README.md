@@ -161,7 +161,10 @@ arguments (vLLM CPU KV cache, OVMS cache) scale with the override's memory.
 Target stacks own a launch template, not an instance. Each run launches its instances
 from the template (`run.purchase.type`, default `spot`; `bench run ... --purchase
 on-demand`, or the "Purchase option" radio in the UI) and finds them again by the
-`bench:target` tag. Spot instances are one-time requests that terminate on interruption.
+`bench:target` and `bench:run` tags: every run gets its own instance per hardware option, so
+any number of runs can be in flight at once without touching each other's machines (a run
+cannot reuse an instance left by another run; bring-up is a few minutes per run). Spot instances
+are one-time requests that terminate on interruption.
 When a cell step fails, the `Check` step looks at the instance:
 
 - instance gone (interrupted, stopped, terminated): record the interruption, launch another

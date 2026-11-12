@@ -173,14 +173,16 @@ def bench_home() -> str:
 
 # ---------------------------------------------------------------------------- DynamoDB
 
-def touch_target(target_id: str, run_id: str | None = None) -> None:
-    expr = "SET last_activity_at = :t"
-    vals: dict[str, Any] = {":t": int(time.time())}
-    if run_id is not None:
-        expr += ", active_run_id = :r"
-        vals[":r"] = run_id
-    table().update_item(Key={"pk": f"TARGET#{target_id}", "sk": "ACTIVITY"}, UpdateExpression=expr,
-                        ExpressionAttributeValues=vals)
+def activity_key(target_id: str, run_id: str) -> dict:
+    """The bookkeeping row for one hardware option in one run: launch attempts, launch start and
+    the heartbeat the reaper reads. Instances are per run, so the row is too."""
+    return {"pk": f"TARGET#{target_id}", "sk": f"ACTIVITY#{run_id}"}
+
+
+def touch_target(target_id: str, run_id: str) -> None:
+    """Heartbeat: this run is still using its instance for the hardware option."""
+    table().update_item(Key=activity_key(target_id, run_id), UpdateExpression="SET last_activity_at = :t",
+                        ExpressionAttributeValues={":t": int(time.time())})
 
 
 def set_status(run_id: str, sk: str, status: str, **extra: Any) -> None:

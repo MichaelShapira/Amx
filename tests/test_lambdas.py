@@ -254,7 +254,7 @@ def test_give_up_after_max_launch_attempts_records_why(aws, monkeypatch):
     for the state machine's TargetFailed catch. Seen 2026-11-11 as a bare 'Not run' in the UI."""
     from lambdas import target_control as tc
 
-    monkeypatch.setattr(tc, "find_instance", lambda tid: None)
+    monkeypatch.setattr(tc, "find_instance", lambda tid, run_id: None)
 
     def refused(run_id, tid, purchase, market, instance_type=None):
         tc._log(run_id, tid, "capacity", {"time": f"2026-11-11T09:{40 + len(seen):02d}:00Z", "market": market,
@@ -285,60 +285,49 @@ def test_give_up_after_max_launch_attempts_records_why(aws, monkeypatch):
     events = aws.get_json("runs/r9/targets/t1-g6.json")
     assert events[-1]["event"] == "gave_up" and events[-1]["refusals"] == 2
     # The attempt counter was reset, so the next run on this target starts from zero.
-    assert int(tc._activity("t1-g6").get("launch_attempts") or 0) == 0
+    assert int(tc._activity("t1-g6", "r9").get("launch_attempts") or 0) == 0
 
 
-def test_one_run_per_target_at_a_time(aws, monkeypatch):
-    """2026-11-12: a second run reused the first run's GPU instance, its serve.sh removed the
-    container the first run was loading, and the two runs then terminated each other's CPU
-    instances in turn. ensure_running now takes a per-target lock: a target held by another live
-    run answers busy (no launch, no attempt counted); a dead holder is taken over."""
+def test_every_run_gets_its_own_instance(aws, monkeypatch):
+    """2026-11-12: a second run adopted the first run's instance (lookup by target only), removed
+    its serving container and replaced its instance. Instances are now per run (bench:run tag):
+    two runs on the same hardware option each launch their own, with their own launch
+    bookkeeping, and stopping one run leaves the other's instance alone."""
     from lambdas import target_control as tc
 
-    launched: list[str] = []
-    monkeypatch.setattr(tc, "find_instance", lambda tid: None)
-    monkeypatch.setattr(tc, "_launch", lambda run_id, tid, purchase, market, instance_type=None:
-                        launched.append(run_id) or {"InstanceId": "i-new", "State": {"Name": "running"}, "InstanceType": "g6.xlarge",
-                                                    "PrivateIpAddress": "10.0.0.9", "LaunchTime": __import__("datetime").datetime.now(
-                                                        __import__("datetime").timezone.utc), "Placement": {"AvailabilityZone": "us-east-1a"}})
-    monkeypatch.setattr(tc, "_instance", lambda iid: {"InstanceId": iid, "State": {"Name": "running"}, "InstanceType": "g6.xlarge",
-                                                      "PrivateIpAddress": "10.0.0.9", "LaunchTime": __import__("datetime").datetime.now(
-                                                          __import__("datetime").timezone.utc)})
-    monkeypatch.setattr(tc, "_ssm_online", lambda iid, deadline: True)
-    monkeypatch.setattr(tc, "_boot_complete", lambda iid, deadline: True)
-    sfn_status = {"r-first": "RUNNING"}
-    monkeypatch.setattr(tc, "_execution_status", lambda execution_id, run_id: sfn_status.get(run_id) if execution_id else None)
-    aws.set_status("r-first", "META", "running")
-    aws.set_status("r-second", "META", "running")
-    ex = "arn:aws:states:us-east-1:123456789012:execution:amx-gpu-bench-run:r-second"
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+    subnet = ec2.create_subnet(VpcId=vpc, CidrBlock="10.0.1.0/24")["Subnet"]["SubnetId"]
+    ami = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+    lt = ec2.create_launch_template(LaunchTemplateName="amx-gpu-bench-t1-g6", LaunchTemplateData={
+        "ImageId": ami, "InstanceType": "g6.xlarge",
+        "NetworkInterfaces": [{"DeviceIndex": 0, "SubnetId": subnet, "AssociatePublicIpAddress": False}]})[
+        "LaunchTemplate"]["LaunchTemplateId"]
+    boto3.client("ssm", region_name="us-east-1").put_parameter(Name="/amx-gpu-bench/targets/t1-g6/launch-template",
+                                                              Value=lt, Type="String")
+    tc._ssm_online = lambda iid, deadline: True
+    tc._boot_complete = lambda iid, deadline: True
     purchase = {"type": "spot", "spot_capacity_window_s": 600, "spot_fallback_on_demand": True, "max_launch_attempts": 30}
-    # The first run takes the target.
-    first = tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex.replace("r-second", "r-first")})
-    assert first["ready"] is True and tc._activity("t1-g6")["active_run_id"] == "r-first"
-    # The second run must wait: busy, nothing launched, no launch attempt counted, one `queued` event.
-    for _ in range(3):
-        out = tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex})
-        assert out == {"ready": False, "reason": "busy", "busy_run_id": "r-first"}
-    assert launched == ["r-first"] and int(tc._activity("t1-g6").get("launch_attempts") or 0) == 0
-    events = aws.get_json("runs/r-second/targets/t1-g6.json")
-    assert [e["event"] for e in events] == ["queued"] and events[0]["behind"] == "r-first"
-    # The first run's own calls still go through (it holds the lock).
-    assert tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase})["ready"] is True
-    # Step Functions says the holder has ended: the second run takes over, even though META still says running.
-    sfn_status["r-first"] = "SUCCEEDED"
-    out = tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase, "execution_id": ex})
-    assert out["ready"] is True and tc._activity("t1-g6")["active_run_id"] == "r-second"
-    # Without Step Functions (no execution id): META status decides, with a staleness cut-off.
-    act = {"active_run_id": "r-third", "last_activity_at": time.time() - 60}
-    aws.set_status("r-third", "META", "running")
-    assert tc.owner_is_active("r-third", act, None) is True
-    assert tc.owner_is_active("r-third", {**act, "last_activity_at": time.time() - tc.STALE_LOCK_S - 1}, None) is False
-    aws.set_status("r-third", "META", "complete")
-    assert tc.owner_is_active("r-third", act, None) is False
-    # claim_target is atomic: a holder that changed between the check and the claim wins.
-    tc._set_activity("t1-g6", active_run_id="r-x")
-    assert tc.claim_target("t1-g6", "r-second", previous="r-first") is False
-    assert tc.claim_target("t1-g6", "r-second", previous="r-x") is True
+    first = tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase})
+    second = tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase})
+    assert first["ready"] and second["ready"] and first["instance_id"] != second["instance_id"]
+    # Each run finds only its own instance again; nothing is replaced or logged as reused.
+    assert tc.ensure_running({"run_id": "r-first", "target_id": "t1-g6", "purchase": purchase})["instance_id"] == first["instance_id"]
+    assert tc.ensure_running({"run_id": "r-second", "target_id": "t1-g6", "purchase": purchase})["instance_id"] == second["instance_id"]
+    for r in ("r-first", "r-second"):
+        assert [e["event"] for e in aws.get_json(f"runs/{r}/targets/t1-g6.json")] == ["launched"]
+    assert tc.find_instance("t1-g6", "r-first")["InstanceId"] == first["instance_id"]
+    assert tc.find_instance("t1-g6", "r-nobody") is None
+    # Bookkeeping is per (target, run).
+    assert aws.activity_key("t1-g6", "r-first") == {"pk": "TARGET#t1-g6", "sk": "ACTIVITY#r-first"}
+    tc._set_activity("t1-g6", "r-first", launch_attempts=4)
+    assert int(tc._activity("t1-g6", "r-first")["launch_attempts"]) == 4 and not tc._activity("t1-g6", "r-second").get("launch_attempts")
+    # Stopping one run terminates only its own (Spot) instance.
+    out = tc.stop({"target_id": "t1-g6", "run_id": "r-first"})
+    assert out == {"terminated": first["instance_id"]}
+    states = {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}
+    assert states[first["instance_id"]] in ("shutting-down", "terminated") and states[second["instance_id"]] == "running"
+    assert tc.stop({"target_id": "t1-g6", "run_id": "r-first"}) == {"stopped": None}
 
 
 def test_error_message_unwraps_the_step_functions_envelope():
@@ -460,7 +449,7 @@ def test_spot_interruption_relaunches_and_resumes(aws):
                           "error": {"Error": "WaveFailed", "Cause": "x"}})
     assert m["error"] == "EndpointUnreachable" and m["endpoint_failure"] is True
     # stop: a Spot instance is terminated, not stopped.
-    res = tc.stop({"target_id": "t1-g6"})
+    res = tc.stop({"target_id": "t1-g6", "run_id": "r1"})
     assert "terminated" in res or "stopped" in res
 
 

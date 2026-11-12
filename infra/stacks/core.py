@@ -203,11 +203,6 @@ class CoreStack(Stack):
             resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/amx-gpu-bench/targets/*"]))
         control.add_to_role_policy(s3_get("runs/*"))
         control.add_to_role_policy(s3_put("runs/*/capacity/*", "runs/*/targets/*", "runs/*/plan/*"))
-        # Is the run that holds a target still executing? (The state machine name is fixed, so this
-        # does not create a dependency cycle with the state machine that invokes the function.)
-        control.add_to_role_policy(iam.PolicyStatement(
-            actions=["states:DescribeExecution"],
-            resources=[f"arn:aws:states:{self.region}:{self.account}:execution:amx-gpu-bench-run:*"]))
         agg_level.add_to_role_policy(s3_list)
         agg_level.add_to_role_policy(s3_get("runs/*"))
         agg_level.add_to_role_policy(s3_put("runs/*/metrics/*", "runs/*/predictions/*"))
@@ -395,13 +390,11 @@ class CoreStack(Stack):
         # Launch or start the target's instance; loop while capacity is short or the instance boots.
         # `cells` lets a give-up (purchase.max_launch_attempts refused launches) mark every cell of the
         # target as not_run with the reason, instead of leaving them 'planned' with no explanation.
-        # `execution_id` lets the Lambda ask Step Functions whether the run holding a target is still
-        # alive (one run per hardware option at a time; others wait).
         ensure = invoke("EnsureRunning", control, {"action": "ensure_running", "run_id.$": "$.run_id",
                                                     "target_id.$": "$.target.target_id", "purchase.$": "$.purchase",
                                                     "alternates.$": "$.target.alternates",
                                                     "instance_type.$": "$.target.instance_type",
-                                                    "cells.$": "$.target.cells", "execution_id.$": "$$.Execution.Id"},
+                                                    "cells.$": "$.target.cells"},
                         result_selector={"r.$": "$.Payload"}, result_path="$.inst")
         wait_launch = sfn.Wait(self, "WaitForInstance", time=sfn.WaitTime.duration(Duration.seconds(60)))
         target_failed = sfn.Pass(self, "TargetFailed")
@@ -415,10 +408,10 @@ class CoreStack(Stack):
         tmap.item_processor(ensure.next(running))
         agg = invoke("AggregateRun", agg_run, {"run_id.$": "$.pf.run_id"},
                      result_selector={"report_prefix.$": "$.Payload.report_prefix"}, result_path="$.report")
-        stop_one = invoke("StopTarget", control, {"action": "stop", "target_id.$": "$.target_id"},
+        stop_one = invoke("StopTarget", control, {"action": "stop", "target_id.$": "$.target_id", "run_id.$": "$.run_id"},
                           result_path=P.DISCARD)
         stop_map = sfn.Map(self, "StopTargets", items_path="$.pf.targets", result_path=P.DISCARD,
-                           item_selector={"target_id.$": "$$.Map.Item.Value.target_id"})
+                           item_selector={"target_id.$": "$$.Map.Item.Value.target_id", "run_id.$": "$.pf.run_id"})
         stop_map.item_processor(stop_one)
         done = sfn.Succeed(self, "RunDone")
         stop_choice = sfn.Choice(self, "StopAfterRun").when(sfn.Condition.boolean_equals("$.pf.stop", True),

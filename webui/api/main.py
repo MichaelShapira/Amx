@@ -182,26 +182,6 @@ def _dedupe_cells(run: dict) -> dict:
     return {**run, "cells": out}
 
 
-def busy_targets_notes(target_ids: set[str]) -> list[str]:
-    """Hardware options another live run is using right now: this run would queue behind it."""
-    out = []
-    try:
-        hw = {h["id"]: h for h in get_catalog()["hardware"]}
-        tbl = _table()
-        for tid in sorted(target_ids):
-            act = tbl.get_item(Key={"pk": f"TARGET#{tid}", "sk": "ACTIVITY"}).get("Item") or {}
-            owner = act.get("active_run_id")
-            if not owner:
-                continue
-            meta = tbl.get_item(Key={"pk": f"RUN#{owner}", "sk": "META"}).get("Item") or {}
-            if meta.get("status") in ("running", "planned"):
-                out.append(f"{hw.get(tid, {}).get('label', tid)} is in use by run {owner} right now. This run will wait for it "
-                           "and start on it when that run finishes; nothing is interrupted.")
-    except Exception as e:  # noqa: BLE001 - offline: no table
-        _CACHE["busy_error"] = str(e)[:120]
-    return out
-
-
 @app.post("/api/plan")
 def post_plan(w: Wizard):
     """Validate the wizard state and return the plan: series, estimate, fairness, warnings, YAML."""
@@ -220,7 +200,6 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one detection scenario.")
     if not run["cells"] and w.models and (w.gpu or w.cpus):
         problems.append("No hardware option can serve the chosen model in the chosen number formats.")
-    notes += busy_targets_notes({c["target"] for c in run["cells"]})
     failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
               "grade": "quick" if run["mode"] == "smoke" else "full", "request_mode": w.request_mode, "yaml": "", "run": run}
     if problems:
@@ -633,7 +612,6 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
         live = _instance_states([last["instance_id"]]).get(last["instance_id"]) if last else None
         interruptions = [e for e in events if e.get("event") == "interrupted"]
         gave_up = next((e for e in reversed(events) if e.get("event") == "gave_up"), None)
-        queued = events[-1].get("behind") if events and events[-1].get("event") == "queued" else None
         requested = next((e.get("requested") for e in reversed(events) if e.get("requested")), None) or purchase.get("type")
         lifecycle = (live or {}).get("lifecycle") or (last or {}).get("lifecycle")
         fallback = bool(requested == "spot" and lifecycle == "on-demand")
@@ -649,10 +627,6 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
                 reason = not_run_reason(caps, purchase, gave_up)
                 phrase = f"Did not run. {reason}"
                 state = "not_run"
-            elif queued:
-                phrase = (f"Waiting: this hardware option is in use by run {queued}. This run starts on it when that one "
-                          "finishes (runs never interrupt each other).")
-                state = "queued"
             elif caps:
                 sizes, markets = _tried(caps)
                 phrase = (f"Waiting for capacity: AWS refused {len(caps)} launch request(s) so far for {sizes} ({markets})"
@@ -675,8 +649,8 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
                 phrase += f" · after {len(caps)} capacity refusal(s)"
         out.append({"hardware": tid, "hardware_label": hw.get(tid, {}).get("label", tid),
                     "instance_id": (last or {}).get("instance_id"), "instance_type": (live or last or {}).get("type") or (last or {}).get("instance_type"),
-                    "state": state, "state_label": "Did not run" if did_not_run else "Queued" if state == "queued" else INSTANCE_STATE.get(state or "", state),
-                    "lifecycle": lifecycle, "requested": requested, "queued_behind": queued if state == "queued" else None,
+                    "state": state, "state_label": "Did not run" if did_not_run else INSTANCE_STATE.get(state or "", state),
+                    "lifecycle": lifecycle, "requested": requested,
                     "fallback_from_spot": fallback, "capacity_refusals": len(caps), "interruptions": len(interruptions),
                     "attempts_max": budget, "did_not_run": did_not_run, "not_run_reason": reason,
                     "launched_at": (live or {}).get("launched_at") or (last or {}).get("time"), "status": phrase,
@@ -712,8 +686,8 @@ def cell_error_text(raw: str) -> str:
         return ""
     tail = s.split("failed (Failed):", 1)[1].strip() if "failed (Failed):" in s else s
     if "No such container" in s and "exited before becoming healthy" in s:
-        return ("Another run took over this instance while the model was loading (two runs shared one hardware option; "
-                "since 2026-11-12 runs wait for each other instead). Start this benchmark again. Details: " + tail[-200:])
+        return ("Another run took over this instance while the model was loading (before 2026-11-13 runs shared one "
+                "instance per hardware option; every run now gets its own). Start this benchmark again. Details: " + tail[-200:])
     if "export did not report a hash" in s or "Failed to export llm model" in s or "optimum-cli export" in s:
         why = ("the export tool was not told the model's task, which it cannot infer for a local copy of the model (fixed "
                "2026-11-12; start this benchmark again)" if "Failed to export llm model" in s else "see the details")
@@ -722,7 +696,7 @@ def cell_error_text(raw: str) -> str:
         return "The serving software stopped while loading the model. Details: " + tail[-300:]
     if "bring-up of" in s and not tail:
         return ("The instance was taken away while the model was loading, and the run gave up after its replacements were "
-                "taken away too (two runs shared one hardware option; since 2026-11-12 runs wait for each other). "
+                "taken away too (before 2026-11-13 runs shared one instance per hardware option; every run now gets its own). "
                 "Start this benchmark again.")
     if "bring-up of" in s:
         return "The model could not be served on this instance. Details: " + tail[-300:]
@@ -738,8 +712,6 @@ def derive_cell_status(cell: dict, siblings: list[dict], target: dict | None, ru
         return "Not run — no capacity"
     if run_status in ("complete", "stopped", "failed", "timed_out"):
         return "Not run"
-    if target and target.get("queued_behind"):
-        return f"Queued behind run {target['queued_behind']}"
     if target and target.get("state") != "running":
         return "Waiting for the instance" if target.get("instance_id") else "Waiting for an instance (capacity)"
     busy = [c for c in siblings if c is not cell and c.get("status") in ("configuring", "ready")]
@@ -764,15 +736,7 @@ def run_notices(targets: list[dict], cells: list[dict], run_status: str) -> list
                       "text": f"{t['hardware_label']}: {t['not_run_reason']}{consequence} "
                               "Start the run again later, choose another instance size, or raise the number of attempts "
                               "before giving up."})
-    if run_status == "running":
-        for t in targets:
-            if t.get("queued_behind"):
-                side = "GPU" if t["hardware_label"].startswith("GPU") else "CPU"
-                notes.append({"kind": "warn", "title": f"The {side} side is waiting for another run",
-                              "text": f"{t['hardware_label']} is in use by run {t['queued_behind']}. This run takes it over "
-                                      "when that run finishes; nothing is interrupted. Stop the other run if this one is more urgent."})
-    waiting = [t for t in targets if not t.get("did_not_run") and t.get("instance_id") is None and t.get("capacity_refusals")
-               and not t.get("queued_behind")]
+    waiting = [t for t in targets if not t.get("did_not_run") and t.get("instance_id") is None and t.get("capacity_refusals")]
     if run_status == "running" and waiting:
         for t in waiting:
             side = "GPU" if t["hardware_label"].startswith("GPU") else "CPU"
