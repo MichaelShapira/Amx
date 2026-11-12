@@ -50,8 +50,11 @@ case "$engine" in
     ;;
   ovms|thin-openvino)
     image=$(jq -r .ov.export_image "$spec")
-    xml=$(find "$MODELS_ROOT/ov/$(jq -r .weights.repo "$spec")/$(jq -r .weights.revision "$spec")/$(jq -r .ov.precision "$spec")" \
-      -name 'openvino_model.xml' -path '*/model/*' 2>/dev/null | head -n 1 || true)
+    # Decoders and classifiers export one openvino_model.xml; an encoder-decoder (T5) exports
+    # encoder and decoder IRs, and the encoder is the one the synthetic probe request can feed.
+    ovdir="$MODELS_ROOT/ov/$(jq -r .weights.repo "$spec")/$(jq -r .weights.revision "$spec")/$(jq -r .ov.precision "$spec")"
+    xml=$(find "$ovdir" -name 'openvino_model.xml' -path '*/model/*' 2>/dev/null | head -n 1 || true)
+    [[ -n "$xml" ]] || xml=$(find "$ovdir" -name 'openvino_encoder_model.xml' -path '*/model/*' 2>/dev/null | head -n 1 || true)
     hint=$(jq -r '.ov.hint // empty' "$spec")
     if [[ "$DRY_RUN" == "1" ]]; then xml=${xml:-/opt/models/ov/dry-run/model/openvino_model.xml}; fi
     [[ -n "$xml" ]] || die "no OpenVINO IR found for this cell; run serve.sh start first"

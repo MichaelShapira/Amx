@@ -80,3 +80,42 @@ def test_openvino_probe():
         {"type": "Softmax", "exec_type": "jit_avx512"}]})
     v = amx.verdict(ev(perf=PERF_UNSUPPORTED, ov=probe), precision="fp16", engine="thin-openvino")
     assert v["verdict"] == "VERIFIED" and v["precision_flag"] is None
+
+
+def test_ov_probe_without_inference_is_named_not_mislabeled():
+    """2026-11-12: every OpenVINO cell came out INVALID because the probe read execType from
+    rt_info, which OpenVINO leaves empty until an inference runs. The parser now says so."""
+    import json
+
+    from bench import amx
+
+    empty = json.dumps({"inference_precision": "bf16", "inference": {"ran": False, "error": "RuntimeError: x"},
+                        "nodes": [{"type": "FullyConnected", "exec_type": ""}] * 3 + [{"type": "Eltwise", "exec_type": ""}]})
+    t = amx.parse_ov_probe(empty)
+    assert t["gemm_total"] == 3 and t["gemm_amx"] == 0 and "did not run an inference" in t["note"] and "RuntimeError" in t["note"]
+    v = amx.verdict(amx.Evidence(cpu_flags=amx.REQUIRED_FLAGS | {"amx_fp16"}, trace=t), precision="bf16", engine="thin-openvino")
+    assert v["verdict"] == "INVALID" and "did not run an inference" in v["reason"]
+    good = json.dumps({"inference_precision": "bf16", "inference": {"ran": True, "profiled_nodes": 4},
+                       "nodes": [{"type": "FullyConnected", "exec_type": "brgemm_avx10_1_512_amx"}] * 3 + [{"type": "Eltwise", "exec_type": "jit_avx512"}]})
+    t2 = amx.parse_ov_probe(good)
+    assert t2["gemm_amx"] == 3 and "note" not in t2
+    assert amx.verdict(amx.Evidence(cpu_flags=amx.REQUIRED_FLAGS, trace=t2), precision="bf16", engine="thin-openvino")["verdict"] == "VERIFIED"
+
+
+def test_probe_dummy_feeds_follow_input_names_and_shapes():
+    import importlib.util
+    from pathlib import Path
+
+    import numpy as np
+
+    spec = importlib.util.spec_from_file_location("probe_ov", Path(__file__).resolve().parents[1] / "servers/export/probe_ov.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feeds = mod.dummy_feeds([("input_ids", [None, None], "int64"), ("attention_mask", [None, None], "int64"),
+                             ("position_ids", [None, None], "int64"), ("beam_idx", [None], "int32"),
+                             ("token_type_ids", [1, 8], "int64")], seq=8)
+    assert feeds["input_ids"].shape == (1, 8) and feeds["input_ids"].dtype == np.int64 and int(feeds["input_ids"][0, 0]) == 10
+    assert feeds["attention_mask"].tolist() == [[1] * 8]
+    assert feeds["position_ids"].tolist() == [list(range(8))]
+    assert feeds["beam_idx"].shape == (1,) and feeds["beam_idx"].dtype == np.int32 and int(feeds["beam_idx"][0]) == 0
+    assert feeds["token_type_ids"].tolist() == [[0] * 8]

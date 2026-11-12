@@ -105,9 +105,16 @@ def parse_ov_probe(text: str) -> dict:
         types[et] += 1
         if "amx" in et.lower():
             amx += 1
-    return {"gemm_total": total, "gemm_amx": amx,
-            "inference_precision": data.get("inference_precision"),
-            "exec_types": dict(types.most_common(10))}
+    out = {"gemm_total": total, "gemm_amx": amx,
+           "inference_precision": data.get("inference_precision"),
+           "exec_types": dict(types.most_common(10))}
+    inf = data.get("inference") or {}
+    if total and not any(types.keys() - {""}):
+        # Every GEMM has an empty kernel name: the probe saw the compiled graph but no inference
+        # ran (OpenVINO fills execType only after a request), so AMX cannot be judged.
+        out["note"] = ("kernel names unavailable: the probe did not run an inference"
+                       + (f" ({inf.get('error')})" if inf.get("error") else ""))
+    return out
 
 
 @dataclass
@@ -151,7 +158,8 @@ def verdict(ev: Evidence, *, precision: str, engine: str) -> dict:
         result.update(verdict="VERIFIED", basis="engine_trace",
                       reason=f"{ev.trace['gemm_amx']}/{ev.trace['gemm_total']} GEMMs ran AMX kernels")
     else:
-        result["reason"] = "hardware counter unavailable and engine trace shows no AMX GEMMs"
+        note = (ev.trace or {}).get("note")
+        result["reason"] = ("hardware counter unavailable and " + (note if note else "engine trace shows no AMX GEMMs"))
         return result
 
     # Precision-specific checks: an FP16 cell must really run FP16 on AMX.
