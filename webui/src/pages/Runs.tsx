@@ -22,7 +22,7 @@ export default function Runs() {
     setDeleting(runId); setErr(null);
     try {
       const r = await api.deleteRun(runId);
-      setNotice(`Deleted ${r.deleted}: ${r.objects} stored file${r.objects === 1 ? "" : "s"} and ${r.rows} table row${r.rows === 1 ? "" : "s"}.`);
+      setNotice(`Deleted ${r.deleted}: ${r.objects} stored file${r.objects === 1 ? "" : "s"} and ${r.rows} table row${r.rows === 1 ? "" : "s"}${r.terminated_instances?.length ? `; ${r.terminated_instances.length} leftover instance${r.terminated_instances.length === 1 ? "" : "s"} terminated` : ""}.`);
       if (id === runId) nav("/runs");
       await load();
     } catch (e) { setErr((e as Error).message); }
@@ -86,7 +86,7 @@ export default function Runs() {
             </div>
             <div className="row">
               {detail?.has_report && <Link className="btn primary sm" to={`/results?runs=${id}`}>Open results →</Link>}
-              {detail?.status === "running" && <button className="btn danger sm" onClick={async () => { if (confirm("Stop this run? Finished measurements are kept.")) { await api.stop(id); } }}>Stop run</button>}
+              {detail?.status === "running" && <button className="btn danger sm" onClick={async () => { if (confirm("Stop this run? Its instances are terminated right away; finished measurements are kept.")) { const r = await api.stop(id); setNotice(`Stopped ${id}: ${r.terminated_instances.length} instance${r.terminated_instances.length === 1 ? "" : "s"} terminated.`); } }}>Stop run</button>}
               {detail && detail.status !== "running" && detail.status !== "planned" && <button className="btn danger sm" disabled={deleting === id} onClick={() => remove(id)}>{deleting === id ? "Deleting…" : "Delete run"}</button>}
             </div>
           </div>

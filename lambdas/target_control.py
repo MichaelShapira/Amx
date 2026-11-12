@@ -23,7 +23,7 @@ bench:target and bench:run tags (one instance per hardware option PER RUN). Acti
                   terminated) record it and relaunch ("relaunch"), otherwise resume the
                   remaining levels ("resume") or give up ("fail")
   resume_levels   write the remaining level list for the Levels map
-  stop            stop an On-Demand instance, terminate a Spot one
+  stop            terminate this run's instance (Spot or On-Demand; nothing is kept warm)
 """
 
 from __future__ import annotations
@@ -525,18 +525,15 @@ def check(event: dict, context: Any = None) -> dict:
 
 
 def stop(event: dict, context: Any = None) -> dict:
-    """End of the run: this run's instance for the hardware option is stopped (On-Demand) or
-    terminated (Spot). Other runs' instances on the same hardware option are untouched."""
+    """End of the run: terminate this run's instance for the hardware option. Instances are per run
+    and never reused, so there is nothing to keep warm; a stopped instance would only keep its
+    200 GiB root volume on the bill. Other runs' instances on the same hardware option are untouched."""
     tid, run_id = event["target_id"], event["run_id"]
     inst = find_instance(tid, run_id)
     if inst is None:
-        return {"stopped": None}
-    if lifecycle(inst) == "spot":
-        _terminate(inst["InstanceId"])
-        return {"terminated": inst["InstanceId"]}
-    if inst["State"]["Name"] in ("running", "pending"):
-        _ec2().stop_instances(InstanceIds=[inst["InstanceId"]])
-    return {"stopped": inst["InstanceId"]}
+        return {"terminated": None}
+    _terminate(inst["InstanceId"])
+    return {"terminated": inst["InstanceId"], "lifecycle": lifecycle(inst)}
 
 
 ACTIONS = {"ensure_running": ensure_running, "configure_start": configure_start, "configure_poll": configure_poll,

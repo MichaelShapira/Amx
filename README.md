@@ -179,7 +179,13 @@ When a cell step fails, the `Check` step looks at the instance:
 The report's provenance block lists the instances that served each target, their market,
 and every interruption; a warning line names the targets that were interrupted. Cost
 columns always use On-Demand prices. At the end of a run (`stop_targets_after_run`) and
-from the reaper, On-Demand instances are stopped and Spot instances are terminated.
+from the reaper, instances are terminated whatever their market: nothing is reused between runs, and a
+stopped instance would only keep its 200 GiB root volume on the bill. Three independent mechanisms
+make sure no test instance outlives its run: (1) the run's own last step terminates its instances,
+also when measurements or the report failed; (2) **Stop run** and **Delete** in the UI terminate the
+run's instances immediately (an aborted execution never reaches its last step); (3) the reaper runs
+every 10 minutes and terminates any managed instance idle for 30 minutes with no live run, running
+for 8 hours with no live run, or found stopped. Root volumes are deleted with the instance.
 
 ## Prepare artifacts
 

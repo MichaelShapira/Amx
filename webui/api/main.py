@@ -1012,6 +1012,7 @@ def delete_run_data(run_id: str) -> dict:
             raise
         except Exception as e:  # noqa: BLE001 - no execution: nothing to protect
             _CACHE["delete_note"] = str(e)[:120]
+    terminated = terminate_run_instances(run_id)      # a leftover instance of a finished run goes with it
     s3 = boto3.client("s3", region_name=REGION)
     bucket = _outputs()["BucketName"]
     keys: list[str] = []
@@ -1024,7 +1025,8 @@ def delete_run_data(run_id: str) -> dict:
             bw.delete_item(Key={"pk": it["pk"], "sk": it["sk"]})
     for k in (f"summary:{run_id}", f"purchase:{run_id}", "cap_at", "orphans_at"):
         _CACHE.pop(k, None)
-    return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status") or "failed"}
+    return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status") or "failed",
+            "terminated_instances": terminated}
 
 
 @app.delete("/api/runs/{run_id}")
@@ -1032,15 +1034,41 @@ def delete_run(run_id: str):
     return delete_run_data(run_id)
 
 
+def terminate_run_instances(run_id: str) -> list[str]:
+    """Every instance this run launched (tags bench:managed + bench:run), terminated now. Used when
+    a run is stopped from the UI (the state machine's own end-of-run step does not execute for an
+    aborted execution; without this the reaper would only catch them after 30 idle minutes) and
+    when a run is deleted."""
+    import boto3
+
+    if not RUN_ID.match(run_id):
+        return []
+    ec2 = boto3.client("ec2", region_name=REGION)
+    r = ec2.describe_instances(Filters=[{"Name": "tag:bench:managed", "Values": ["true"]},
+                                        {"Name": "tag:bench:run", "Values": [run_id]},
+                                        {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
+    ids = [i["InstanceId"] for res in r["Reservations"] for i in res["Instances"]]
+    if ids:
+        ec2.terminate_instances(InstanceIds=ids)
+    return ids
+
+
 @app.post("/api/runs/{run_id}/stop")
 def stop_run(run_id: str):
     import boto3
 
+    if not RUN_ID.match(run_id):
+        raise HTTPException(400, "not a run id")
     arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
-    boto3.client("stepfunctions", region_name=REGION).stop_execution(executionArn=f"{arn}:{run_id}", cause="stopped from the UI")
-    _table().update_item(Key={"pk": f"RUN#{run_id}", "sk": "META"}, UpdateExpression="SET #s = :s",
-                         ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "stopped"})
-    return {"stopped": run_id}
+    try:
+        boto3.client("stepfunctions", region_name=REGION).stop_execution(executionArn=f"{arn}:{run_id}", cause="stopped from the UI")
+    except Exception as e:  # noqa: BLE001 - already ended: still make sure nothing is left running
+        _CACHE["stop_note"] = str(e)[:120]
+    terminated = terminate_run_instances(run_id)
+    _table().update_item(Key={"pk": f"RUN#{run_id}", "sk": "META"}, UpdateExpression="SET #s = :s, #u = :u",
+                         ExpressionAttributeNames={"#s": "status", "#u": "updated_at"},
+                         ExpressionAttributeValues={":s": "stopped", ":u": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    return {"stopped": run_id, "terminated_instances": terminated}
 
 
 def _summary(run_id: str) -> dict:

@@ -137,7 +137,7 @@ export const api = {
     j<InitialSelection>("/api/suggest/initial", { method: "POST", body: JSON.stringify(body) }),
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
-  deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string }>(`/api/runs/${id}`, { method: "DELETE" }),
+  deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string; terminated_instances: string[] }>(`/api/runs/${id}`, { method: "DELETE" }),
   slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),
   start: (w: Wizard) => j<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify(w) }),

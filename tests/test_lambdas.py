@@ -185,6 +185,43 @@ def test_reaper_decisions():
                                         max_uptime_h=8)
 
 
+def test_reaper_terminates_idle_and_stopped_leftovers(aws):
+    """On-Demand instances used to be *stopped* for reuse; nothing is reused now, so a stopped
+    managed instance is terminated on sight, an idle one (no live run) is terminated, and an
+    instance whose run is still going is left alone."""
+    from lambdas import reaper
+
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    ami = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+
+    def launch(run):
+        return ec2.run_instances(ImageId=ami, InstanceType="m8i.4xlarge", MinCount=1, MaxCount=1, TagSpecifications=[
+            {"ResourceType": "instance", "Tags": [{"Key": "bench:managed", "Value": "true"}, {"Key": "bench:target", "Value": "t2-m8i-4xl"},
+                                                  {"Key": "bench:run", "Value": run}]}])["Instances"][0]["InstanceId"]
+    live, idle, left = launch("r-live"), launch("r-idle"), launch("r-left")
+    ec2.stop_instances(InstanceIds=[left])
+    aws.set_status("r-live", "META", "running")
+    aws.set_status("r-idle", "META", "complete")
+    aws.touch_target("t2-m8i-4xl", "r-live")
+    boto3.resource("dynamodb", region_name="us-east-1").Table("amx-gpu-bench").put_item(
+        Item={**aws.activity_key("t2-m8i-4xl", "r-idle"), "last_activity_at": int(time.time()) - 3600})
+    out = reaper.handler({})
+    acted = {x["instance_id"]: x for x in out["stopped"]}
+    # The stopped leftover goes at once. The 'idle' one was launched seconds ago: the idle rule
+    # counts from max(last heartbeat, launch), so a fresh instance still booting is never reaped.
+    assert set(acted) == {left} and acted[left]["action"] == "terminated"
+    assert "left behind" in acted[left]["reason"] and acted[left]["run"] == "r-left"
+    states = {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}
+    assert states[live] == "running" and states[idle] == "running" and states[left] in ("shutting-down", "terminated")
+    old_launch = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
+    assert "idle" in reaper.decide({"LaunchTime": old_launch}, {"last_activity_at": time.time() - 3600}, active=False,
+                                   now=time.time(), idle_min=30, max_uptime_h=8)
+    # An unmanaged instance is never touched.
+    other = ec2.run_instances(ImageId=ami, InstanceType="t3.micro", MinCount=1, MaxCount=1)["Instances"][0]["InstanceId"]
+    reaper.handler({})
+    assert {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}[other] == "running"
+
+
 def test_preflight_checks(tmp_path):
     from bench.config import load_models, load_run, load_targets, resolve_cells
     from lambdas.preflight import check_run
@@ -324,10 +361,10 @@ def test_every_run_gets_its_own_instance(aws, monkeypatch):
     assert int(tc._activity("t1-g6", "r-first")["launch_attempts"]) == 4 and not tc._activity("t1-g6", "r-second").get("launch_attempts")
     # Stopping one run terminates only its own (Spot) instance.
     out = tc.stop({"target_id": "t1-g6", "run_id": "r-first"})
-    assert out == {"terminated": first["instance_id"]}
+    assert out["terminated"] == first["instance_id"]
     states = {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}
     assert states[first["instance_id"]] in ("shutting-down", "terminated") and states[second["instance_id"]] == "running"
-    assert tc.stop({"target_id": "t1-g6", "run_id": "r-first"}) == {"stopped": None}
+    assert tc.stop({"target_id": "t1-g6", "run_id": "r-first"}) == {"terminated": None}
 
 
 def test_error_message_unwraps_the_step_functions_envelope():
@@ -448,9 +485,9 @@ def test_spot_interruption_relaunches_and_resumes(aws):
     m = waves.init_level({"action": "mark_failed", "level": {"run_id": "r1", "level_key": "ck__short__c8__r0"},
                           "error": {"Error": "WaveFailed", "Cause": "x"}})
     assert m["error"] == "EndpointUnreachable" and m["endpoint_failure"] is True
-    # stop: a Spot instance is terminated, not stopped.
+    # stop: this run's instance is terminated whatever its market; nothing is kept warm.
     res = tc.stop({"target_id": "t1-g6", "run_id": "r1"})
-    assert "terminated" in res or "stopped" in res
+    assert res["terminated"] == out["instance_id"]
 
 
 def test_jsonl_gz_round_trip(aws):

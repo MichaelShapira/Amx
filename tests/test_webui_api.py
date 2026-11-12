@@ -339,9 +339,28 @@ def test_delete_run_removes_its_objects_and_rows_only(monkeypatch):
         monkeypatch.setattr(main, "_outputs", lambda: {"BucketName": bucket, "RunStateMachineArn": "arn:aws:states:us-east-1:1:stateMachine:x"})
         monkeypatch.setattr(main, "_reconcile", lambda items: None)
         main._CACHE["summary:r-done"] = {"x": 1}
+        # A leftover instance of the finished run is terminated with it; another run's instance is not.
+        ec2 = boto3.client("ec2", region_name="us-east-1")
+        ami = ec2.describe_images(Owners=["amazon"])["Images"][0]["ImageId"]
+
+        def launch(run):
+            return ec2.run_instances(ImageId=ami, InstanceType="m8i.4xlarge", MinCount=1, MaxCount=1, TagSpecifications=[
+                {"ResourceType": "instance", "Tags": [{"Key": "bench:managed", "Value": "true"}, {"Key": "bench:run", "Value": run}]}])["Instances"][0]["InstanceId"]
+        mine, theirs = launch("r-done"), launch("r-keep")
 
         r = c.delete("/api/runs/r-done")
-        assert r.status_code == 200 and r.json() == {"deleted": "r-done", "objects": 4, "rows": 3, "status_was": "complete"}
+        assert r.status_code == 200 and r.json() == {"deleted": "r-done", "objects": 4, "rows": 3, "status_was": "complete",
+                                                     "terminated_instances": [mine]}
+        states = {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}
+        assert states[mine] in ("shutting-down", "terminated") and states[theirs] == "running"
+        # Stopping a run from the UI terminates its instances at once, even when the execution is already gone.
+        going = launch("r-go")
+        tbl.put_item(Item={"pk": "RUN#r-go", "sk": "META", "status": "running"})
+        r = c.post("/api/runs/r-go/stop")
+        assert r.status_code == 200 and r.json()["terminated_instances"] == [going]
+        states = {i["InstanceId"]: i["State"]["Name"] for res in ec2.describe_instances()["Reservations"] for i in res["Instances"]}
+        assert states[going] in ("shutting-down", "terminated") and states[theirs] == "running"
+        assert tbl.get_item(Key={"pk": "RUN#r-go", "sk": "META"})["Item"]["status"] == "stopped"
         left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket)["Contents"])
         assert not any(k.startswith("runs/r-done/") for k in left)
         assert "runs/r-done-2/resolved.json" in left and "models/shared/weights.bin" in left and len([k for k in left if k.startswith("runs/r-keep/")]) == 4
