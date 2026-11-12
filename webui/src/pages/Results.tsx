@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
 import { api, fmt, type CompareOut, type ExecSummary, type Group, type RunRow, type SummaryInfo } from "../api";
@@ -48,16 +48,10 @@ export default function Results() {
       <div className="topbar"><div><h1>Results</h1><div className="muted">Pick one run, or several to compare. Every selection is re-checked for comparability.</div></div></div>
       {err && <Note kind="bad">{err}</Note>}
       <div className="card">
-        <h3>Runs <Help text="Finished runs with a report. Tick one to see its results; tick more to compare them. Runs can only be compared when they answer the same question: same use case, same test data, same request shape." /></h3>
+        <h3>Runs <Help text="Finished runs with a report. Type part of a run's name, model or date to find it; pick one to see its results, more to compare them. Runs can only be compared when they answer the same question: same use case, same test data, same request shape." /></h3>
         {!runs && <Spinner />}
         {runs && runs.length === 0 && <div className="muted">No finished runs yet.</div>}
-        <div className="chips">
-          {runs?.map((r) => (
-            <button key={r.run_id} className={"chip " + (selected.includes(r.run_id) ? "on" : "")} onClick={() => toggleRun(r.run_id)} title={`${r.status_label} · ${r.grade === "full" ? "decision-grade" : "quick check"}`}>
-              {r.run_id}{r.grade !== "full" ? " · quick" : ""}
-            </button>
-          ))}
-        </div>
+        {runs && runs.length > 0 && <RunPicker runs={runs} selected={selected} onToggle={toggleRun} onClear={() => { setParams({}); setSla(null); setModels(null); setSeries(null); }} />}
         {selected.length > 0 && (
           <table className="tbl mt">
             <thead><tr><th>Run</th><th>Use case</th><th>Data</th><th>Request shape</th><th>Concurrency</th><th>Grade</th><th>Models</th><th>Instances</th></tr></thead>
@@ -230,6 +224,64 @@ function ExecutiveSummary({ runIds, sla, limit, models }: { runIds: string[]; sl
       </div>
       {err && <Note kind="bad">{err}</Note>}
       {res && <div className="prose mt"><Markdown>{res.markdown}</Markdown></div>}
+    </div>
+  );
+}
+
+
+/** Search-as-you-type run picker: selected runs as removable tags, a text box that filters by
+ *  name, id, model or date, and the newest finished runs as suggestions when the box is empty. */
+function RunPicker({ runs, selected, onToggle, onClear }: { runs: RunRow[]; selected: string[]; onToggle: (id: string) => void; onClear: () => void }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const byId = useMemo(() => Object.fromEntries(runs.map((r) => [r.run_id, r])), [runs]);
+  const label = (r: RunRow) => (r.name && r.name !== r.run_id ? r.name : r.run_id);
+  const matches = useMemo(() => {
+    const terms = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const hay = (r: RunRow) => `${r.run_id} ${r.name ?? ""} ${r.model ?? ""} ${r.updated_at ?? ""} ${r.grade === "full" ? "decision-grade full" : "quick"}`.toLowerCase();
+    const list = terms.length ? runs.filter((r) => terms.every((t) => hay(r).includes(t))) : runs;
+    return list.filter((r) => !selected.includes(r.run_id)).slice(0, 12);
+  }, [q, runs, selected]);
+  useEffect(() => { setCursor(0); }, [q, open]);
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const pick = (id: string) => { onToggle(id); setQ(""); setOpen(true); };
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setCursor((c) => Math.min(matches.length - 1, c + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(0, c - 1)); }
+    else if (e.key === "Enter" && open && matches[cursor]) { e.preventDefault(); pick(matches[cursor].run_id); }
+    else if (e.key === "Escape") { setOpen(false); }
+    else if (e.key === "Backspace" && q === "" && selected.length) { onToggle(selected[selected.length - 1]); }
+  };
+  return (
+    <div className="picker" ref={boxRef}>
+      <div className="picker-box" onClick={() => setOpen(true)}>
+        {selected.map((id) => { const r = byId[id]; return (
+          <span key={id} className="tag">
+            <b>{r ? label(r) : id}</b>{r?.model ? <span className="muted"> · {r.model}</span> : null}{r && r.grade !== "full" ? <Badge kind="warn">quick</Badge> : null}
+            <button type="button" className="tag-x" aria-label={`Remove ${id}`} onClick={(e) => { e.stopPropagation(); onToggle(id); }}>×</button>
+          </span>); })}
+        <input value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onKeyDown={onKey}
+          placeholder={selected.length ? "Add another run to compare…" : `Search ${runs.length} finished runs by name, model or date…`} aria-label="Search runs" />
+        {selected.length > 0 && <button type="button" className="btn sm" onClick={(e) => { e.stopPropagation(); onClear(); }}>Clear</button>}
+      </div>
+      {open && (
+        <div className="picker-list" role="listbox">
+          {matches.length === 0 && <div className="muted small" style={{ padding: "8px 10px" }}>{q ? "No finished run matches." : "Every finished run is already selected."}</div>}
+          {!q && matches.length > 0 && <div className="tiny muted" style={{ padding: "6px 10px 2px" }}>Most recent</div>}
+          {matches.map((r, i) => (
+            <div key={r.run_id} role="option" aria-selected={i === cursor} className={"picker-item " + (i === cursor ? "active" : "")} onMouseEnter={() => setCursor(i)} onMouseDown={(e) => { e.preventDefault(); pick(r.run_id); }}>
+              <div><b>{label(r)}</b>{r.name && r.name !== r.run_id ? <span className="tiny muted"> {r.run_id}</span> : null}</div>
+              <div className="small muted">{r.model ?? "–"} · {r.updated_at?.slice(0, 16).replace("T", " ") ?? ""} UTC · {r.grade === "full" ? "decision-grade" : "quick check"}{r.not_run?.length ? " · one side did not run" : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

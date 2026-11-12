@@ -17,6 +17,14 @@ export default function Runs() {
 
   const load = () => api.runs().then(setRuns).catch((e) => setErr(e.message));
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
+  const copyToNew = async (runId: string) => {
+    setErr(null);
+    try {
+      const w = await api.wizardFrom(runId);
+      sessionStorage.setItem("wizard", JSON.stringify(w));
+      nav("/new", { state: { step: 6 } });
+    } catch (e) { setErr(`Could not copy ${runId}: ${(e as Error).message}`); }
+  };
   const remove = async (runId: string) => {
     if (!confirm(`Delete run ${runId}?\n\nThis removes its report, every measurement, the raw request records and the instance and capacity logs, from both storage and the run table. Other runs and the shared model cache are not touched. Instances are not affected.\n\nThis cannot be undone.`)) return;
     setDeleting(runId); setErr(null);
@@ -65,6 +73,7 @@ export default function Runs() {
                   <td>
                     <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
                       {r.status === "complete" && <Link className="btn sm" to={`/results?runs=${r.run_id}`} onClick={(e) => e.stopPropagation()}>Results →</Link>}
+                      <button className="btn sm" title="Open a new benchmark prefilled with this run's settings; nothing starts until you press Start" onClick={(e) => { e.stopPropagation(); copyToNew(r.run_id); }}>Copy to new run</button>
                       <button className="btn sm danger" disabled={deleting === r.run_id || r.status === "running" || r.status === "planned"}
                         title={r.status === "running" || r.status === "planned" ? "Stop the run first" : "Delete this run and everything it stored"}
                         onClick={(e) => { e.stopPropagation(); remove(r.run_id); }}>{deleting === r.run_id ? "Deleting…" : "Delete"}</button>
@@ -87,6 +96,7 @@ export default function Runs() {
             <div className="row">
               {detail?.has_report && <Link className="btn primary sm" to={`/results?runs=${id}`}>Open results →</Link>}
               {detail?.status === "running" && <button className="btn danger sm" onClick={async () => { if (confirm("Stop this run? Its instances are terminated right away; finished measurements are kept.")) { const r = await api.stop(id); setNotice(`Stopped ${id}: ${r.terminated_instances.length} instance${r.terminated_instances.length === 1 ? "" : "s"} terminated.`); } }}>Stop run</button>}
+              {detail && <button className="btn sm" title="Open a new benchmark prefilled with this run's settings; nothing starts until you press Start" onClick={() => copyToNew(id)}>Copy to new run</button>}
               {detail && detail.status !== "running" && detail.status !== "planned" && <button className="btn danger sm" disabled={deleting === id} onClick={() => remove(id)}>{deleting === id ? "Deleting…" : "Delete run"}</button>}
             </div>
           </div>

@@ -55,9 +55,25 @@ def _hf_access(repo: str, revision: str, token: str) -> int:
         return e.code
 
 
-def _latest_host_facts(target_id: str) -> dict | None:
+def _latest_host_facts(target_id: str, instance_type: str | None = None) -> dict | None:
+    """The newest host facts recorded for this target, and for THIS instance type when given:
+    instance sizes vary per run, so facts from a c8i must not answer for an m7i."""
     keys = common.list_keys(f"hosts/{target_id}/")
-    return common.get_json(keys[-1]) if keys else None
+    for k in reversed(keys):
+        facts = common.get_json(k)
+        if instance_type is None or facts.get("instance_type") == instance_type:
+            return facts
+    return None
+
+
+# AMX generations by instance family: Granite Rapids (8i) adds AMX-FP16; Sapphire Rapids (7i) has
+# AMX-BF16/INT8 only. Used when no host has booted with the run's instance type yet.
+FAMILY_FLAGS = {"8i": {"amx_tile", "amx_bf16", "amx_int8", "amx_fp16"}, "7i": {"amx_tile", "amx_bf16", "amx_int8"}}
+
+
+def expected_cpu_flags(instance_type: str | None) -> set[str] | None:
+    fam = (instance_type or "").split(".")[0]
+    return next((f for suffix, f in FAMILY_FLAGS.items() if fam.endswith(suffix)), None)
 
 
 DSPM_REQUESTS_MANIFEST = "artifacts/dspm/v1/requests/manifest.json"
@@ -103,12 +119,19 @@ def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrenc
         missing = sorted(types - offerings)
         if missing:
             errors.append(f"instance types not offered in {run.az_id}: {missing}")
+    itypes = run_instance_types(run, cells, tmap)
     for c in cells:
         p = models.get(c.model).precisions[c.precision]
-        if p.requires_cpu_flag:
+        # A CPU feature requirement (AMX-FP16) is about the CPU option's processor; a GPU cell
+        # runs FP16 on the GPU and is never subject to it (2026-11-12: a RoBERTa FP16 cell on
+        # g6.xlarge was refused with "host facts of t1-g6 lack amx_fp16").
+        if p.requires_cpu_flag and tmap[c.target].accelerator == "cpu":
             flags = host_flags.get(c.target)
+            if flags is None:
+                flags = expected_cpu_flags(itypes.get(c.target))
             if flags is not None and p.requires_cpu_flag not in flags:
-                errors.append(f"{c.cell_id}: host facts of {c.target} lack {p.requires_cpu_flag}")
+                errors.append(f"{c.cell_id}: {itypes.get(c.target)} has no {p.requires_cpu_flag} "
+                              f"(the {c.precision} format needs it)")
     return errors
 
 
@@ -137,10 +160,11 @@ def handler(event: dict, context: Any = None) -> dict:
         LocationType="availability-zone-id",
         Filters=[{"Name": "location", "Values": [run.az_id]}, {"Name": "instance-type", "Values": types}])
     offerings = {o["InstanceType"] for o in offered["InstanceTypeOfferings"]}
-    # Host facts (FP16 flag) where the target has booted before.
+    # Host facts (FP16 flag) where a host of this run's instance type has booted before; else the
+    # family rule in check_run decides.
     host_flags: dict[str, set[str] | None] = {}
     for tid in {c.target for c in cells}:
-        facts = _latest_host_facts(tid)
+        facts = _latest_host_facts(tid, itypes.get(tid))
         host_flags[tid] = parse_cpu_flags(facts["lscpu"]) if facts else None
     errors += check_run(run, cells, models, tmap, reserved_worker_concurrency=reserved, offerings=offerings,
                         host_flags=host_flags)

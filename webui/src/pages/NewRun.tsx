@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
 import { api, defaultWizard, fmt, type AiJob, type Catalog, type InitialSelection, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
@@ -11,7 +11,8 @@ const STEPS = ["Use case", "Test data", "Depth", "Models", "Hardware", "Load & t
 export default function NewRun() {
   const cat = useCatalog();
   const nav = useNavigate();
-  const [step, setStep] = useState(0);
+  const loc = useLocation();
+  const [step, setStep] = useState<number>(() => Math.min(STEPS.length - 1, Math.max(0, Number((loc.state as any)?.step ?? 0) || 0)));
   const [w, setW] = useState<Wizard>(() => {
     try { const s = sessionStorage.getItem("wizard"); return s ? { ...defaultWizard, ...JSON.parse(s) } : defaultWizard; } catch { return defaultWizard; }
   });
@@ -44,6 +45,9 @@ export default function NewRun() {
         <div><h1>New benchmark</h1><div className="muted">Seven steps; nothing starts until you press Start on the last one.</div></div>
         <button className="btn sm" onClick={() => { setW(defaultWizard); setStep(0); }}>Reset</button>
       </div>
+      {w.copied_from && (
+        <Note kind="ok"><b>Copied from run {w.copied_from}.</b> Every step is prefilled with that run's settings and nothing has started: click any step above to change it, then press Start on the last step. <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => set({ copied_from: null })}>Dismiss</button></Note>
+      )}
       <div className="steps">
         {STEPS.map((s, i) => (
           <div key={s} className={`step ${i === step ? "current" : ""} ${i < step ? "done" : ""}`} onClick={() => i < step && setStep(i)}>

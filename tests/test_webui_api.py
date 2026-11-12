@@ -291,6 +291,86 @@ def test_run_names_become_safe_slugs():
     assert pl["run"]["name"] == "gemma-vs-l4"
 
 
+def test_copy_to_new_run_round_trips_the_definition(monkeypatch):
+    """'Copy to new run': the wizard rebuilt from a stored run definition plans the same run (same
+    cells, sizes, formats, load, targets, purchase), carries a 'copy' name and does not re-size."""
+    from webui.api import main
+
+    monkeypatch.setattr(main, "deployed_backend", lambda: _backend(True))
+    w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "prompt_set": "medium", "answer_tokens": 256, "depth": "custom",
+         "requests": 120, "passes": 2, "gpu": {**GPU, "instance_type": "g6.2xlarge", "precisions": ["bf16"], "alternates": ["g5.2xlarge"]},
+         "cpus": [{**CPU, "precisions": ["bf16", "w8a8"]}, {"hardware": "t3-m8i-4xl-ov", "instance_type": "m8i.4xlarge", "precisions": ["int8-ov"]}],
+         "request_mode": "concurrent", "concurrency": [2, 8], "sla": {"p99_ttft_ms": 1500, "p50_tpot_ms": 120},
+         "purchase": "on-demand", "spot_fallback": False, "spot_wait_minutes": 20, "launch_attempts": 12, "parallel_targets": False,
+         "name": "My Qwen test"}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"], pl["problems"]
+    w2 = main.wizard_from_run(pl["run"], name="My Qwen test", source_run_id="my-qwen-test-20261112T000000Z")
+    assert w2["name"] == "My Qwen test copy" and w2["copied_from"] == "my-qwen-test-20261112T000000Z"
+    assert w2["sized_for"] == "m1-qwen2.5-3b|bf16" and w2["depth"] == "custom" and (w2["requests"], w2["passes"]) == (120, 2)
+    assert w2["gpu"]["instance_type"] == "g6.2xlarge" and w2["gpu"]["alternates"] == ["g5.2xlarge"]
+    assert {s_["hardware"]: s_["precisions"] for s_ in w2["cpus"]} == {"t2-m8i-4xl": ["bf16", "w8a8"], "t3-m8i-4xl-ov": ["int8-ov"]}
+    assert w2["purchase"] == "on-demand" and w2["spot_fallback"] is False and w2["spot_wait_minutes"] == 20 and w2["launch_attempts"] == 12
+    assert w2["parallel_targets"] is False and w2["concurrency"] == [2, 8] and w2["request_mode"] == "concurrent"
+    assert w2["sla"] == {"p99_ttft_ms": 1500, "p50_tpot_ms": 120} and w2["prompt_set"] == "medium" and w2["answer_tokens"] == 256
+    pl2 = c.post("/api/plan", json=w2).json()
+    assert pl2["ok"], pl2["problems"]
+    same = {k: v for k, v in pl["run"].items() if k != "name"}
+    assert {k: v for k, v in pl2["run"].items() if k != "name"} == same
+    # Quick-check depth and batch mode map back to their wizard choices.
+    d = {"use_case": "dspm", "models": ["d2-roblox-pii-v2"], "workloads": ["W1", "W3"], "preset": "bulk", "test_items": 500,
+         "gpu": GPU, "cpus": [CPU], "request_mode": "batch", "batch_sizes": [8, 32], "concurrency": [1, 4]}
+    pd = c.post("/api/plan", json=d).json()
+    assert pd["ok"], pd["problems"]
+    w3 = main.wizard_from_run(pd["run"])
+    assert w3["use_case"] == "dspm" and w3["depth"] == "quick" and w3["request_mode"] == "batch" and w3["batch_sizes"] == [8, 32]
+    assert w3["workloads"] == ["W1", "W3"] and w3["preset"] == "bulk" and w3["test_items"] == 500 and w3["name"].endswith(" copy")
+    assert c.post("/api/plan", json=w3).json()["ok"]
+
+
+def test_refusals_read_as_sentences_with_names():
+    """The 2026-11-12 refusal 'm3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16'
+    and the other pre-check messages, as the reader sees them."""
+    from webui.api.main import refusal_sentences
+
+    old = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: host facts of t4-m8i-4xl-torch lack amx_fp16"])[0]
+    assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · PyTorch in FP16 (half precision): the FP16")
+    assert "AMX-FP16" in old and "m8i, c8i or r8i" in old and "untick FP16" in old
+    new = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: m7i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
+    assert "the m7i.4xlarge processor does not have" in new
+    s = refusal_sentences(["worker reserved concurrency 32 < highest level 64",
+                           "instance types not offered in use1-az1: ['g6e.48xlarge', 'm8i.96xlarge']",
+                           "target t5-m7i-4xl is not deployed (no SSM parameter /amx-gpu-bench/targets/t5-m7i-4xl/launch-template)",
+                           "Hugging Face access to gated google/gemma-2-2b-it@299a8560 returned HTTP 403",
+                           "price unavailable: no price for g6e.xlarge in us-east-1",
+                           "DSPM suite needs the dataset and request pools in S3; run `bench upload-artifacts`",
+                           "m1-qwen2.5-3b|t2-m8i-4xl|bf16: none of ['ovms'] is available on t2-m8i-4xl",
+                           "something nobody mapped"])
+    assert s[0].startswith("The load generator in this deployment can send at most 32 requests at a time, and this run asks for 64.")
+    assert s[1] == "AWS does not offer these instance sizes in this zone (use1-az1): g6e.48xlarge, m8i.96xlarge. Pick another size on the Hardware step."
+    assert s[2].startswith("The hardware option t5-m7i-4xl is not deployed") or "is not deployed in this account" in s[2]
+    assert "gated on Hugging Face" in s[3] and "HTTP 403" in s[3] and "Accept the model's license" in s[3]
+    assert s[4].startswith("The On-Demand price of an instance size could not be read") and "g6e.xlarge" in s[4]
+    assert "bench upload-artifacts" in s[5]
+    assert s[6].startswith("Qwen2.5 3B Instruct on CPU · Intel Xeon with AMX · vLLM in BF16 (standard): this serving software cannot run")
+    assert s[7] == "something nobody mapped"
+    assert refusal_sentences(None) == []
+
+
+def test_plan_refuses_fp16_on_sapphire_rapids_before_the_run_starts(monkeypatch):
+    from webui.api import main
+
+    monkeypatch.setattr(main, "deployed_backend", lambda: _backend(True))
+    w = {"use_case": "standard", "models": ["m3-roberta-large-mnli"], "gpu": {**GPU, "precisions": ["fp16"]},
+         "cpus": [{"hardware": "t4-m8i-4xl-torch", "instance_type": "m7i.4xlarge", "precisions": ["bf16", "fp16"]}]}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"] is False and any("needs AMX-FP16" in x and "m7i.4xlarge" in x and "Sapphire Rapids" in x for x in pl["problems"])
+    # FP16 on the GPU alone is fine, and FP16 on a Granite Rapids CPU size is fine.
+    ok = c.post("/api/plan", json={**w, "cpus": [{**w["cpus"][0], "instance_type": "c8i.4xlarge"}]}).json()
+    assert ok["ok"] is True, ok["problems"]
+    assert {(s_["hardware"], s_["precision"]) for s_ in ok["series"]} >= {("t1-g6", "FP16 (half precision)"), ("t4-m8i-4xl-torch", "FP16 (half precision)")}
+
+
 def test_cell_failures_read_as_sentences():
     """The three failures of 2026-11-12, as stored (Step Functions error object repr with the
     Lambda's JSON envelope inside), rendered for the Why column."""

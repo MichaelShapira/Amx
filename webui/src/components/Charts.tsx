@@ -74,10 +74,10 @@ function OneChart({ points, field, title, note, target, log }: { points: Point[]
   return (
     <div>
       <div className="small" style={{ fontWeight: 650 }}>{title} <span className="muted" style={{ fontWeight: 450 }}>— {note}</span></div>
-      <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={rows} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={290}>
+        <LineChart data={rows} margin={{ top: 10, right: 16, left: 0, bottom: 28 }}>
           <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" />
-          <XAxis dataKey="conc" tick={{ fill: "var(--fg-3)", fontSize: 12 }} label={{ value: "concurrent requests", position: "insideBottom", offset: -2, fill: "var(--fg-3)", fontSize: 11 }} />
+          <XAxis dataKey="conc" tick={{ fill: "var(--fg-3)", fontSize: 12 }} label={{ value: "requests at a time", position: "bottom", offset: 8, fill: "var(--fg-3)", fontSize: 12 }} />
           <YAxis tick={{ fill: "var(--fg-3)", fontSize: 12 }} scale={log ? "log" : "auto"} domain={log ? ["auto", "auto"] : [0, "auto"]} width={64} tickFormatter={(v) => fmt.n(v, log ? 2 : 0)} />
           <Tooltip contentStyle={tipStyle} formatter={(v: any) => fmt.n(Number(v), field === "cost" ? 2 : 0)} labelFormatter={(l) => `${l} concurrent`} />
           {target ? <ReferenceLine y={target} stroke="var(--bad)" strokeDasharray="6 4" label={{ value: "your target", fill: "var(--bad)", fontSize: 11, position: "insideTopRight" }} /> : null}
@@ -123,13 +123,14 @@ export function Curves({ points, units, target }: { points: Point[]; units: Grou
 }
 
 export function InstancesBar({ rows, limit }: { rows: Group["equivalence"]; limit: number }) {
-  const data = rows.map((r) => ({ name: `${r.instance_type} · ${r.precision} · ${r.conc} conc`, n: r.instances_per_gpu, ratio: r.hourly_cost_ratio, ok: r.within_limit }));
+  // "m8i.4xlarge · PyTorch · bf16 · 4 at a time": two CPU options on the same size differ by software only.
+  const data = rows.map((r) => ({ name: `${r.series.replace(/^(GPU|CPU) · /, "")} · ${r.conc} at a time`, n: r.instances_per_gpu, ratio: r.hourly_cost_ratio, ok: r.within_limit }));
   return (
-    <ResponsiveContainer width="100%" height={Math.max(120, 36 * data.length + 50)}>
-      <BarChart data={data} layout="vertical" margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
+    <ResponsiveContainer width="100%" height={Math.max(140, 36 * data.length + 70)}>
+      <BarChart data={data} layout="vertical" margin={{ top: 22, right: 30, left: 10, bottom: 6 }}>
         <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" horizontal={false} />
         <XAxis type="number" tick={{ fill: "var(--fg-3)", fontSize: 12 }} allowDecimals={false} label={{ value: "CPU instances needed to match one GPU", position: "insideBottom", offset: -2, fill: "var(--fg-3)", fontSize: 11 }} />
-        <YAxis type="category" dataKey="name" width={240} tick={{ fill: "var(--fg-2)", fontSize: 12 }} />
+        <YAxis type="category" dataKey="name" width={290} tick={{ fill: "var(--fg-2)", fontSize: 12 }} />
         <Tooltip contentStyle={tipStyle} formatter={(v: any, n: any, p: any) => [`${v} instances · ${fmt.x(p.payload.ratio)} the GPU's hourly cost`, n === "n" ? "Needed" : n]} />
         <ReferenceLine x={limit} stroke="var(--bad)" strokeDasharray="6 4" label={{ value: `limit ${limit}`, fill: "var(--bad)", fontSize: 11, position: "top" }} />
         <Bar dataKey="n" radius={[0, 6, 6, 0]} isAnimationActive={false}>

@@ -182,6 +182,89 @@ def _dedupe_cells(run: dict) -> dict:
     return {**run, "cells": out}
 
 
+FP16_FAMILIES = ("m8i", "c8i", "r8i")      # Granite Rapids: the only AMX generation with AMX-FP16
+
+
+def fp16_needs_granite_rapids(run: dict) -> list[str]:
+    """FP16 on a CPU option runs on AMX-FP16, which Sapphire Rapids (7i sizes) lacks; say so on the
+    Review step instead of letting the pre-checks refuse the run."""
+    cat = get_catalog()
+    hw = {h["id"]: h for h in cat["hardware"]}
+    out = []
+    for c in run.get("cells") or []:
+        if c["precision"] != "fp16" or hw.get(c["target"], {}).get("accelerator") != "cpu":
+            continue
+        itype = (run.get("instance_types") or {}).get(c["target"]) or hw.get(c["target"], {}).get("default_instance_type", "")
+        if itype.split(".")[0] not in FP16_FAMILIES:
+            out.append(f"{hw.get(c['target'], {}).get('label', c['target'])}: the FP16 (half precision) format needs AMX-FP16, "
+                       f"which the {itype} processor (Sapphire Rapids) does not have. Pick an m8i, c8i or r8i size for this option, "
+                       "or untick FP16 and keep BF16 / INT8.")
+    return out
+
+
+def refusal_sentences(errors: list[str]) -> list[str]:
+    """The pre-check refusals (lambdas/preflight.py) for a reader who is not an engineer: every
+    known message becomes what went wrong and what to do, with model and hardware names instead
+    of ids. Unknown messages are passed through."""
+    cat = get_catalog()
+    hw = {h["id"]: h.get("label", h["id"]) for h in cat["hardware"]}
+    out = []
+    for e in errors or []:
+        e = str(e)
+        m_cell = re.match(r"^([\w.-]+)\|([\w.-]+)\|([\w.-]+): (.*)$", e)
+        if m_cell:
+            mid, tid, prec, rest = m_cell.groups()
+            where = f"{C.model_name(mid)} on {hw.get(tid, tid)} in {C.PRECISIONS.get(prec, (prec,))[0]}"
+            if "has no amx_fp16" in rest or "lack amx_fp16" in rest:
+                itype = rest.split(" has no")[0] if " has no" in rest else "this instance size"
+                out.append(f"{where}: the FP16 (half precision) format needs AMX-FP16, which the {itype} processor does not "
+                           "have. Pick an m8i, c8i or r8i size for this option, or untick FP16 and keep BF16 / INT8.")
+            elif "none of" in rest and "available on" in rest:
+                out.append(f"{where}: this serving software cannot run the model in that number format. Untick the format "
+                           "for this option.")
+            else:
+                out.append(f"{where}: {rest}")
+            continue
+        m = re.match(r"^worker reserved concurrency (\d+) < highest level (\d+)", e)
+        if m:
+            out.append(f"The load generator in this deployment can send at most {m.group(1)} requests at a time, and this run asks "
+                       f"for {m.group(2)}. Lower the highest 'requests at a time' value, or redeploy the Core stack with a higher "
+                       "worker concurrency.")
+            continue
+        m = re.match(r"^instance types not offered in ([\w-]+): \[(.*)\]", e)
+        if m:
+            types = m.group(2).replace("'", "")
+            out.append(f"AWS does not offer these instance sizes in this zone ({m.group(1)}): {types}. Pick another size on the "
+                       "Hardware step.")
+            continue
+        m = re.match(r"^target ([\w-]+) is not deployed", e)
+        if m:
+            out.append(f"The hardware option {hw.get(m.group(1), m.group(1))} is not deployed in this account "
+                       f"(stack AmxBench-Target-{m.group(1)}). Deploy it, or untick the option.")
+            continue
+        m = re.match(r"^Hugging Face access to gated ([\w./-]+)@(\w+) returned HTTP (\d+)", e)
+        if m:
+            out.append(f"The model {m.group(1)} is gated on Hugging Face and the stored token was refused (HTTP {m.group(3)}). "
+                       "Accept the model's license with the account that owns the token, or store a token that has access, "
+                       "then start the run again.")
+            continue
+        if e.startswith("price unavailable"):
+            out.append("The On-Demand price of an instance size could not be read from the AWS Price List, and without it the "
+                       f"cost columns cannot be computed. Try again in a minute. Details: {e[len('price unavailable: '):][:160]}")
+            continue
+        if e.startswith("DSPM suite needs the dataset"):
+            out.append("The sensitive-data test data has not been uploaded to this account's bucket. From the repository run "
+                       "`bench upload-artifacts`, then start the run again.")
+            continue
+        if e.startswith("DSPM request pools were built from a different dataset"):
+            out.append("The sensitive-data request pools in the bucket were built from a different dataset version than the "
+                       "one uploaded, so the answers could not be scored. Rebuild them (`tools.dspm.build_requests`) and run "
+                       "`bench upload-artifacts`.")
+            continue
+        out.append(e)
+    return out
+
+
 @app.post("/api/plan")
 def post_plan(w: Wizard):
     """Validate the wizard state and return the plan: series, estimate, fairness, warnings, YAML."""
@@ -200,6 +283,7 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one detection scenario.")
     if not run["cells"] and w.models and (w.gpu or w.cpus):
         problems.append("No hardware option can serve the chosen model in the chosen number formats.")
+    problems += fp16_needs_granite_rapids(run)
     failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
               "grade": "quick" if run["mode"] == "smoke" else "full", "request_mode": w.request_mode, "yaml": "", "run": run}
     if problems:
@@ -775,7 +859,7 @@ def list_runs():
     return [{"run_id": i["pk"][4:], "name": i.get("name"), "model": C.model_name(i["model"]) if i.get("model") else None,
              "status": i.get("status"), "status_label": label(i),
              "updated_at": i.get("updated_at"), "grade": "quick" if i.get("smoke") else "full", "purchase": i.get("purchase"),
-             "n_cells": i.get("n_cells"), "errors": i.get("errors"),
+             "n_cells": i.get("n_cells"), "errors": refusal_sentences(i.get("errors")) if i.get("status") == "refused" else i.get("errors"),
              "not_run": [{"hardware": x.get("target_id"), "hardware_label": hw.get(x.get("target_id"), {}).get("label", x.get("target_id")),
                           "reason": x.get("reason")} for x in (i.get("not_run") or [])]} for i in items]
 
@@ -959,7 +1043,7 @@ def get_run(run_id: str):
         status_label = "Failed before the pre-checks" if meta.get("status") == "failed" else status_label
     return {"run_id": run_id, "name": meta.get("name"), "status": meta.get("status"), "status_label": status_label,
             "grade": "quick" if meta.get("smoke") else "full", "purchase": meta.get("purchase"), "updated_at": meta.get("updated_at"),
-            "refusal": meta.get("errors") if meta.get("status") == "refused" else None, "notices": notices,
+            "refusal": refusal_sentences(meta.get("errors")) if meta.get("status") == "refused" else None, "notices": notices,
             "failure": (meta.get("errors") or None) if meta.get("status") in ("failed", "timed_out", "stopped") else None,
             "progress": {"done": done, "total": len(levels)}, "cells": cells, "targets": targets,
             "levels": sorted(levels, key=lambda x: (x["hardware"], x["model"], x["what"], x["conc"] or 0, x["pass"] or 0)),
@@ -1051,6 +1135,73 @@ def terminate_run_instances(run_id: str) -> list[str]:
     if ids:
         ec2.terminate_instances(InstanceIds=ids)
     return ids
+
+
+def wizard_from_run(run: dict, name: str | None = None, source_run_id: str | None = None) -> dict:
+    """The wizard draft that reproduces a stored run definition (run.yaml / resolved.json["run"]):
+    'Copy to new run'. Nothing is started; the user lands on the Review step and can change any
+    step. Sizes and formats are carried over as they ran, so the hardware step does not re-size
+    (sized_for is set)."""
+    cat = get_catalog()
+    hw = {h["id"]: h for h in cat["hardware"]}
+    suite = run.get("suite", "standard")
+    per = (run.get("per_level") or {}).get("requests")
+    reps = run.get("repeats")
+    depth = next((k for k, d in C.DEPTHS.items() if d[2] == per and d[3] == reps), "custom")
+    conc = sorted({int(c) for c in run.get("concurrency") or [1]})
+    batches = run.get("batch_sizes") or [1]
+    request_mode = "batch" if any(int(b) > 1 for b in batches) else ("single" if conc == [1] else "concurrent")
+    sides: dict[str, dict] = {}
+    for c in run.get("cells") or []:
+        side = sides.setdefault(c["target"], {"hardware": c["target"], "precisions": [],
+                                             "instance_type": (run.get("instance_types") or {}).get(c["target"])
+                                             or hw.get(c["target"], {}).get("default_instance_type"),
+                                             **({"alternates": (run.get("alternates") or {})[c["target"]]} if c["target"] in (run.get("alternates") or {}) else {})})
+        if c["precision"] not in side["precisions"]:
+            side["precisions"].append(c["precision"])
+    gpu = next((v for k, v in sides.items() if hw.get(k, {}).get("accelerator") == "gpu"), None)
+    cpus = [v for k, v in sides.items() if hw.get(k, {}).get("accelerator") != "gpu"]
+    sla = run.get("sla") or {}
+    purchase = run.get("purchase") or {}
+    dspm = run.get("dspm") or {}
+    models = list(run.get("models") or [])
+    base_name = (name or run.get("name") or "run").strip()
+    w = {"use_case": suite, "prompt_set": run.get("prompt_set") if suite == "standard" else "short",
+         "answer_tokens": int((run.get("sampling") or {}).get("max_new_tokens") or 128) if suite == "standard" else 128,
+         "workloads": list(dspm.get("workloads") or ["W1", "W3"]), "test_items": int(dspm.get("test_items") or 300),
+         "preset": dspm.get("sla_preset") or "inline_standard",
+         "depth": depth, "requests": per if depth == "custom" else None, "passes": reps if depth == "custom" else None,
+         "models": models, "precision": "bf16", "gpu": gpu, "cpus": cpus,
+         "parallel_targets": bool((run.get("execution") or {}).get("parallel_targets", True)),
+         "request_mode": request_mode, "concurrency": conc, "batch_sizes": [int(b) for b in batches] if request_mode == "batch" else [8],
+         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite == "standard" else {},
+         "purchase": purchase.get("type", "spot"), "spot_fallback": bool(purchase.get("spot_fallback_on_demand", True)),
+         "spot_wait_minutes": max(1, int(purchase.get("spot_capacity_window_s", 600)) // 60),
+         "launch_attempts": int(purchase.get("max_launch_attempts", 30)),
+         "name": f"{base_name} copy" if not base_name.endswith("copy") else base_name, "allow_unfair": False,
+         "sized_for": f"{models[0]}|bf16" if models else None, "copied_from": source_run_id}
+    return w
+
+
+@app.get("/api/runs/{run_id}/wizard")
+def run_as_wizard(run_id: str):
+    """A new wizard draft prefilled from this run ('Copy to new run'); nothing is started."""
+    import yaml
+
+    if not RUN_ID.match(run_id):
+        raise HTTPException(400, "not a run id")
+    text = None
+    import boto3
+
+    try:
+        text = boto3.client("s3", region_name=REGION).get_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")["Body"].read().decode()
+    except Exception:  # noqa: BLE001 - older run without run.yaml: fall back to the resolved definition
+        text = None
+    run = (yaml.safe_load(text) or {}).get("run") if text else (_s3_json(f"runs/{run_id}/resolved.json") or {}).get("run")
+    if not run:
+        raise HTTPException(404, "this run's definition is no longer stored")
+    meta = next((i for i in _run_items(run_id) if i["sk"] == "META"), {})
+    return wizard_from_run(run, name=meta.get("name"), source_run_id=run_id)
 
 
 @app.post("/api/runs/{run_id}/stop")

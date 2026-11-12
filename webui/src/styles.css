@@ -227,3 +227,17 @@ details summary { cursor: pointer; font-weight: 600; }
 .prose p, .prose li { color: var(--fg); font-size: 14.5px; }
 .prose ul { padding-left: 20px; }
 .prose strong { font-weight: 650; }
+
+/* run picker (Results) */
+.picker { position: relative; }
+.picker-box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line-2); border-radius: var(--radius-s); background: var(--bg-2); cursor: text; }
+.picker-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.picker-box input { flex: 1 1 220px; min-width: 160px; border: none; background: transparent; box-shadow: none; padding: 6px 4px; }
+.picker-box input:focus { box-shadow: none; }
+.tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); font-size: 13px; color: var(--fg); }
+.tag-x { border: none; background: transparent; color: var(--fg-2); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 4px; border-radius: 50%; }
+.tag-x:hover { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.picker-list { position: absolute; z-index: 20; left: 0; right: 0; margin-top: 4px; max-height: 360px; overflow: auto; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: var(--radius-s); box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+.picker-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); color: var(--fg); }
+.picker-item:last-child { border-bottom: none; }
+.picker-item.active { background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); }

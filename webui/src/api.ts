@@ -38,13 +38,14 @@ export interface Wizard {
   concurrency: number[]; batch_sizes: number[]; sla: Record<string, number | undefined>; purchase: "spot" | "on-demand";
   spot_fallback: boolean; spot_wait_minutes: number; launch_attempts: number; name: string; allow_unfair: boolean;
   sized_for: string | null;          // "<model>|<precision>" the hardware step last pre-selected sizes for
+  copied_from: string | null;        // run id this draft was copied from ("Copy to new run"), for the banner
 }
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
   preset: "inline_standard", depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
   gpu: null, cpus: [], parallel_targets: true, request_mode: "concurrent", concurrency: [1, 4, 16], batch_sizes: [8],
   sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, spot_wait_minutes: 10, launch_attempts: 30,
-  name: "", allow_unfair: false, sized_for: null,
+  name: "", allow_unfair: false, sized_for: null, copied_from: null,
 };
 
 export interface Reason { kind: string; ok: boolean; text: string }
@@ -137,6 +138,7 @@ export const api = {
     j<InitialSelection>("/api/suggest/initial", { method: "POST", body: JSON.stringify(body) }),
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
+  wizardFrom: (id: string) => j<Wizard>(`/api/runs/${id}/wizard`),
   deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string; terminated_instances: string[] }>(`/api/runs/${id}`, { method: "DELETE" }),
   slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),

@@ -238,7 +238,26 @@ def test_preflight_checks(tmp_path):
     text = " | ".join(errs)
     assert "reserved concurrency 32 < highest level 64" in text
     assert "not offered" in text and "m8i.4xlarge" in text
-    assert "lack amx_fp16" in text
+    assert "t4-m8i-4xl-torch|fp16: m8i.4xlarge has no amx_fp16" in text
+    # A GPU cell is never subject to a CPU-feature requirement, whatever the GPU host's facts say
+    # (2026-11-12: RoBERTa FP16 on g6.xlarge was refused with "host facts of t1-g6 lack amx_fp16").
+    from bench.config import Cell
+    gpu_run = run.model_copy(update={"models": ["m3-roberta-large-mnli"],
+                                     "cells": [Cell(target="t1-g6", precision="fp16", model="m3-roberta-large-mnli")],
+                                     "instance_types": {"t1-g6": "g6.xlarge"}})
+    gpu_cells = resolve_cells(gpu_run, models, targets)
+    assert gpu_cells and gpu_cells[0].precision == "fp16"
+    errs = check_run(gpu_run, gpu_cells, models, tmap, reserved_worker_concurrency=80, offerings={"g6.xlarge"},
+                     host_flags={"t1-g6": set()})
+    assert errs == []
+    # No host facts yet: the instance family decides (8i has AMX-FP16, 7i does not).
+    from lambdas.preflight import expected_cpu_flags
+    assert "amx_fp16" in expected_cpu_flags("c8i.4xlarge") and "amx_fp16" not in expected_cpu_flags("m7i.4xlarge")
+    assert expected_cpu_flags("g6.xlarge") is None
+    run7 = run.model_copy(update={"instance_types": {**run.instance_types, "t4-m8i-4xl-torch": "m7i.4xlarge"}})
+    errs = check_run(run7, cells, models, tmap, reserved_worker_concurrency=80, offerings={"m7i.4xlarge", *(tmap[c.target].instance_type for c in cells)},
+                     host_flags={})
+    assert any("m7i.4xlarge has no amx_fp16" in e for e in errs)
 
 
 def test_preflight_dspm_hashes_refuse_stale_pools():
