@@ -12,8 +12,22 @@ export default function Runs() {
   const [err, setErr] = useState<string | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
 
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
   const load = () => api.runs().then(setRuns).catch((e) => setErr(e.message));
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
+  const remove = async (runId: string) => {
+    if (!confirm(`Delete run ${runId}?\n\nThis removes its report, every measurement, the raw request records and the instance and capacity logs, from both storage and the run table. Other runs and the shared model cache are not touched. Instances are not affected.\n\nThis cannot be undone.`)) return;
+    setDeleting(runId); setErr(null);
+    try {
+      const r = await api.deleteRun(runId);
+      setNotice(`Deleted ${r.deleted}: ${r.objects} stored file${r.objects === 1 ? "" : "s"} and ${r.rows} table row${r.rows === 1 ? "" : "s"}.`);
+      if (id === runId) nav("/runs");
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setDeleting(null); }
+  };
   useEffect(() => {
     if (!id) { setDetail(null); return; }
     let alive = true;
@@ -27,6 +41,7 @@ export default function Runs() {
     <div>
       <div className="topbar"><div><h1>Runs</h1><div className="muted">Every benchmark started from this tool or the command line. Pages refresh on their own.</div></div><Link className="btn primary" to="/new">New benchmark</Link></div>
       {err && <Note kind="bad">{err}</Note>}
+      {notice && <Note kind="ok">{notice}</Note>}
       {!runs && !err && <Spinner label="Loading runs…" />}
       {runs && (
         <div className="card">
@@ -40,11 +55,19 @@ export default function Runs() {
                   <td><Badge kind={r.grade === "full" ? "ok" : "warn"}>{r.grade === "full" ? "Decision-grade" : "Quick check"}</Badge></td>
                   <td>{r.purchase}</td>
                   <td className="muted">{r.updated_at}</td>
-                  <td>{r.status === "complete" && <Link className="btn sm" to={`/results?runs=${r.run_id}`} onClick={(e) => e.stopPropagation()}>Results →</Link>}</td>
+                  <td>
+                    <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
+                      {r.status === "complete" && <Link className="btn sm" to={`/results?runs=${r.run_id}`} onClick={(e) => e.stopPropagation()}>Results →</Link>}
+                      <button className="btn sm danger" disabled={deleting === r.run_id || r.status === "running" || r.status === "planned"}
+                        title={r.status === "running" || r.status === "planned" ? "Stop the run first" : "Delete this run and everything it stored"}
+                        onClick={(e) => { e.stopPropagation(); remove(r.run_id); }}>{deleting === r.run_id ? "Deleting…" : "Delete"}</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {runs.length === 0 && <div className="muted small mt">No runs yet.</div>}
         </div>
       )}
       {id && (
@@ -54,6 +77,7 @@ export default function Runs() {
             <div className="row">
               {detail?.has_report && <Link className="btn primary sm" to={`/results?runs=${id}`}>Open results →</Link>}
               {detail?.status === "running" && <button className="btn danger sm" onClick={async () => { if (confirm("Stop this run? Finished measurements are kept.")) { await api.stop(id); } }}>Stop run</button>}
+              {detail && detail.status !== "running" && detail.status !== "planned" && <button className="btn danger sm" disabled={deleting === id} onClick={() => remove(id)}>{deleting === id ? "Deleting…" : "Delete run"}</button>}
             </div>
           </div>
           {!detail && <Spinner />}

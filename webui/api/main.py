@@ -7,6 +7,7 @@ credentials. Serves the built React app from webui/dist when present.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -706,6 +707,60 @@ def get_run(run_id: str):
             "progress": {"done": done, "total": len(levels)}, "cells": cells, "targets": targets,
             "levels": sorted(levels, key=lambda x: (x["hardware"], x["model"], x["what"], x["conc"] or 0, x["pass"] or 0)),
             "has_report": meta.get("status") == "complete"}
+
+
+RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
+
+
+def _run_items(run_id: str) -> list[dict]:
+    from boto3.dynamodb.conditions import Key
+
+    from lambdas.common import plain
+
+    tbl, items, kw = _table(), [], {"KeyConditionExpression": Key("pk").eq(f"RUN#{run_id}")}
+    while True:
+        r = tbl.query(**kw)
+        items += [plain(x) for x in r["Items"]]
+        if "LastEvaluatedKey" not in r:
+            break
+        kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    return items
+
+
+def delete_run_data(run_id: str) -> dict:
+    """Everything the run left behind: every S3 object under runs/<id>/ (plan, raw records,
+    quality outputs, capacity and target logs, the report) and every row of RUN#<id> in the table.
+    Instances, the shared model cache (models/) and other runs are untouched. Irreversible."""
+    import boto3
+
+    if not RUN_ID.match(run_id):
+        raise HTTPException(400, "not a run id")
+    items = _run_items(run_id)
+    if not items:
+        raise HTTPException(404, "unknown run")
+    meta = next((i for i in items if i["sk"] == "META"), {})
+    if meta:
+        _reconcile([meta])          # a run whose execution ended without the final step is not "running"
+    if meta.get("status") in ("running", "planned"):
+        raise HTTPException(409, "the run is still going: stop it first, then delete it")
+    s3 = boto3.client("s3", region_name=REGION)
+    bucket = _outputs()["BucketName"]
+    keys: list[str] = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"runs/{run_id}/"):
+        keys += [o["Key"] for o in page.get("Contents", [])]
+    for i in range(0, len(keys), 1000):
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True})
+    with _table().batch_writer() as bw:
+        for it in items:
+            bw.delete_item(Key={"pk": it["pk"], "sk": it["sk"]})
+    for k in (f"summary:{run_id}", f"purchase:{run_id}", "cap_at"):
+        _CACHE.pop(k, None)
+    return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status")}
+
+
+@app.delete("/api/runs/{run_id}")
+def delete_run(run_id: str):
+    return delete_run_data(run_id)
 
 
 @app.post("/api/runs/{run_id}/stop")

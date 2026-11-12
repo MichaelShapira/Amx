@@ -245,7 +245,11 @@ themes; GPU is always green and CPU always blue.
   the attempt budget, interruptions, and "Did not run" with the reason when a side was given up;
   per model-on-hardware what it is waiting for (the instance, the previous model, loading);
   per measurement the progress. Runs stopped or failed outside the normal path are reconciled
-  with Step Functions.
+  with Step Functions. **Delete** (per row, and on the run page) removes a finished, stopped or
+  failed run completely — every object under `runs/<id>/` (plan, raw request records, quality
+  outputs, capacity and instance logs, the report) and every `RUN#<id>` row in the table — after
+  a confirmation that spells this out; a running run must be stopped first, and the shared model
+  cache, instances and other runs are untouched (`DELETE /api/runs/<id>`).
 - **Results**: one run or several side by side. The comparability check runs on every selection
   (same use case, same data and answer length, same request shape, fair instance pairing) and
   blocks or warns in words. Per model: a verdict sentence, head-to-head GPU and CPU cards with

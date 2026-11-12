@@ -228,6 +228,53 @@ def test_plan_carries_the_retry_budget_and_spot_wait():
     assert d["run"]["purchase"]["max_launch_attempts"] == 30 and d["run"]["purchase"]["spot_capacity_window_s"] == 600
 
 
+def test_delete_run_removes_its_objects_and_rows_only(monkeypatch):
+    moto = pytest.importorskip("moto")
+    import boto3
+
+    from webui.api import main
+
+    bucket = "amx-gpu-bench-123456789012-us-east-1"
+    for k, v in (("AWS_DEFAULT_REGION", "us-east-1"), ("AWS_ACCESS_KEY_ID", "testing"), ("AWS_SECRET_ACCESS_KEY", "testing")):
+        monkeypatch.setenv(k, v)
+    with moto.mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=bucket)
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="amx-gpu-bench", BillingMode="PAY_PER_REQUEST",
+            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}])
+        tbl = boto3.resource("dynamodb", region_name="us-east-1").Table("amx-gpu-bench")
+        for rid, status in (("r-done", "complete"), ("r-keep", "complete"), ("r-live", "running")):
+            tbl.put_item(Item={"pk": f"RUN#{rid}", "sk": "META", "status": status})
+            tbl.put_item(Item={"pk": f"RUN#{rid}", "sk": "CELL#m|t|bf16", "status": "ready"})
+            tbl.put_item(Item={"pk": f"RUN#{rid}", "sk": "LEVEL#ck__short__c1__r0", "status": "done"})
+            for key in ("resolved.json", "report/summary.json", "raw/ck__short__c1__r0.jsonl.gz", "capacity/t1-g6.json"):
+                s3.put_object(Bucket=bucket, Key=f"runs/{rid}/{key}", Body=b"{}")
+        s3.put_object(Bucket=bucket, Key="runs/r-done-2/resolved.json", Body=b"{}")      # a prefix that merely starts the same
+        s3.put_object(Bucket=bucket, Key="models/shared/weights.bin", Body=b"x")
+        monkeypatch.setattr(main, "_outputs", lambda: {"BucketName": bucket, "RunStateMachineArn": "arn:aws:states:us-east-1:1:stateMachine:x"})
+        monkeypatch.setattr(main, "_reconcile", lambda items: None)
+        main._CACHE["summary:r-done"] = {"x": 1}
+
+        r = c.delete("/api/runs/r-done")
+        assert r.status_code == 200 and r.json() == {"deleted": "r-done", "objects": 4, "rows": 3, "status_was": "complete"}
+        left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket)["Contents"])
+        assert not any(k.startswith("runs/r-done/") for k in left)
+        assert "runs/r-done-2/resolved.json" in left and "models/shared/weights.bin" in left and len([k for k in left if k.startswith("runs/r-keep/")]) == 4
+        assert tbl.query(KeyConditionExpression=boto3.dynamodb.conditions.Key("pk").eq("RUN#r-done"))["Count"] == 0
+        assert tbl.query(KeyConditionExpression=boto3.dynamodb.conditions.Key("pk").eq("RUN#r-keep"))["Count"] == 3
+        assert "summary:r-done" not in main._CACHE
+        # Guard rails: a running run must be stopped first; unknown and malformed ids are refused.
+        assert c.delete("/api/runs/r-live").status_code == 409 and "stop it first" in c.delete("/api/runs/r-live").json()["detail"]
+        assert c.delete("/api/runs/r-done").status_code == 404
+        assert c.delete("/api/runs/..%2Fmodels").status_code in (400, 404, 405)
+        with pytest.raises(main.HTTPException) as ei:
+            main.delete_run_data("../models")
+        assert ei.value.status_code == 400
+        assert main.RUN_ID.match("runs/../x") is None and main.RUN_ID.match("standard-1111-1137-20261111T093750Z")
+
+
 def test_spa_is_served_when_built():
     r = c.get("/api/aws/status")
     assert r.status_code == 200 and "ok" in r.json()
