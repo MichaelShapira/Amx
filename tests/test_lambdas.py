@@ -341,6 +341,16 @@ def test_one_run_per_target_at_a_time(aws, monkeypatch):
     assert tc.claim_target("t1-g6", "r-second", previous="r-x") is True
 
 
+def test_error_message_unwraps_the_step_functions_envelope():
+    from lambdas.target_control import error_message
+
+    err = {"Error": "RuntimeError", "Cause": json.dumps({"errorMessage": "bring-up of c failed (Failed): tail", "stackTrace": ["x"]})}
+    assert error_message(err) == "bring-up of c failed (Failed): tail"
+    assert error_message({"Error": "States.Timeout", "Cause": "not json"}) == "not json"
+    assert error_message({"Error": "States.Timeout"}) == "States.Timeout"
+    assert error_message("plain") == "plain" and error_message(None) == ""
+
+
 def test_capacity_reason_reads_like_a_sentence():
     from lambdas.target_control import capacity_reason
 

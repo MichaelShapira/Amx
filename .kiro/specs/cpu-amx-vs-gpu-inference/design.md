@@ -415,8 +415,12 @@ stored with the cell. `VLLM_CPU_SGL_KERNEL` is not set (not defined in v0.33.0).
   backend. FP16 cells compile with `INFERENCE_PRECISION_HINT=f16`; BF16 cells with `bf16`.
   The probe confirms the runtime precision, so a cell labeled FP16 that actually ran in
   BF16 is caught.
-- **Decoders on OVMS.** OVMS 2026.4.1 with the `graph.pbtxt` produced by OVMS's
-  `export_model.py` (same pinned stack): `device CPU`, `max_num_seqs 128`,
+- **Decoders on OVMS.** The IR is exported by `optimum-cli export openvino --task
+  text-generation-with-past --weight-format int8|int4 ...` run directly (optimum cannot infer
+  the task for a local model directory, and the export runs offline; OVMS's `export_model.py`
+  omitted `--task`, which failed every decoder export until 2026-11-12), tokenizer and
+  detokenizer converted alongside, then OVMS 2026.4.1's `export_model.py` renders the
+  `graph.pbtxt` for the exported model (`models_path` normalized to `./`): `device CPU`, `max_num_seqs 128`,
   `max_num_batched_tokens 2048`, `enable_prefix_caching false`, `cache_size` per target.
   The route (`/v1` or `/v3`) is probed at bring-up and pinned in the target record.
 - **Precision labels.** OVMS cells are labeled by weights and activations, for example

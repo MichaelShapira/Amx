@@ -28,6 +28,7 @@ bench:target tag. Actions (event["action"]):
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -519,6 +520,20 @@ def decide_after_failure(instance: dict | None, attempt: int, purchase: dict, st
 ENDPOINT_ERRORS = ("EndpointUnreachable", "WarmupFailed")
 
 
+def error_message(err: Any) -> str:
+    """The Lambda's own message out of a Step Functions error object ({Error, Cause}), where Cause
+    is the JSON envelope with errorMessage and a stack trace nobody needs to read in a table."""
+    if isinstance(err, dict):
+        cause = err.get("Cause")
+        try:
+            env = json.loads(cause) if isinstance(cause, str) else (cause or {})
+        except ValueError:
+            env = {}
+        msg = env.get("errorMessage") if isinstance(env, dict) else None
+        return str(msg or cause or err.get("Error") or err)
+    return str(err or "")
+
+
 def _reset_endpoint_failures(run_id: str, cell_key: str) -> list[str]:
     """Before a relaunch: levels that failed because the instance went away are re-run on the
     replacement (a level that failed on its own stays failed). Levels still 'running' (the
@@ -547,7 +562,7 @@ def check(event: dict, context: Any = None) -> dict:
            "recovery": {"attempt": attempt, "interruption_logged": bool(rec.get("interruption_logged"))}}
     if decision == "fail":
         common.set_status(run_id, f"CELL#{cell['cell_id']}", "failed", reason=f"{event.get('stage')} failed "
-                          f"after {attempt} recoveries", error=str(event.get("error"))[:500])
+                          f"after {attempt} recoveries", error=error_message(event.get("error"))[:500])
         return out
     if decision == "resume":
         # The level state machine marked its own failure (MarkLevelFailed); the rest continue.

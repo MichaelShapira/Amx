@@ -58,19 +58,46 @@ def _quant_flags(exp: dict) -> list[str]:
 
 
 def commands(model_type: str, exp: dict, source: str, dest: Path) -> list[list[str]]:
+    """The export steps. Every path runs optimum-cli ourselves with an explicit --task: optimum
+    cannot infer the task for a local directory (it raises "Cannot infer the task from a local
+    directory yet"), and the sources here are always local, pinned directories with no network.
+    OVMS's export_model.py delegated to optimum-cli WITHOUT --task, so every decoder export failed
+    (2026-11-12, Gemma INT8 on the OpenVINO option); it is now used only for what it is good at,
+    rendering graph.pbtxt for an already exported model."""
     wf = exp["weight_format"]
     if model_type == "decoder":
-        extra = " ".join(_quant_flags(exp))
-        cmd = [sys.executable, str(OVMS_EXPORT), "text_generation", "--source_model", source,
-               "--model_name", "model", "--weight-format", wf, "--model_repository_path", str(dest),
-               "--target_device", "CPU", "--enable_prefix_caching", "false", "--overwrite_models"]
-        if extra:
-            cmd += ["--extra_quantization_params", extra]
-        return [cmd]
+        task = exp.get("task") or "text-generation-with-past"
+        model_dir = dest / "model"
+        optimum = ["optimum-cli", "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
+                   *_quant_flags(exp), "--trust-remote-code", str(model_dir)]
+        # export_model.py sees openvino_model.xml in --source_model, skips conversion and only writes
+        # <dest>/model/graph.pbtxt (+ a servable config next to it; its default config.json would land
+        # in the read-only /app).
+        graph = [sys.executable, str(OVMS_EXPORT), "text_generation", "--source_model", str(model_dir),
+                 "--model_name", "model", "--weight-format", wf, "--model_repository_path", str(dest),
+                 "--config_file_path", str(dest / "config.json"),
+                 "--target_device", "CPU", "--enable_prefix_caching", "false", "--overwrite_models"]
+        return [optimum, graph]
     task = exp.get("task") or ("text2text-generation-with-past" if model_type == "encoder-decoder"
                                else "text-classification")
     return [["optimum-cli", "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
              *_quant_flags(exp), str(dest / "model")]]
+
+
+def tokenizer_command(source: str, model_dir: Path) -> list[str]:
+    """OVMS needs openvino_tokenizer/detokenizer next to the model; optimum-cli writes them when
+    openvino-tokenizers is installed, this is the fallback export_model.py would have run."""
+    return ["convert_tokenizer", "--with-detokenizer", "--trust-remote-code", "-o", str(model_dir), source]
+
+
+def normalize_graph_model_path(graph: Path) -> bool:
+    """export_model.py renders models_path as the absolute source directory; the model files sit
+    next to graph.pbtxt, and "./" keeps the IR relocatable (host mount paths differ by instance)."""
+    text = graph.read_text()
+    new = re.sub(r'(models_path\s*:\s*)"[^"]*"', r'\1"./"', text, count=1)
+    if new != text:
+        graph.write_text(new)
+    return new != text
 
 
 def run_ir(a: argparse.Namespace) -> int:
@@ -89,11 +116,29 @@ def run_ir(a: argparse.Namespace) -> int:
         return 0
     dest.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
-    for cmd in commands(a.model_type, exp, a.source, dest):
+    ran = []
+
+    def run(cmd: list[str]) -> None:
         print("+ " + shlex.join(cmd), file=sys.stderr, flush=True)
         subprocess.run(cmd, check=True)
-    record.update(export_s=round(time.monotonic() - t0, 1), commands=[shlex.join(c) for c in
-                                                                      commands(a.model_type, exp, a.source, dest)])
+        ran.append(shlex.join(cmd))
+
+    steps = commands(a.model_type, exp, a.source, dest)
+    run(steps[0])
+    model_dir = dest / "model"
+    if a.model_type == "decoder":
+        if not (model_dir / "openvino_detokenizer.xml").exists():
+            run(tokenizer_command(a.source, model_dir))
+        for cmd in steps[1:]:
+            run(cmd)
+        graph = model_dir / "graph.pbtxt"
+        if not graph.exists():
+            raise SystemExit(f"export_model.py did not write {graph}")
+        normalize_graph_model_path(graph)
+    else:
+        for cmd in steps[1:]:
+            run(cmd)
+    record.update(export_s=round(time.monotonic() - t0, 1), commands=ran)
     (dest / "export.json").write_text(json.dumps(record, indent=2, sort_keys=True))
     print(json.dumps({**record, "reused": False}))
     return 0

@@ -685,17 +685,48 @@ def target_status(run_id: str, target_ids: list[str], run_finished: bool, hw: di
     return out
 
 
+def _unwrap_error(raw: str) -> str:
+    """Older rows hold the Python repr of the Step Functions error object; newer ones the message.
+    Either way, return the Lambda's own sentence."""
+    s = str(raw).strip()
+    if s.startswith("{") and "'Cause'" in s or s.startswith("{") and '"Cause"' in s:
+        import ast
+
+        try:
+            obj = ast.literal_eval(s) if "'Cause'" in s else json.loads(s)
+            cause = obj.get("Cause") or ""
+            try:
+                env = json.loads(cause)
+                return str(env.get("errorMessage") or cause)
+            except (TypeError, ValueError):
+                return str(cause or obj.get("Error") or s)
+        except (ValueError, SyntaxError):
+            return s
+    return s
+
+
 def cell_error_text(raw: str) -> str:
     """A cell's failure for the reader: the known signatures get a sentence, then the raw tail."""
-    raw = str(raw)
-    if not raw:
+    s = _unwrap_error(raw)
+    if not s:
         return ""
-    if "No such container" in raw and "exited before becoming healthy" in raw:
+    tail = s.split("failed (Failed):", 1)[1].strip() if "failed (Failed):" in s else s
+    if "No such container" in s and "exited before becoming healthy" in s:
         return ("Another run took over this instance while the model was loading (two runs shared one hardware option; "
-                "since 2026-11-12 runs wait for each other instead). Start this benchmark again. Details: " + raw[-200:])
-    if "exited before becoming healthy" in raw:
-        return "The serving software stopped while loading the model. Details: " + raw[-300:]
-    return raw[:300]
+                "since 2026-11-12 runs wait for each other instead). Start this benchmark again. Details: " + tail[-200:])
+    if "export did not report a hash" in s or "Failed to export llm model" in s or "optimum-cli export" in s:
+        why = ("the export tool was not told the model's task, which it cannot infer for a local copy of the model (fixed "
+               "2026-11-12; start this benchmark again)" if "Failed to export llm model" in s else "see the details")
+        return f"Converting the model to OpenVINO's format failed: {why}. Details: {tail[-240:]}"
+    if "exited before becoming healthy" in s:
+        return "The serving software stopped while loading the model. Details: " + tail[-300:]
+    if "bring-up of" in s and not tail:
+        return ("The instance was taken away while the model was loading, and the run gave up after its replacements were "
+                "taken away too (two runs shared one hardware option; since 2026-11-12 runs wait for each other). "
+                "Start this benchmark again.")
+    if "bring-up of" in s:
+        return "The model could not be served on this instance. Details: " + tail[-300:]
+    return s[:300]
 
 
 def derive_cell_status(cell: dict, siblings: list[dict], target: dict | None, run_status: str) -> str:

@@ -291,6 +291,26 @@ def test_run_names_become_safe_slugs():
     assert pl["run"]["name"] == "gemma-vs-l4"
 
 
+def test_cell_failures_read_as_sentences():
+    """The three failures of 2026-11-12, as stored (Step Functions error object repr with the
+    Lambda's JSON envelope inside), rendered for the Why column."""
+    from webui.api.main import cell_error_text
+
+    def sfn(msg):
+        return str({"Error": "RuntimeError", "Cause": json.dumps({"errorMessage": msg, "errorType": "RuntimeError",
+                                                                  "stackTrace": ["  File x, line 1"]})})
+    taken = sfn("bring-up of m3|t1-g6|bf16 failed (Failed): 2026-11-12T12:51:18Z serve: m3 (vllm)\nError response from daemon: "
+                "No such container: bench-engine\n2026-11-12T12:57:28Z ERROR: container exited before becoming healthy")
+    assert cell_error_text(taken).startswith("Another run took over this instance while the model was loading")
+    assert "stackTrace" not in cell_error_text(taken) and "RuntimeError" not in cell_error_text(taken)
+    empty = sfn("bring-up of m4-gemma-2-2b|t2-m8i-4xl|bf16 failed (Failed): ")
+    assert cell_error_text(empty).startswith("The instance was taken away while the model was loading")
+    export = sfn("bring-up of m4|t3-m8i-4xl-ov|int8-ov failed (Failed): ValueError: ('Failed to export llm model', '/models/hf/google/gemma')"
+                 "\njq: parse error\n2026-11-12T13:00:02Z ERROR: export did not report a hash: Running command: optimum-cli export openvino ...")
+    assert cell_error_text(export).startswith("Converting the model to OpenVINO's format failed: the export tool was not told the model's task")
+    assert cell_error_text("plain text reason") == "plain text reason" and cell_error_text("") == ""
+
+
 def test_delete_run_removes_its_objects_and_rows_only(monkeypatch):
     moto = pytest.importorskip("moto")
     import boto3
