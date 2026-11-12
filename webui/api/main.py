@@ -216,9 +216,14 @@ def refusal_sentences(errors: list[str]) -> list[str]:
             mid, tid, prec, rest = m_cell.groups()
             where = f"{C.model_name(mid)} on {hw.get(tid, tid)} in {C.PRECISIONS.get(prec, (prec,))[0]}"
             if "has no amx_fp16" in rest or "lack amx_fp16" in rest:
-                itype = rest.split(" has no")[0] if " has no" in rest else "this instance size"
-                out.append(f"{where}: the FP16 (half precision) format needs AMX-FP16, which the {itype} processor does not "
-                           "have. Pick an m8i, c8i or r8i size for this option, or untick FP16 and keep BF16 / INT8.")
+                is_gpu = next((h for h in cat["hardware"] if h["id"] == tid), {}).get("accelerator") == "gpu"
+                if is_gpu:
+                    out.append(f"{where}: refused by mistake. FP16 on a GPU never depended on a CPU feature; the pre-check "
+                               "that said so was fixed on 2026-11-12. Start the run again.")
+                else:
+                    itype = rest.split(" has no")[0] if " has no" in rest else "this option's"
+                    out.append(f"{where}: the FP16 (half precision) format needs AMX-FP16, which the {itype} processor does not "
+                               "have. Pick an m8i, c8i or r8i size for this option, or untick FP16 and keep BF16 / INT8.")
             elif "none of" in rest and "available on" in rest:
                 out.append(f"{where}: this serving software cannot run the model in that number format. Untick the format "
                            "for this option.")

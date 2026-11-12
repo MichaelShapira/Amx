@@ -335,7 +335,10 @@ def test_refusals_read_as_sentences_with_names():
 
     old = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: host facts of t4-m8i-4xl-torch lack amx_fp16"])[0]
     assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · PyTorch in FP16 (half precision): the FP16")
-    assert "AMX-FP16" in old and "m8i, c8i or r8i" in old and "untick FP16" in old
+    assert "AMX-FP16" in old and "m8i, c8i or r8i" in old and "untick FP16" in old and "this option's processor" in old
+    gpu = refusal_sentences(["m3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16"])[0]
+    assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM + PyTorch in FP16 (half precision): refused by mistake.")
+    assert "Start the run again" in gpu
     new = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: m7i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
     assert "the m7i.4xlarge processor does not have" in new
     s = refusal_sentences(["worker reserved concurrency 32 < highest level 64",
