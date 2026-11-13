@@ -1,0 +1,59 @@
+# DSPM/DLP full run (design section 24.5).
+run:
+  name: dspm-full
+  suite: dspm
+  mode: full
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m1-qwen2.5-3b, m2-qwen3-4b-2507, m3-roberta-large-mnli, m4-gemma-2-2b, m5-flan-t5-xl,
+           d1-privacy-filter, d2-roblox-pii-v2]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t1-g6, precision: bf16, model: m1-qwen2.5-3b, variant: constrained}
+    - {target: t2-m8i-4xl, precision: bf16, model: m1-qwen2.5-3b}
+    - {target: t2-m8i-4xl, precision: bf16, model: m1-qwen2.5-3b, variant: constrained}
+    - {target: t2-m8i-4xl, precision: bf16, model: m2-qwen3-4b-2507}
+    - {target: t2-m8i-4xl, precision: bf16, model: m4-gemma-2-2b}
+    - {target: t2-m8i-4xl, precision: bf16, model: m3-roberta-large-mnli}
+    - {target: t2-m8i-4xl, precision: bf16, model: d2-roblox-pii-v2}
+    - {target: t2-m8i-4xl, precision: w8a8, model: m1-qwen2.5-3b}
+    - {target: t2-m8i-4xl, precision: w8a8, model: m2-qwen3-4b-2507}
+    - {target: t2-m8i-4xl, precision: w8a8, model: m4-gemma-2-2b}
+    - {target: t2-c8i-4xl, precision: bf16, model: m2-qwen3-4b-2507}
+    - {target: t2-c8i-4xl, precision: w8a8, model: m2-qwen3-4b-2507}
+    - {target: t2-m8i-8xl, precision: bf16, model: m2-qwen3-4b-2507}
+    - {target: t2-m8i-8xl, precision: w8a8, model: m2-qwen3-4b-2507}
+    - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m1-qwen2.5-3b}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m1-qwen2.5-3b}
+    - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m1-qwen2.5-3b}
+    - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m2-qwen3-4b-2507}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m2-qwen3-4b-2507}
+    - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m2-qwen3-4b-2507}
+    - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m4-gemma-2-2b}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m4-gemma-2-2b}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m5-flan-t5-xl}
+    - {target: t3-m8i-4xl-ov, precision: fp16, model: m3-roberta-large-mnli}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m3-roberta-large-mnli}
+    - {target: t3-m8i-4xl-ov, precision: fp16, model: d2-roblox-pii-v2}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: d2-roblox-pii-v2}
+    - {target: t4-m8i-4xl-torch, precision: bf16, model: m5-flan-t5-xl}
+    - {target: t4-m8i-4xl-torch, precision: bf16, model: m3-roberta-large-mnli}
+    - {target: t4-m8i-4xl-torch, precision: fp16, model: m3-roberta-large-mnli}
+    - {target: t4-m8i-4xl-torch, precision: bf16, model: d1-privacy-filter}
+    - {target: t4-m8i-4xl-torch, precision: bf16, model: d2-roblox-pii-v2}
+    - {target: t4-m8i-4xl-torch, precision: fp16, model: d2-roblox-pii-v2}
+  prompt_set: dspm
+  sampling: {temperature: 0.0, max_new_tokens: 4, ignore_eos: false, seed: 0}
+  concurrency: [1, 4, 8, 16, 32, 64]
+  per_level: {requests: 200}
+  repeats: 3
+  warmup_requests: 20
+  request_timeout_s: 300
+  quality: {enabled: false}
+  sla: {p99_e2e_ms: 1000, max_error_pct: 1.0}
+  dspm:
+    workloads: [W1, W2, W3, W4]
+    sla_preset: bulk
+    prefix_caching: true
+  stop_targets_after_run: true

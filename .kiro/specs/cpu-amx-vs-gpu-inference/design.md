@@ -359,8 +359,8 @@ invented authentication, no public storage.
 
 | Model | T1 GPU (g6.xlarge) | T2 vLLM CPU (m8i/c8i 4xl, m8i 8xl) | T3 OpenVINO (m8i.4xl) | T4 PyTorch CPU (m8i.4xl) | T5 vLLM CPU (m7i.4xl) |
 |---|---|---|---|---|---|
-| M1 (Qwen2.5-3B), M2 (Qwen3-4B-2507) | vLLM BF16 | BF16 on all three sizes; **W8A8 INT8 on m8i.4xl**; AWQ INT4 optional (off) | OVMS INT8, INT4 weight compression | optional BF16 | BF16 |
-| M4 (gemma-2-2b) | vLLM BF16 | BF16; **W8A8 INT8 on m8i.4xl** (not on vLLM validated list) | OVMS INT8, INT4 | optional BF16 | BF16 |
+| M1 (Qwen2.5-3B), M2 (Qwen3-4B-2507) | vLLM BF16 | BF16 on all three sizes; **W8A8 INT8 on m8i.4xl**; AWQ INT4 optional (off) | OVMS BF16 (`bf16-ov`: FP16 IR, run in BF16 by the CPU plugin; the like-for-like baseline on T3), INT8, INT4 weight compression | optional BF16 | BF16 |
+| M4 (gemma-2-2b) | vLLM BF16 | BF16; **W8A8 INT8 on m8i.4xl** (not on vLLM validated list) | OVMS BF16 (`bf16-ov`), INT8, INT4 | optional BF16 | BF16 |
 | M3 (roberta-large-mnli) | vLLM `/classify` BF16; thin torch CUDA BF16 optional | vLLM `/classify` BF16 | thin + `OVModelForSequenceClassification`: **FP16** (f16 hint), BF16, INT8 | thin torch: BF16, **FP16**; FP32 for the quality anchor only | vLLM `/classify` BF16 |
 | M5 (flan-t5-xl) | thin torch CUDA BF16 | not supported | thin + `OVModelForSeq2SeqLM` INT8, INT4 | thin torch BF16 | not supported |
 
@@ -710,7 +710,9 @@ If no GPU row meets the SLA, capacity equivalence is not computed and the report
 For FP16 cells the evidence must also show FP16 execution: an `amx_fp16` (or
 `avx10_1_512_amx_fp16`) oneDNN implementation for PyTorch, or `f16` runtime precision with
 AMX execution types for OpenVINO. A cell labeled FP16 that ran in BF16 is relabeled and
-flagged. For W8A8 cells, the vLLM dispatch log must show the INT8 AMX kernel.
+flagged. For `bf16-ov` cells (an FP16 IR with no precision hint) the probe's runtime inference
+precision must be `bf16`; anything else relabels and flags the cell the same way. For W8A8
+cells, the vLLM dispatch log must show the INT8 AMX kernel.
 
 ### 14.2 Verdict
 
@@ -1076,7 +1078,7 @@ classifiers have no prefix to cache.
 
 | Model | T1 GPU (g6.xlarge) | T2 vLLM CPU (m8i.4xl) | T3 OpenVINO (m8i.4xl) | T4 PyTorch CPU (m8i.4xl) |
 |---|---|---|---|---|
-| M1, M2, M4 | vLLM BF16 | vLLM BF16, W8A8 | OVMS INT8, INT4 | |
+| M1, M2, M4 | vLLM BF16 | vLLM BF16, W8A8 | OVMS BF16 (`bf16-ov`), INT8, INT4 | |
 | M5 | thin CUDA BF16 | | thin OpenVINO INT8 | thin BF16 |
 | M3 | vLLM `/classify` BF16 | vLLM `/classify` BF16 | thin OpenVINO FP16, INT8 | thin BF16, FP16 |
 | D1 | thin CUDA BF16 | vLLM (optional; returns large per-token tensors) | not supported | thin BF16 |

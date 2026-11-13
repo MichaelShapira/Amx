@@ -200,8 +200,8 @@ function StepHardware({ w, set }: SP) {
     return [...set_];
   };
   // The default number format for a hardware option: BF16 when its serving software can run the
-  // model in BF16, otherwise the first format it can (the OpenVINO option serves chat models in INT8).
-  const defaultPrecs = (hwId: string) => { const ok = precsFor(hwId); return ok.includes("bf16") ? ["bf16"] : ok.slice(0, 1); };
+  // model in BF16 (OpenVINO's own BF16 cell counts), otherwise the first format it can.
+  const defaultPrecs = (hwId: string) => { const ok = precsFor(hwId); const bf16 = ["bf16", "bf16-ov"].find((p) => ok.includes(p)); return bf16 ? [bf16] : ok.slice(0, 1); };
   // Pre-select both sides for the chosen model the first time this step is shown for it (or after
   // the model or number format changed). Manual changes afterwards are kept until the model changes.
   const sizeKey = model ? `${model.id}|${w.precision}` : null;
@@ -254,7 +254,7 @@ function StepHardware({ w, set }: SP) {
   };
   const useCpu = (t: string) => {
     if (w.cpus.length) set({ cpus: w.cpus.map((c) => ({ ...c, instance_type: t })) });
-    else set({ cpus: [{ hardware: cpuHw[0].id, instance_type: t, precisions: ["bf16"], alternates: cpuHw[0].alternates }] });
+    else set({ cpus: [{ hardware: cpuHw[0].id, instance_type: t, precisions: defaultPrecs(cpuHw[0].id), alternates: cpuHw[0].alternates }] });
   };
   const gpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "gpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);
   const cpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "cpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);

@@ -74,6 +74,12 @@ def test_spec_is_private_pinned_and_consistent(name, run, cell, spec):
     if spec["engine"] in ("ovms", "thin-openvino"):
         assert spec["ov"]["export_image"] == f"{ECR}:export-abc123"
         assert spec["ov"]["export"]["weight_format"] in ("int8", "int4", "fp16")
+        if cell.precision == "bf16-ov":
+            # The OpenVINO BF16 cell: an uncompressed FP16 IR (optimum has no bf16 weight format)
+            # with no quantization arguments and no precision hint, so the probe reports the
+            # CPU plugin's own choice (BF16 on AMX) rather than one we forced.
+            assert spec["ov"]["export"] == {"weight_format": "fp16", "task": "text-generation-with-past"}
+            assert spec["ov"]["hint"] is None and spec["engine"] == "ovms"
     if spec["engine"] == "ovms":
         assert spec["ovms_graph"]["enable_prefix_caching"] == ("true" if run.suite == "dspm" else "false")
     assert spec["cell_key"] == cellspec.cell_key(spec["cell_id"]) and "|" not in spec["cell_key"]

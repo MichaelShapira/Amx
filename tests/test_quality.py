@@ -22,6 +22,9 @@ def test_score_generation_and_flag():
     assert q.generation_flag({"rouge_l_mean": 0.7}, {"rouge_l_mean": 0.9}, precision="int4-ov")
     assert q.generation_flag({"rouge_l_mean": 0.85}, {"rouge_l_mean": 0.9}, precision="int4-ov") is None
     assert q.generation_flag({"rouge_l_mean": 0.1}, {"rouge_l_mean": 0.9}, precision="bf16") is None
+    # OpenVINO's BF16 cell is a baseline too, never a "compressed format lost quality" flag.
+    assert q.generation_flag({"rouge_l_mean": 0.1}, {"rouge_l_mean": 0.9}, precision="bf16-ov") is None
+    assert q.is_bf16("bf16-ov") and q.is_bf16("bf16") and not q.is_bf16("int8-ov")
 
 
 def test_classifier_scores_and_flag():

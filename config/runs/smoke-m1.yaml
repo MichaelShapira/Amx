@@ -1,0 +1,32 @@
+# Standard-suite smoke run (deliverable 6): M1 on T1 (GPU) vs T2 (m8i.4xlarge, vLLM CPU).
+# Below the methodology defaults, so every output is labeled "smoke".
+run:
+  name: smoke-m1-t1-t2
+  suite: standard
+  mode: smoke
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m1-qwen2.5-3b]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+  prompt_set: short
+  sampling: {temperature: 0.0, max_new_tokens: 128, ignore_eos: true, seed: 0}
+  concurrency: [1, 4, 16]
+  per_level: {requests: 50}
+  repeats: 1
+  warmup_requests: 20
+  request_timeout_s: 600
+  quality: {enabled: true, prompt_set: quality-50, max_new_tokens: 256}
+  sla: {p99_ttft_ms: 2000, p50_tpot_ms: 150, max_error_pct: 1.0}
+  capacity: {max_cpu_instances_per_gpu: 4}
+  # Target instances are launched per run: spot (default; one-time, an interrupted instance is
+  # replaced and the cell's remaining levels re-run) or on-demand. Override from the CLI with
+  # `bench run ... --purchase on-demand`.
+  purchase: {type: spot, spot_fallback_on_demand: true}
+  # Instance type per target for this run (default: targets.yaml). `bench pair m8i.4xlarge`
+  # lists comparable GPU types; a pair outside 0.5x-2x the hourly price is refused by `bench run`.
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge}
+  alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
+  stop_targets_after_run: true

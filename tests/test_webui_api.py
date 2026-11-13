@@ -234,6 +234,14 @@ def test_plan_survives_a_hardware_option_that_cannot_serve_the_format():
     pl2 = c.post("/api/plan", json={**w, "cpus": [CPU, {**OV, "precisions": ["bf16", "int8-ov"]}]}).json()
     assert pl2["ok"] is True and {s["hardware"] for s in pl2["series"]} == {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov"}
     assert any("not available in BF16" in x for x in pl2["warnings"])
+    # BF16 on the OpenVINO option is its own format (bf16-ov) and the wizard names it.
+    cat = c.get("/api/catalog").json()
+    m1 = next(m for m in cat["models"] if m["id"] == "m1-qwen2.5-3b")
+    assert m1["precisions"]["bf16-ov"]["engines"] == ["ovms"] and m1["precisions"]["bf16-ov"]["label"] == "BF16 (OpenVINO)"
+    pl4 = c.post("/api/plan", json={**w, "cpus": [{**OV, "precisions": ["bf16-ov", "int8-ov"]}]}).json()
+    assert pl4["ok"] is True
+    assert {(s["hardware"], s["precision"]) for s in pl4["series"]} >= {("t3-m8i-4xl-ov", "BF16 (OpenVINO)"), ("t3-m8i-4xl-ov", "INT8 compressed (OpenVINO)")}
+    assert [x for x in pl4["warnings"] if "not available" in x] == []
     # Nothing can serve it at all -> a problem, still with every key.
     pl3 = c.post("/api/plan", json={**w, "models": ["m5-flan-t5-xl"], "gpu": None, "cpus": [CPU]}).json()
     assert pl3["ok"] is False and pl3["series"] == [] and pl3["pairing"] == [] and any("No hardware option can serve" in p for p in pl3["problems"])

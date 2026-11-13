@@ -1,0 +1,27 @@
+# DSPM/DLP smoke run: M1 on W1 (bulk scan) and W3 (inline DLP), T1 vs T2, BF16.
+run:
+  name: dspm-smoke-m1
+  suite: dspm
+  mode: smoke
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m1-qwen2.5-3b]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+  prompt_set: dspm
+  sampling: {temperature: 0.0, max_new_tokens: 4, ignore_eos: false, seed: 0}
+  concurrency: [1, 8, 16]
+  per_level: {requests: 50}
+  repeats: 1
+  warmup_requests: 20
+  request_timeout_s: 120
+  quality: {enabled: false}
+  sla: {p99_e2e_ms: 1000, max_error_pct: 1.0}
+  dspm:
+    workloads: [W1, W3]
+    sla_preset: inline_standard
+    test_items: 300
+    prefix_caching: true
+  stop_targets_after_run: true

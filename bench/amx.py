@@ -170,6 +170,13 @@ def verdict(ev: Evidence, *, precision: str, engine: str) -> dict:
             ip = ev.trace.get("inference_precision") or "bf16"
             result["effective_precision"] = ip
             result["precision_flag"] = f"labeled fp16 but ran {ip}"
+    # An OpenVINO BF16 cell is an FP16 IR that the CPU plugin runs in BF16 by default; the probe
+    # records the precision it actually chose, and anything else (f16, f32) relabels the cell.
+    if precision == "bf16-ov" and ev.trace is not None:
+        ip = ev.trace.get("inference_precision")
+        if ip and ip != "bf16":
+            result["effective_precision"] = ip
+            result["precision_flag"] = f"labeled bf16-ov but ran {ip}"
     if precision == "w8a8" and ev.dispatch is not None and not ev.dispatch.get("int8_amx_lines"):
         if not (ev.trace and ev.trace.get("int8_amx")):
             result["precision_flag"] = "no INT8 AMX kernel evidence for W8A8 (counter still shows AMX)"

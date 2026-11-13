@@ -134,7 +134,9 @@ def quality_scores(inp: RunInputs, cells: dict[str, ResolvedCell], models) -> di
                 s["vs_fp32"] = quality.score_classifier(mine, anchor)
         s["reference_cell"] = ref_ck
         out[ck] = s
-        if c.precision == "bf16" and "rouge_l_mean" in s:
+        # The CPU BF16 floor for the compressed formats: the vLLM/PyTorch BF16 cell when the run
+        # has one, else the OpenVINO BF16 cell (bf16-ov).
+        if quality.is_bf16(c.precision) and "rouge_l_mean" in s and (c.precision == "bf16" or c.model not in cpu_bf16):
             cpu_bf16[c.model] = s
     for ck, s in out.items():
         c = cells[ck]

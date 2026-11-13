@@ -62,8 +62,15 @@ def score_classifier(outputs: dict[str, dict], reference: dict[str, dict]) -> di
             "prob_diff_max": float(np.max(diffs)) if ids else None}
 
 
+BF16_PRECISIONS = ("bf16", "bf16-ov")      # uncompressed BF16, whichever engine serves it
+
+
+def is_bf16(precision: str) -> bool:
+    return precision in BF16_PRECISIONS
+
+
 def generation_flag(cell_score: dict, cpu_bf16_score: dict | None, *, precision: str) -> str | None:
-    if precision == "bf16" or cpu_bf16_score is None or cell_score.get("rouge_l_mean") is None:
+    if is_bf16(precision) or cpu_bf16_score is None or cell_score.get("rouge_l_mean") is None:
         return None
     floor = cpu_bf16_score["rouge_l_mean"] - ROUGE_DROP_FLAG
     if cell_score["rouge_l_mean"] < floor:

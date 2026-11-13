@@ -119,3 +119,18 @@ def test_probe_dummy_feeds_follow_input_names_and_shapes():
     assert feeds["position_ids"].tolist() == [list(range(8))]
     assert feeds["beam_idx"].shape == (1,) and feeds["beam_idx"].dtype == np.int32 and int(feeds["beam_idx"][0]) == 0
     assert feeds["token_type_ids"].tolist() == [[0] * 8]
+
+
+def test_openvino_bf16_cell_is_relabeled_when_the_plugin_did_not_run_bf16():
+    """bf16-ov is an FP16 IR that the CPU plugin runs in BF16 by default; the probe records the
+    precision it chose, and a different one relabels the cell instead of passing as BF16."""
+    def trace(ip):
+        return amx.parse_ov_probe(json.dumps({"inference_precision": ip, "inference": {"ran": True, "profiled_nodes": 3},
+                                              "nodes": [{"type": "FullyConnected", "exec_type": "brgemm_avx512_amx"}] * 3}))
+    flags = amx.REQUIRED_FLAGS | {"amx_fp16"}
+    ok = amx.verdict(amx.Evidence(cpu_flags=flags, trace=trace("bf16")), precision="bf16-ov", engine="ovms")
+    assert ok["verdict"] == "VERIFIED" and ok["precision_flag"] is None and ok["effective_precision"] == "bf16-ov"
+    f16 = amx.verdict(amx.Evidence(cpu_flags=flags, trace=trace("f16")), precision="bf16-ov", engine="ovms")
+    assert f16["verdict"] == "VERIFIED" and f16["effective_precision"] == "f16" and "ran f16" in f16["precision_flag"]
+    # The plain vLLM bf16 cell is untouched by this check (its trace carries no inference_precision).
+    assert amx.verdict(amx.Evidence(cpu_flags=flags, trace=trace("f16")), precision="bf16", engine="vllm")["precision_flag"] is None

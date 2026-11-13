@@ -128,6 +128,19 @@ def test_engine_must_exist_on_target(models, targets):
         resolve_cells(run, models, targets)
 
 
+def test_openvino_bf16_is_its_own_precision(models, targets):
+    """BF16 on the OpenVINO option is `bf16-ov` (an FP16 IR run in BF16 by the CPU plugin), kept
+    apart from `bf16` so a vLLM-only BF16 cell still cannot land on the OVMS target."""
+    for mid in ("m1-qwen2.5-3b", "m2-qwen3-4b-2507", "m4-gemma-2-2b"):
+        p = models.get(mid).precisions["bf16-ov"]
+        assert p.engines == ["ovms"] and p.export == {"weight_format": "fp16"} and p.inference_precision is None
+        assert p.weights == "bf16" and p.activations == "bf16" and p.hf_repo is None
+    cells = resolve_cells(_run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
+    assert [(c.engine, c.precision) for c in cells] == [("ovms", "bf16-ov")]
+    assert "bf16-ov" not in models.get("m3-roberta-large-mnli").precisions     # classifiers already have bf16 on thin-openvino
+    assert "bf16-ov" not in models.get("m5-flan-t5-xl").precisions
+
+
 def test_constrained_variant_only_on_vllm(models, targets):
     run = _run(models=["m5-flan-t5-xl"],
                cells=[{"target": "t4-m8i-4xl-torch", "precision": "bf16", "variant": "constrained"}])

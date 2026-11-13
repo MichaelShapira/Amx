@@ -25,7 +25,7 @@ Precision = Literal["bf16", "int8", "int4"]
 ADDON_FOR_DEP = {"flash_attention": "flash_attention_to_sdpa", "bitsandbytes": "bitsandbytes_to_ov_awq_gptq",
                  "custom_kernels": "custom_cuda_or_triton_kernels", "tensorrt_engines": "tensorrt_engines_outside_triton"}
 # Benchmark precisions that satisfy a requested precision, from most to least precise.
-PRECISION_RANK = {"fp32": 0, "fp16": 1, "bf16": 1, "w8a8": 2, "int8-ov": 2, "awq-int4": 3, "int4-ov": 3}
+PRECISION_RANK = {"fp32": 0, "fp16": 1, "bf16": 1, "bf16-ov": 1, "w8a8": 2, "int8-ov": 2, "awq-int4": 3, "int4-ov": 3}
 REQUEST_RANK = {"bf16": 1, "int8": 2, "int4": 3}
 
 

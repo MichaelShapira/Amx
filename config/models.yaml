@@ -2,6 +2,11 @@
 # 2026-11-09 (research.md section 2). Nominal size is capped at 4B (Requirement 1.6).
 size_cap_b: 4.0
 
+# bf16-ov: the uncompressed OpenVINO cell. optimum-cli has no bf16 weight format, so the IR is
+# written in FP16 and OpenVINO's CPU plugin runs it in BF16 on AMX (its default inference precision
+# where AMX-BF16 exists); the AMX probe records the precision it actually chose and bench/amx.py
+# flags a cell that did not run BF16. The like-for-like baseline on the OpenVINO option.
+x-ov-bf16: &ov_bf16 {weight_format: fp16}
 x-ov-int8: &ov_int8 {weight_format: int8}
 x-ov-int4: &ov_int4 {weight_format: int4, group_size: 128, ratio: 1.0, sym: false}
 
@@ -27,6 +32,7 @@ models:
         revision: cd4a8836f6c1e916f43d7c60c4dc3796b7aca18c
         weights: int8
         activations: int8
+      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
       int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
       int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
       awq-int4:
@@ -58,6 +64,7 @@ models:
         revision: 31ec5013b3319d7ba82b2a354d6e48b376204dd3
         weights: int8
         activations: int8
+      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
       int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
       int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
 
@@ -114,6 +121,7 @@ models:
         revision: 9bafbb745168370d51b0e7e2c9356d6bc2fd1a5d
         weights: int8
         activations: int8
+      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
       int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
       int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
 

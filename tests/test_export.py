@@ -64,6 +64,10 @@ def test_commands_per_model_type(tmp_path):
     assert t5[:3] == ["optimum-cli", "export", "openvino"] and "text2text-generation-with-past" in t5
     cls = export.commands("encoder-classifier", {"weight_format": "fp16"}, "/models/hf/m3", tmp_path)[0]
     assert cls[cls.index("--task") + 1] == "text-classification"
+    # bf16-ov decoders: the same two steps as INT8 with the FP16 weight format and no quantization flags.
+    bf, bf_graph = export.commands("decoder", {"weight_format": "fp16", "task": "text-generation-with-past"}, "/models/hf/m1", tmp_path)
+    assert bf[bf.index("--weight-format") + 1] == "fp16" and not {"--group-size", "--ratio", "--sym"} & set(bf)
+    assert bf_graph[bf_graph.index("--weight-format") + 1] == "fp16"
 
 
 def test_graph_rewrite_sets_cell_fields():

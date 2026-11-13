@@ -58,6 +58,9 @@ ENGINES = {"vllm": ("vLLM", "The most common open-source serving software for ch
 
 PRECISIONS = {
     "bf16": ("BF16 (standard)", "Full-quality number format on GPUs and AMX CPUs. The like-for-like baseline."),
+    "bf16-ov": ("BF16 (OpenVINO)", "The same full-quality BF16 as the GPU side, served by OpenVINO on AMX: the "
+                                   "like-for-like baseline on this option. Tick it next to INT8/INT4 to see what "
+                                   "compression buys."),
     "fp16": ("FP16 (half precision)", "Half precision; on CPUs it needs the AMX-FP16 feature."),
     "w8a8": ("INT8 compressed", "8-bit weights and activations: half the memory, faster on AMX, small quality loss."),
     "int8": ("INT8 compressed (OpenVINO)", "8-bit weights in OpenVINO's format: smaller and faster, small quality loss."),

@@ -24,7 +24,7 @@ infra/cdk.out/
 infra/node_modules/
 prompts/generated/
 reports/local/
-runs/
+/runs/
 webui/.shots/
 webui/dist/
 webui/node_modules/

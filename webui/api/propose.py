@@ -12,7 +12,7 @@ import math
 
 from bench import pairing
 
-BYTES_PER_PARAM = {"bf16": 2.0, "fp16": 2.0, "w8a8": 1.0, "int8": 1.0, "int4": 0.5, "fp32": 4.0}
+BYTES_PER_PARAM = {"bf16": 2.0, "bf16-ov": 2.0, "fp16": 2.0, "w8a8": 1.0, "int8": 1.0, "int4": 0.5, "fp32": 4.0}
 GPU_HEADROOM = 0.75          # weights may use at most this share of GPU memory (rest: KV cache, activations, runtime)
 CPU_WEIGHTS_SHARE = 0.4      # weights may use at most this share of host memory (rest: KV cache budget, OS, Docker)
 MIN_CPU_VCPUS = 8
