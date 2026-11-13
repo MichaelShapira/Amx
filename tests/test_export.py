@@ -76,3 +76,18 @@ def test_graph_rewrite_sets_cell_fields():
     assert "enable_prefix_caching: false" in out and "cache_size: 32" in out
     assert "max_num_seqs: 128" in out and "max_num_batched_tokens: 2048" in out
     assert out.count("cache_size") == 1
+
+
+def test_graph_rewrite_accepts_the_header_export_model_py_renders():
+    """export_model.py (model_server 2026.4.1) renders the options header as
+    "[type.googleapis.com / mediapipe.LLMCalculatorOptions]" with spaces around the slash. The
+    anchor regex matched only the unspaced form, so adding max_num_batched_tokens (absent from
+    the rendered graph) died with "graph.pbtxt has no LLMCalculatorOptions block" — the first
+    live bf16-ov bring-up, 2026-11-13."""
+    rendered = GRAPH.replace("[type.googleapis.com/mediapipe.LLMCalculatorOptions]",
+                             "[type.googleapis.com / mediapipe.LLMCalculatorOptions]")
+    assert "max_num_batched_tokens" not in rendered
+    out = export.rewrite_graph(rendered, {"enable_prefix_caching": False, "cache_size": 32, "max_num_seqs": 128,
+                                          "max_num_batched_tokens": 2048})
+    assert "max_num_batched_tokens: 2048" in out and "cache_size: 32" in out and "enable_prefix_caching: false" in out
+    assert out.index("max_num_batched_tokens") > out.index("LLMCalculatorOptions]")

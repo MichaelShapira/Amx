@@ -514,3 +514,37 @@ def test_jsonl_gz_round_trip(aws):
     raw = boto3.client("s3", region_name="us-east-1").get_object(Bucket=BUCKET, Key="k.jsonl.gz")["Body"].read()
     assert gzip.decompress(raw).count(b"\n") == 2
     assert aws.read_jsonl("k.jsonl.gz") == [{"a": 1}, {"b": 2}]
+
+
+def test_bringup_error_keeps_the_line_that_names_the_failure():
+    """2026-11-13: the first bf16-ov bring-up failed and the UI showed "graph.pbtxt has no" — a
+    500-char window of stderr, later cut again to 500, lost the end of the sentence. The tail now
+    drops tool chatter and is cut from the front, so the last line always survives."""
+    from lambdas.target_control import error_message, stderr_tail
+
+    stderr = "\n".join(
+        [f"{i:012x}: Pulling fs layer" for i in range(40)]
+        + [f"{i:012x}: Waiting" for i in range(40)] + [f"{i:012x}: Download complete" for i in range(40)]
+        + ["Digest: sha256:196c999fea8b03470a5d24982c9c93fef8a8610eb5a950e60baa0b56dee82eaa",
+           "Status: Downloaded newer image for 346399954218.dkr.ecr.us-east-1.amazonaws.com/x:y",
+           "+ optimum-cli export openvino --model /models/hf/Qwen/Qwen2.5-3B-Instruct/aa8e --task text-generation-with-past "
+           "--weight-format fp16 --trust-remote-code /models/ov/Qwen/Qwen2.5-3B-Instruct/aa8e/bf16-ov/0ec1e1dd4be9abf6/model",
+           "`torch_dtype` is deprecated! Use `dtype` instead!",
+           "Loading weights:   0%|          | 0/434 [00:00<?, ?it/s]\rLoading weights: 100%|██████████| 434/434 [00:00<00:00, 1095.55it/s]",
+           "/usr/local/lib/python3.12/site-packages/optimum/exporters/openvino/patching_utils.py:247: TracerWarning: torch.tensor "
+           "results are registered as constants in the trace.",
+           "  torch.tensor(0.0, device=mask.device, dtype=dtype),",
+           "+ /usr/local/bin/python /app/ovms/export_model.py text_generation --source_model /models/ov/Qwen/" + "x" * 300,
+           "graph.pbtxt has no LLMCalculatorOptions block",
+           "failed to run commands: exit status 1"])
+    tail = stderr_tail(stderr)
+    assert tail.endswith("graph.pbtxt has no LLMCalculatorOptions block\nfailed to run commands: exit status 1")
+    assert len(tail) <= 400 and "Pulling fs layer" not in tail and "TracerWarning" not in tail and "it/s]" not in tail
+    assert "+ /usr/local/bin/python" not in tail and "`torch_dtype` is deprecated" in tail
+    # Through the state machine's error envelope and the 1000-char cap, the message stays whole.
+    msg = f"bring-up of m1-qwen2.5-3b|t3-m8i-4xl-ov|bf16-ov failed (Failed): {tail}"
+    cause = json.dumps({"errorMessage": msg, "errorType": "RuntimeError", "stackTrace": ["x"] * 20})
+    stored = error_message({"Error": "RuntimeError", "Cause": cause})[:1000]
+    assert stored == msg and stored.endswith("exit status 1")
+    # Nothing but noise: fall back to the raw end so the reader still sees something.
+    assert stderr_tail("a: Pulling fs layer\nb: Pull complete\n") == "a: Pulling fs layer\nb: Pull complete"

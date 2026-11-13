@@ -405,7 +405,7 @@ def configure_poll(event: dict, context: Any = None) -> dict:
         time.sleep(10)
     if res["status"] != "Success":
         common.set_status(run_id, f"CELL#{cell['cell_id']}", "bringup_failed", stderr=res["stderr"][-2000:])
-        raise RuntimeError(f"bring-up of {cell['cell_id']} failed ({res['status']}): {res['stderr'][-500:]}")
+        raise RuntimeError(f"bring-up of {cell['cell_id']} failed ({res['status']}): {stderr_tail(res['stderr'])}")
     bring = common.get_json(f"runs/{run_id}/bringup/{cell['cell_key']}.json")
     cell_plan = common.get_json(f"runs/{run_id}/plan/{cell['cell_key']}.json")
     qual = cell_plan.get("quality")
@@ -449,6 +449,22 @@ def decide_after_failure(instance: dict | None, attempt: int, purchase: dict, st
 ENDPOINT_ERRORS = ("EndpointUnreachable", "WarmupFailed")
 
 
+_NOISE = re.compile(r"TracerWarning|warnings\.warn|it/s\]|Pulling fs layer|Download complete|Pull complete|"
+                    r"Verifying Checksum|^\s*[0-9a-f]{12}: Waiting|^\s*\+ |Downloaded newer image|^Digest: sha256")
+
+
+def stderr_tail(text: str, limit: int = 400) -> str:
+    """The end of a failed command's stderr for a human: the last lines that are not tool chatter
+    (progress bars, tracer warnings, docker pull layers, echoed commands), cut from the FRONT so the
+    final line, which names the failure, is always kept. The first version kept a raw 500-char
+    window that a later [:500] cut mid-sentence: the bf16-ov export failure of 2026-11-13 reached
+    the UI as "graph.pbtxt has no" and the real reason had to be dug out of SSM."""
+    lines = [ln.rstrip() for ln in text.replace("\r", "\n").splitlines()]
+    kept = [ln for ln in lines if ln.strip() and not _NOISE.search(ln)]
+    out = "\n".join(kept[-8:]) or "\n".join(ln for ln in lines if ln.strip())[-limit:]
+    return out if len(out) <= limit else "…" + out[-(limit - 1):]
+
+
 def error_message(err: Any) -> str:
     """The Lambda's own message out of a Step Functions error object ({Error, Cause}), where Cause
     is the JSON envelope with errorMessage and a stack trace nobody needs to read in a table."""
@@ -490,8 +506,10 @@ def check(event: dict, context: Any = None) -> dict:
     out = {"decision": decision, "ready": True, "instance_id": iid, "private_ip": event.get("private_ip"),
            "recovery": {"attempt": attempt, "interruption_logged": bool(rec.get("interruption_logged"))}}
     if decision == "fail":
+        # 1000, not 500: a bring-up message is "bring-up of <cell> failed (Failed): " plus up to a
+        # 400-char stderr tail, and cutting it shorter loses the line that names the failure.
         common.set_status(run_id, f"CELL#{cell['cell_id']}", "failed", reason=f"{event.get('stage')} failed "
-                          f"after {attempt} recoveries", error=error_message(event.get("error"))[:500])
+                          f"after {attempt} recoveries", error=error_message(event.get("error"))[:1000])
         return out
     if decision == "resume":
         # The level state machine marked its own failure (MarkLevelFailed); the rest continue.

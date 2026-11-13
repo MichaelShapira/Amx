@@ -158,7 +158,9 @@ def rewrite_graph(text: str, values: dict) -> str:
         if pat.search(text):
             text = pat.sub(lambda m, r=rendered: m.group(1) + r, text, count=1)
         else:
-            anchor = re.search(r"(\[type\.googleapis\.com/mediapipe\.LLMCalculatorOptions\]\s*:\s*\{)", text)
+            # export_model.py renders the header as "[type.googleapis.com / mediapipe.LLMCalculatorOptions]"
+            # (spaces around the slash); accept both spellings.
+            anchor = re.search(r"(\[type\.googleapis\.com\s*/\s*mediapipe\.LLMCalculatorOptions\]\s*:\s*\{)", text)
             if not anchor:
                 raise SystemExit("graph.pbtxt has no LLMCalculatorOptions block")
             text = text[:anchor.end()] + f"\n          {key}: {rendered}," + text[anchor.end():]
