@@ -138,7 +138,12 @@ def test_openvino_bf16_is_its_own_precision(models, targets):
     cells = resolve_cells(_run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
     assert [(c.engine, c.precision) for c in cells] == [("ovms", "bf16-ov")]
     assert "bf16-ov" not in models.get("m3-roberta-large-mnli").precisions     # classifiers already have bf16 on thin-openvino
-    assert "bf16-ov" not in models.get("m5-flan-t5-xl").precisions
+    # Flan-T5: the same cell through the thin OpenVINO wrapper (OVMS does not host T5), with the
+    # seq2seq export task; otherwise PyTorch eager would be T5's only BF16 CPU path.
+    t5 = models.get("m5-flan-t5-xl").precisions["bf16-ov"]
+    assert t5.engines == ["thin-openvino"] and t5.export == {"weight_format": "fp16", "task": "text2text-generation-with-past"}
+    cells = resolve_cells(_run(models=["m5-flan-t5-xl"], cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
+    assert [(c.engine, c.precision) for c in cells] == [("thin-openvino", "bf16-ov")]
 
 
 def test_constrained_variant_only_on_vllm(models, targets):

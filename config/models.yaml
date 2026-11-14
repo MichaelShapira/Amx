@@ -139,6 +139,13 @@ models:
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
       bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
+      # The full-quality OpenVINO cell: PyTorch eager is otherwise the only BF16 CPU path for T5
+      # (vLLM has no T5), so this is the like-for-like CPU number against the GPU's BF16.
+      bf16-ov:
+        engines: [thin-openvino]
+        export: {weight_format: fp16, task: text2text-generation-with-past}
+        weights: bf16
+        activations: bf16
       int8-ov:
         engines: [thin-openvino]
         export: {weight_format: int8, task: text2text-generation-with-past}

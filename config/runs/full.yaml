@@ -32,6 +32,7 @@ run:
     - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m4-gemma-2-2b}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m4-gemma-2-2b}
     - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m4-gemma-2-2b}
+    - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m5-flan-t5-xl}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m5-flan-t5-xl}
     - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m5-flan-t5-xl}
     - {target: t3-m8i-4xl-ov, precision: fp16, model: m3-roberta-large-mnli}
