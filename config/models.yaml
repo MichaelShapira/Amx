@@ -139,13 +139,18 @@ models:
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
       bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
-      # The full-quality OpenVINO cell: PyTorch eager is otherwise the only BF16 CPU path for T5
-      # (vLLM has no T5), so this is the like-for-like CPU number against the GPU's BF16.
+      # Measured and disabled 2026-11-14 (run flan-bf16-ov-vs-torch-20261114T183728Z, m8i.4xlarge,
+      # smoke): OpenVINO BF16 through optimum-intel's generate loop lost to PyTorch eager BF16 on
+      # every metric — C=1 E2E 7.4 s vs 6.4 s, 17 vs 20 tok/s; C=4 59 vs 68 agg tok/s, $4.01 vs
+      # $3.46 per 1M tokens — and as BF16 it can only tie on quality. Both cells were AMX VERIFIED
+      # (OpenVINO chose bf16, 96/96 GEMMs on amx_bf16), so it was a fair comparison. Flip `enabled`
+      # to re-measure; the thin-openvino wrapper is not a serving engine, so expect the same.
       bf16-ov:
         engines: [thin-openvino]
         export: {weight_format: fp16, task: text2text-generation-with-past}
         weights: bf16
         activations: bf16
+        enabled: false
       int8-ov:
         engines: [thin-openvino]
         export: {weight_format: int8, task: text2text-generation-with-past}
