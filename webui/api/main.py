@@ -235,8 +235,11 @@ def refusal_sentences(errors: list[str]) -> list[str]:
                     out.append(f"{where}: refused by mistake. FP16 on a GPU never depended on a CPU feature; the pre-check "
                                "that said so was fixed on 2026-11-12. Start the run again.")
                 else:
-                    out.append(f"{where}: the FP16 (half precision) format {C.cpu_flag_note('amx_fp16')} Since 2026-11-15 the "
-                               "wizard greys FP16 out for the CPU options, so this cannot happen to a new run.")
+                    itype = rest.split(" has no")[0] if " has no" in rest else None
+                    out.append(f"{where}: the FP16 (half precision) format {C.cpu_flag_note('amx_fp16')}"
+                               + (f" This run asked for it on {itype}." if itype else "")
+                               + " Since 2026-11-15 the wizard greys FP16 out for the CPU options, so this cannot happen "
+                               "to a new run.")
             elif "none of" in rest and "available on" in rest:
                 out.append(f"{where}: this serving software cannot run the model in that number format. Untick the format "
                            "for this option.")

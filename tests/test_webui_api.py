@@ -346,7 +346,7 @@ def test_refusals_read_as_sentences_with_names():
     # 2026-11-15: the sentence told the reader to "pick an m8i, c8i or r8i size" for a run that was
     # already on c8i.4xlarge. No size has AMX-FP16 on EC2; the sentence must say so and never
     # recommend a size.
-    assert "AMX-FP16" in old and "no current AWS Intel instance exposes" in old and "No instance size changes this" in old
+    assert "AMX-FP16" in old and "do not expose" in old and "No instance size changes this" in old
     assert "m8i, c8i or r8i size" not in old and "Pick an" not in old and "greys FP16 out" in old
     gpu = refusal_sentences(["m3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16"])[0]
     assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM + PyTorch in FP16 (half precision): refused by mistake.")
@@ -392,7 +392,8 @@ def test_fp16_is_blocked_for_cpu_options_at_selection_and_in_the_plan(monkeypatc
             assert "amx_fp16" not in h["cpu_features"] and {"amx_bf16", "amx_int8", "amx_tile"} <= set(h["cpu_features"])
     m3 = next(m for m in cat["models"] if m["id"] == "m3-roberta-large-mnli")
     assert m3["precisions"]["fp16"]["requires_cpu_flag"] == "amx_fp16" and m3["precisions"]["bf16"]["requires_cpu_flag"] is None
-    assert "no current AWS Intel instance exposes" in cat["cpu_flag_notes"]["amx_fp16"]
+    note_fp16 = cat["cpu_flag_notes"]["amx_fp16"]
+    assert "do not expose" in note_fp16 and "36 so far" in note_fp16 and "r8i" not in note_fp16
     assert "greyed out for the CPU options" in cat["precisions"]["fp16"]["help"]
     w = {"use_case": "standard", "models": ["m3-roberta-large-mnli"], "gpu": {**GPU, "precisions": ["fp16"]},
          "cpus": [{"hardware": "t3-m8i-4xl-ov", "instance_type": "c8i.4xlarge", "precisions": ["bf16", "fp16"]}]}
@@ -403,7 +404,7 @@ def test_fp16_is_blocked_for_cpu_options_at_selection_and_in_the_plan(monkeypatc
     assert ("t3-m8i-4xl-ov", "BF16 (standard)") in series and ("t3-m8i-4xl-ov", "FP16 (half precision)") not in series
     note = next(x for x in pl["warnings"] if "FP16" in x)
     assert note.startswith("CPU · Intel Xeon with AMX · OpenVINO: RoBERTa-large (classifier) in FP16 (half precision) needs the AMX-FP16")
-    assert "c8i.4xlarge" in cat["cpu_flag_notes"]["amx_fp16"] and "Pick an" not in note
+    assert "c8i" in note_fp16 and "Pick an" not in note
     assert "fp16" not in {cell["precision"] for cell in pl["run"]["cells"] if cell["target"] != "t1-g6"}
     # The same for the PyTorch option and for any size: the feature is per family on EC2, not per size.
     for itype in ("m8i.4xlarge", "m8i.8xlarge", "c8i.4xlarge", "m7i.4xlarge"):

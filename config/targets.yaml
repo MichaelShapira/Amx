@@ -6,10 +6,10 @@ x-vllm-common: &vllm_common
   seed: 0
 
 # CPU features the instances of a family actually expose (lscpu on the booted host). The custom
-# Xeon 6 behind m8i/c8i/r8i reports amx_bf16/amx_int8/amx_tile and avx512_fp16 but NOT amx_fp16
-# (measured 2026-11-13 on m8i.4xlarge, Xeon 6975P-C, AL2023 kernel 6.12, and the same day on a
-# c8i.4xlarge host), so the FP16-on-AMX cells the design planned for T3/T4 cannot run here. Do not
-# add amx_fp16 back because Granite Rapids "has" it: the instance is what counts.
+# Xeon 6 (6975P-C) behind m8i/c8i reports amx_bf16/amx_int8/amx_tile and avx512_fp16 but NOT
+# amx_fp16: 36 of 36 host-facts records through 2026-11-15 (27 m8i.4xlarge, 3 m8i.8xlarge, 6 c8i.4xlarge,
+# AL2023 kernel 6.12). r8i has not been booted here. So the FP16-on-AMX cells the design planned for
+# T3/T4 cannot run. Do not add amx_fp16 back because Granite Rapids "has" it: the instance is what counts.
 x-amx-8i: &amx_8i [amx_bf16, amx_int8, amx_tile]
 
 targets:

@@ -62,7 +62,7 @@ PRECISIONS = {
                                    "like-for-like baseline on this option. Tick it next to INT8/INT4 to see what "
                                    "compression buys."),
     "fp16": ("FP16 (half precision)", "Half precision on the GPU. On CPUs it would need the AMX-FP16 feature, which the "
-                                      "AWS Intel instances do not expose, so it is greyed out for the CPU options."),
+                                      "AWS Intel instances offered here do not expose, so it is greyed out for the CPU options."),
     "w8a8": ("INT8 compressed", "8-bit weights and activations: half the memory, faster on AMX, small quality loss."),
     "int8": ("INT8 compressed (OpenVINO)", "8-bit weights in OpenVINO's format: smaller and faster, small quality loss."),
     "int4": ("INT4 compressed (OpenVINO)", "4-bit weights: smallest and fastest, larger quality loss."),
@@ -119,9 +119,9 @@ CONCURRENCY_HINTS = {1: "one user", 4: "a small team", 8: "a department", 16: "a
 # Why a number format is greyed out for a CPU option: the CPU feature it needs (models.yaml
 # requires_cpu_flag) is not in the option's cpu_features (targets.yaml, measured on booted hosts).
 CPU_FLAG_NOTES = {
-    "amx_fp16": ("needs the AMX-FP16 CPU feature, which no current AWS Intel instance exposes: m8i, c8i and r8i report "
-                 "AMX-BF16 and AMX-INT8 but not AMX-FP16 (checked 2026-11-13 on m8i.4xlarge and c8i.4xlarge). No "
-                 "instance size changes this; keep BF16 or INT8 for the CPU side."),
+    "amx_fp16": ("needs the AMX-FP16 CPU feature, which the AWS instances this tool offers do not expose: every m8i and "
+                 "c8i host it has booted (36 so far, Xeon 6975P-C) reports AMX-BF16 and AMX-INT8 but not AMX-FP16, and "
+                 "m7i (Sapphire Rapids) never had it. No instance size changes this; keep BF16 or INT8 for the CPU side."),
 }
 
 
