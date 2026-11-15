@@ -5,6 +5,13 @@ x-vllm-common: &vllm_common
   max_num_batched_tokens: 2048
   seed: 0
 
+# CPU features the instances of a family actually expose (lscpu on the booted host). The custom
+# Xeon 6 behind m8i/c8i/r8i reports amx_bf16/amx_int8/amx_tile and avx512_fp16 but NOT amx_fp16
+# (measured 2026-11-13 on m8i.4xlarge, Xeon 6975P-C, AL2023 kernel 6.12, and the same day on a
+# c8i.4xlarge host), so the FP16-on-AMX cells the design planned for T3/T4 cannot run here. Do not
+# add amx_fp16 back because Granite Rapids "has" it: the instance is what counts.
+x-amx-8i: &amx_8i [amx_bf16, amx_int8, amx_tile]
+
 targets:
   - id: t1-g6
     label: T1
@@ -26,7 +33,7 @@ targets:
     instance_type: m8i.4xlarge
     ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
     accelerator: cpu
-    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    cpu_features: *amx_8i
     root_volume_gib: 200
     engines:
       vllm:
@@ -57,7 +64,7 @@ targets:
     instance_type: m8i.4xlarge
     ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
     accelerator: cpu
-    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    cpu_features: *amx_8i
     engines:
       ovms:
         image: docker.io/openvino/model_server@sha256:148e3fe802261ed0b5b634de3bbccdefe7176a218ec34a88e382b40704c34a1c
@@ -71,7 +78,7 @@ targets:
     instance_type: m8i.4xlarge
     ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
     accelerator: cpu
-    cpu_features: [amx_bf16, amx_int8, amx_tile, amx_fp16]
+    cpu_features: *amx_8i
     engines:
       thin-torch:
         image: built:thin-torch-cpu

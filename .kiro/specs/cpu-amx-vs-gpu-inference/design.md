@@ -361,8 +361,10 @@ invented authentication, no public storage.
 |---|---|---|---|---|---|
 | M1 (Qwen2.5-3B), M2 (Qwen3-4B-2507) | vLLM BF16 | BF16 on all three sizes; **W8A8 INT8 on m8i.4xl**; AWQ INT4 optional (off) | OVMS BF16 (`bf16-ov`: FP16 IR, run in BF16 by the CPU plugin; the like-for-like baseline on T3), INT8, INT4 weight compression | optional BF16 | BF16 |
 | M4 (gemma-2-2b) | vLLM BF16 | BF16; **W8A8 INT8 on m8i.4xl** (not on vLLM validated list) | OVMS BF16 (`bf16-ov`), INT8, INT4 | optional BF16 | BF16 |
-| M3 (roberta-large-mnli) | vLLM `/classify` BF16; thin torch CUDA BF16 optional | vLLM `/classify` BF16 | thin + `OVModelForSequenceClassification`: **FP16** (f16 hint), BF16, INT8 | thin torch: BF16, **FP16**; FP32 for the quality anchor only | vLLM `/classify` BF16 |
+| M3 (roberta-large-mnli) | vLLM `/classify` BF16; thin torch CUDA BF16 optional | vLLM `/classify` BF16 | thin + `OVModelForSequenceClassification`: BF16, INT8 (FP16 planned, see note) | thin torch: BF16 (FP16 planned, see note); FP32 for the quality anchor only | vLLM `/classify` BF16 |
 | M5 (flan-t5-xl) | thin torch CUDA BF16 | not supported | thin + `OVModelForSeq2SeqLM` INT8, INT4 (`bf16-ov` defined but disabled: measured 2026-11-14 slower than thin torch BF16 on every metric, see models.yaml) | thin torch BF16 | not supported |
+
+**FP16 on the CPU targets (2026-11-15).** The FP16 cells planned for T3/T4 need AMX-FP16. The custom Xeon 6 behind m8i/c8i/r8i does not expose `amx_fp16` to instances (lscpu on booted m8i.4xlarge and c8i.4xlarge hosts, AL2023 kernel 6.12, reports `amx_bf16 amx_int8 amx_tile avx512_fp16` only), so `config/targets.yaml` lists the measured features and no CPU target carries `amx_fp16`. The `fp16` precision stays defined for the classifiers and runs on the GPU; the wizard greys it out for every CPU option with the reason, the plan drops it from a stale copy with the same sentence, and the pre-check compares booted-host flags against the target's `cpu_features` rather than a per-family table.
 
 GPU W8A8 is available as an optional cell (off by default). The m8i.8xlarge scaling row
 runs M1 and M2 in BF16 only. T5 is disabled by default. vLLM on m7i (Sapphire Rapids) is
@@ -1080,9 +1082,9 @@ classifiers have no prefix to cache.
 |---|---|---|---|---|
 | M1, M2, M4 | vLLM BF16 | vLLM BF16, W8A8 | OVMS BF16 (`bf16-ov`), INT8, INT4 | |
 | M5 | thin CUDA BF16 | | thin OpenVINO INT8 | thin BF16 |
-| M3 | vLLM `/classify` BF16 | vLLM `/classify` BF16 | thin OpenVINO FP16, INT8 | thin BF16, FP16 |
+| M3 | vLLM `/classify` BF16 | vLLM `/classify` BF16 | thin OpenVINO BF16, INT8 | thin BF16 |
 | D1 | thin CUDA BF16 | vLLM (optional; returns large per-token tensors) | not supported | thin BF16 |
-| D2 | vLLM `/classify` BF16 | vLLM `/classify` BF16 | thin OpenVINO FP16, INT8 | thin BF16, FP16 |
+| D2 | vLLM `/classify` BF16 | vLLM `/classify` BF16 | thin OpenVINO BF16, INT8 | thin BF16 |
 
 c8i.4xlarge and m8i.8xlarge rows: M2 in BF16 and W8A8 on W1 and W3, plus D1. The thin
 server gains `POST /detect` for D1 and a multi-label mode for D2.

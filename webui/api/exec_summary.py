@@ -9,7 +9,6 @@ import json
 import re
 import time
 
-REGION = "us-east-1"
 _MODEL_CACHE: dict = {}
 
 SYSTEM = """You write executive summaries for product and business decision makers choosing between
@@ -98,10 +97,10 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
 
 
 def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> dict:
-    import boto3
+    from webui.api import aws
 
-    bedrock = boto3.client("bedrock", region_name=REGION)
-    rt = boto3.client("bedrock-runtime", region_name=REGION)
+    bedrock = aws.client("bedrock")
+    rt = aws.client("bedrock-runtime")
     model = newest_opus(bedrock)
     payload = _compact(analysis, comparability, sla, runs)
     prompt = ("FINDINGS JSON:\n" + json.dumps(payload, indent=1, default=str) +

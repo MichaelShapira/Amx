@@ -30,7 +30,6 @@ import httpx
 
 from webui.api import exec_summary
 
-REGION = "us-east-1"
 MAX_TOOL_CALLS = 10          # searches + fetches per answer
 MAX_ROUNDS = 8               # model turns that may ask for tools
 PAGE_CHARS = 12_000          # characters of page text handed to the model
@@ -328,10 +327,10 @@ def _run_tool(name: str, args: dict, job: dict, http: httpx.Client | None) -> di
 
 def review(ctx: dict, job: dict, *, bedrock=None, runtime=None, http: httpx.Client | None = None) -> dict:
     """Drive Opus through the tool loop and return the Markdown review with its sources."""
-    import boto3
+    from webui.api import aws
 
-    bedrock = bedrock or boto3.client("bedrock", region_name=REGION)
-    rt = runtime or boto3.client("bedrock-runtime", region_name=REGION)
+    bedrock = bedrock or aws.client("bedrock")
+    rt = runtime or aws.client("bedrock-runtime")
     model = exec_summary.newest_opus(bedrock)
     job["model"] = model
     messages = [{"role": "user", "content": [{"text": build_prompt(ctx)}]}]

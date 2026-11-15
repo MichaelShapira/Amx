@@ -66,14 +66,12 @@ def _latest_host_facts(target_id: str, instance_type: str | None = None) -> dict
     return None
 
 
-# AMX generations by instance family: Granite Rapids (8i) adds AMX-FP16; Sapphire Rapids (7i) has
-# AMX-BF16/INT8 only. Used when no host has booted with the run's instance type yet.
-FAMILY_FLAGS = {"8i": {"amx_tile", "amx_bf16", "amx_int8", "amx_fp16"}, "7i": {"amx_tile", "amx_bf16", "amx_int8"}}
-
-
-def expected_cpu_flags(instance_type: str | None) -> set[str] | None:
-    fam = (instance_type or "").split(".")[0]
-    return next((f for suffix, f in FAMILY_FLAGS.items() if fam.endswith(suffix)), None)
+# There is no per-family feature table here any more. The one that existed said "8i has
+# amx_fp16" because Granite Rapids does; the EC2 hosts do not expose it (config/targets.yaml has
+# the measurement), and the table disagreed with the host facts, so the wizard accepted FP16 on a
+# c8i.4xlarge and the pre-check refused it with advice to pick a c8i (2026-11-15). The target's
+# cpu_features in targets.yaml is the single statement of what a CPU option's instances have;
+# host facts, when a host of the run's type has booted, are the check against it.
 
 
 DSPM_REQUESTS_MANIFEST = "artifacts/dspm/v1/requests/manifest.json"
@@ -128,8 +126,8 @@ def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrenc
         if p.requires_cpu_flag and tmap[c.target].accelerator == "cpu":
             flags = host_flags.get(c.target)
             if flags is None:
-                flags = expected_cpu_flags(itypes.get(c.target))
-            if flags is not None and p.requires_cpu_flag not in flags:
+                flags = set(tmap[c.target].cpu_features)
+            if p.requires_cpu_flag not in flags:
                 errors.append(f"{c.cell_id}: {itypes.get(c.target)} has no {p.requires_cpu_flag} "
                               f"(the {c.precision} format needs it)")
     return errors

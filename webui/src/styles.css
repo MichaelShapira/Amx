@@ -164,6 +164,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .chip { padding: 7px 13px; border-radius: 999px; border: 1.5px solid var(--line-2); background: var(--bg-2); color: var(--fg); cursor: pointer; font-weight: 600; font-size: 13.5px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.chip.blocked { opacity: 0.5; cursor: help; border-style: dashed; text-decoration: line-through; }
 
 /* wizard */
 .steps { display: flex; gap: 4px; margin-bottom: 22px; overflow: auto; }

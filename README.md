@@ -225,6 +225,14 @@ credentials. For live-reload development run `npm run dev` inside `webui/` (Vite
 `127.0.0.1:8600`, proxying `/api` to the API). Nothing listens beyond this machine; to use it from
 another machine, forward the port over SSH.
 
+Credentials: session credentials from the account portal last about an hour. Put the portal's
+`export AWS_ACCESS_KEY_ID=… / AWS_SECRET_ACCESS_KEY=… / AWS_SESSION_TOKEN=…` lines in
+`~/.aws-tmp/amxbench-creds.env` (mode 600; or point `AMXBENCH_CREDS_FILE` at another file) and the
+API re-reads the file whenever it changes, so a new session never needs a restart. Without the file
+the default AWS credential chain is used. When the session has expired every page says so in one
+sentence and the sidebar pill reads "AWS session expired"; both recover on their own once the
+file holds a fresh session.
+
 It is written for the person deciding which instance to buy, not for the engineer. Light and dark
 themes; GPU is always green and CPU always blue.
 

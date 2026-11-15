@@ -5,10 +5,10 @@ export type UseCase = "standard" | "dspm";
 export interface ModelInfo {
   id: string; name: string; description: string; kind: string; type: string; params_b: number; license: string;
   commercial_ok: boolean; use_cases: UseCase[]; batch_capable: boolean; batch_sizes_default: number[];
-  precisions: Record<string, { label: string; help: string; engines: string[]; quality_only: boolean }>;
+  precisions: Record<string, { label: string; help: string; engines: string[]; quality_only: boolean; requires_cpu_flag: string | null }>;
 }
 export interface Hardware {
-  id: string; accelerator: "gpu" | "cpu"; software: string[]; engines: string[]; software_help: string;
+  id: string; accelerator: "gpu" | "cpu"; cpu_features: string[]; software: string[]; engines: string[]; software_help: string;
   default_instance_type: string; alternates: string[]; label: string; default_spec: InstanceSpec;
 }
 export interface InstanceSpec {
@@ -25,6 +25,7 @@ export interface Catalog {
   request_modes: Record<string, { label: string; help: string }>;
   purchase: Record<string, { label: string; help: string }>;
   concurrency_hints: Record<string, string>;
+  cpu_flag_notes: Record<string, string>;
   precisions: Record<string, { label: string; help: string }>;
   engines: Record<string, { label: string; help: string }>;
   fair_ratio: [number, number]; account: string; region: string;
@@ -123,6 +124,8 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
+export interface AwsStatus { ok: boolean; account?: string; identity?: string; error?: string; expired?: boolean; credentials?: string }
+
 export const api = {
   catalog: () => j<Catalog>("/api/catalog"),
   data: (uc: UseCase) => j<any>(`/api/data/${uc}`),
@@ -143,7 +146,7 @@ export const api = {
   slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),
   start: (w: Wizard) => j<{ run_id: string }>("/api/runs", { method: "POST", body: JSON.stringify(w) }),
-  aws: () => j<{ ok: boolean; account?: string; identity?: string; error?: string }>("/api/aws/status"),
+  aws: () => j<AwsStatus>("/api/aws/status"),
   runs: () => j<RunRow[]>("/api/runs"),
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
   stop: (id: string) => j<any>(`/api/runs/${id}/stop`, { method: "POST" }),

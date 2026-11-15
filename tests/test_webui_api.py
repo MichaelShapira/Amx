@@ -343,12 +343,21 @@ def test_refusals_read_as_sentences_with_names():
 
     old = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: host facts of t4-m8i-4xl-torch lack amx_fp16"])[0]
     assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · PyTorch in FP16 (half precision): the FP16")
-    assert "AMX-FP16" in old and "m8i, c8i or r8i" in old and "untick FP16" in old and "this option's processor" in old
+    # 2026-11-15: the sentence told the reader to "pick an m8i, c8i or r8i size" for a run that was
+    # already on c8i.4xlarge. No size has AMX-FP16 on EC2; the sentence must say so and never
+    # recommend a size.
+    assert "AMX-FP16" in old and "no current AWS Intel instance exposes" in old and "No instance size changes this" in old
+    assert "m8i, c8i or r8i size" not in old and "Pick an" not in old and "greys FP16 out" in old
     gpu = refusal_sentences(["m3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16"])[0]
     assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM + PyTorch in FP16 (half precision): refused by mistake.")
     assert "Start the run again" in gpu
-    new = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: m7i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
-    assert "the m7i.4xlarge processor does not have" in new
+    new = refusal_sentences(["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
+    assert new.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): the FP16")
+    assert "c8i.4xlarge" in new and "No instance size changes this" in new and "Pick an" not in new
+    # The config validator's own refusal (what the pre-checks now say first) reads the same way.
+    cfg = refusal_sentences(["m3-roberta-large-mnli/fp16 needs CPU flag amx_fp16, which t3-m8i-4xl-ov lacks"])[0]
+    assert cfg.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): this format needs the AMX-FP16")
+    assert "Untick it for this option" in cfg
     s = refusal_sentences(["worker reserved concurrency 32 < highest level 64",
                            "instance types not offered in use1-az1: ['g6e.48xlarge', 'm8i.96xlarge']",
                            "target t5-m7i-4xl is not deployed (no SSM parameter /amx-gpu-bench/targets/t5-m7i-4xl/launch-template)",
@@ -368,18 +377,39 @@ def test_refusals_read_as_sentences_with_names():
     assert refusal_sentences(None) == []
 
 
-def test_plan_refuses_fp16_on_sapphire_rapids_before_the_run_starts(monkeypatch):
+def test_fp16_is_blocked_for_cpu_options_at_selection_and_in_the_plan(monkeypatch):
+    """2026-11-15: a run with RoBERTa FP16 on the OpenVINO option at c8i.4xlarge passed the wizard
+    and the plan, then the pre-checks refused it with advice to pick a c8i. The wizard believed a
+    family table (Granite Rapids has AMX-FP16); the pre-checks believed the booted host, which does
+    not expose it. One fact now: targets.yaml cpu_features, served in the catalog so the wizard
+    greys FP16 out for every CPU option, and applied by the plan, which drops a stale copy with
+    the reason instead of letting it reach the pre-checks."""
     from webui.api import main
-
     monkeypatch.setattr(main, "deployed_backend", lambda: _backend(True))
+    cat = c.get("/api/catalog").json()
+    for h in cat["hardware"]:
+        if h["accelerator"] == "cpu":
+            assert "amx_fp16" not in h["cpu_features"] and {"amx_bf16", "amx_int8", "amx_tile"} <= set(h["cpu_features"])
+    m3 = next(m for m in cat["models"] if m["id"] == "m3-roberta-large-mnli")
+    assert m3["precisions"]["fp16"]["requires_cpu_flag"] == "amx_fp16" and m3["precisions"]["bf16"]["requires_cpu_flag"] is None
+    assert "no current AWS Intel instance exposes" in cat["cpu_flag_notes"]["amx_fp16"]
+    assert "greyed out for the CPU options" in cat["precisions"]["fp16"]["help"]
     w = {"use_case": "standard", "models": ["m3-roberta-large-mnli"], "gpu": {**GPU, "precisions": ["fp16"]},
-         "cpus": [{"hardware": "t4-m8i-4xl-torch", "instance_type": "m7i.4xlarge", "precisions": ["bf16", "fp16"]}]}
+         "cpus": [{"hardware": "t3-m8i-4xl-ov", "instance_type": "c8i.4xlarge", "precisions": ["bf16", "fp16"]}]}
     pl = c.post("/api/plan", json=w).json()
-    assert pl["ok"] is False and any("needs AMX-FP16" in x and "m7i.4xlarge" in x and "Sapphire Rapids" in x for x in pl["problems"])
-    # FP16 on the GPU alone is fine, and FP16 on a Granite Rapids CPU size is fine.
-    ok = c.post("/api/plan", json={**w, "cpus": [{**w["cpus"][0], "instance_type": "c8i.4xlarge"}]}).json()
-    assert ok["ok"] is True, ok["problems"]
-    assert {(s_["hardware"], s_["precision"]) for s_ in ok["series"]} >= {("t1-g6", "FP16 (half precision)"), ("t4-m8i-4xl-torch", "FP16 (half precision)")}
+    assert pl["ok"] is True, pl["problems"]
+    series = {(s_["hardware"], s_["precision"]) for s_ in pl["series"]}
+    assert ("t1-g6", "FP16 (half precision)") in series                  # FP16 on the GPU is fine
+    assert ("t3-m8i-4xl-ov", "BF16 (standard)") in series and ("t3-m8i-4xl-ov", "FP16 (half precision)") not in series
+    note = next(x for x in pl["warnings"] if "FP16" in x)
+    assert note.startswith("CPU · Intel Xeon with AMX · OpenVINO: RoBERTa-large (classifier) in FP16 (half precision) needs the AMX-FP16")
+    assert "c8i.4xlarge" in cat["cpu_flag_notes"]["amx_fp16"] and "Pick an" not in note
+    assert "fp16" not in {cell["precision"] for cell in pl["run"]["cells"] if cell["target"] != "t1-g6"}
+    # The same for the PyTorch option and for any size: the feature is per family on EC2, not per size.
+    for itype in ("m8i.4xlarge", "m8i.8xlarge", "c8i.4xlarge", "m7i.4xlarge"):
+        pl2 = c.post("/api/plan", json={**w, "cpus": [{"hardware": "t4-m8i-4xl-torch", "instance_type": itype, "precisions": ["fp16"]}]}).json()
+        assert ("t4-m8i-4xl-torch", "FP16 (half precision)") not in {(s_["hardware"], s_["precision"]) for s_ in pl2["series"]}
+        assert any("runs nothing in this plan" in x for x in pl2["warnings"]), (itype, pl2["warnings"])
 
 
 def test_cell_failures_read_as_sentences():

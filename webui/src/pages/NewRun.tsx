@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
-import { api, defaultWizard, fmt, type AiJob, type Catalog, type InitialSelection, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
+import { api, defaultWizard, fmt, type AiJob, type Catalog, type Hardware, type InitialSelection, type ModelInfo, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
 import DataPreview from "../components/DataPreview";
 import { Badge, Chips, Help, Label, Note, Reasons, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
@@ -193,11 +193,25 @@ function StepHardware({ w, set }: SP) {
     return () => clearInterval(t);
   }, [ai]);
 
+  // A number format the option's serving software serves but whose CPU feature the option's
+  // instances do not expose (FP16 needs AMX-FP16; no AWS Intel instance has it) is blocked here,
+  // at selection, with the reason: the same facts the plan and the pre-checks use.
+  const flagBlock = (hw: Hardware, spec: ModelInfo["precisions"][string]) =>
+    hw.accelerator === "cpu" && spec.requires_cpu_flag && !hw.cpu_features.includes(spec.requires_cpu_flag) ? spec.requires_cpu_flag : null;
   const precsFor = (hwId: string) => {
     const hw = cat.hardware.find((h) => h.id === hwId)!;
     const set_ = new Set<string>();
-    for (const m of chosenModels) for (const [p, spec] of Object.entries(m.precisions)) if (spec.engines.some((e) => hw.engines.includes(e)) && !spec.quality_only) set_.add(p);
+    for (const m of chosenModels) for (const [p, spec] of Object.entries(m.precisions)) if (spec.engines.some((e) => hw.engines.includes(e)) && !spec.quality_only && !flagBlock(hw, spec)) set_.add(p);
     return [...set_];
+  };
+  const blockedFor = (hwId: string) => {
+    const hw = cat.hardware.find((h) => h.id === hwId)!;
+    const out = new Map<string, string>();
+    for (const m of chosenModels) for (const [p, spec] of Object.entries(m.precisions)) {
+      const flag = spec.engines.some((e) => hw.engines.includes(e)) && !spec.quality_only ? flagBlock(hw, spec) : null;
+      if (flag && !out.has(p)) out.set(p, `${cat.precisions[p]?.label ?? p} ${cat.cpu_flag_notes[flag] ?? `needs the ${flag} CPU feature, which this option's instances do not have.`}`);
+    }
+    return [...out].map(([option, reason]) => ({ option, reason }));
   };
   // The default number format for a hardware option: BF16 when its serving software can run the
   // model in BF16 (OpenVINO's own BF16 cell counts), otherwise the first format it can.
@@ -276,7 +290,8 @@ function StepHardware({ w, set }: SP) {
           </select>
           <Label help="Number formats to test on this hardware. BF16 is the like-for-like baseline; compressed formats (INT8, INT4) are faster and cheaper on CPUs and the report shows what they cost in answer quality.">Number formats</Label>
           {precsFor(hw.id).length === 0 && <Note kind="warn">This serving software cannot run {model?.name ?? "the chosen model"} at all. Untick it, or pick another model.</Note>}
-          <Chips options={precsFor(hw.id)} value={side.precisions} onChange={(v) => setSide(hw.id, { precisions: v.length ? v : defaultPrecs(hw.id) })} labels={(p) => cat.precisions[p]?.label ?? p} />
+          <Chips options={precsFor(hw.id)} value={side.precisions.filter((p) => precsFor(hw.id).includes(p))} onChange={(v) => setSide(hw.id, { precisions: v.length ? v : defaultPrecs(hw.id) })} labels={(p) => cat.precisions[p]?.label ?? p} blocked={blockedFor(hw.id)} />
+          {blockedFor(hw.id).map((b) => <div key={b.option} className="muted small" style={{ marginTop: 6 }}>{b.reason}</div>)}
         </div>
       )}
     </div>

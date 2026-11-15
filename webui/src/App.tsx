@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, type Catalog } from "./api";
+import { api, type Catalog, type AwsStatus } from "./api";
 import Home from "./pages/Home";
 import NewRun from "./pages/NewRun";
 import Runs from "./pages/Runs";
@@ -17,10 +17,16 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) ||
     (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [aws, setAws] = useState<{ ok: boolean; account?: string; identity?: string; error?: string } | null>(null);
+  const [aws, setAws] = useState<AwsStatus | null>(null);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
-  useEffect(() => { api.catalog().then(setCatalog).catch(() => setCatalog(null)); api.aws().then(setAws).catch(() => setAws({ ok: false, error: "API not reachable" })); }, []);
+  useEffect(() => { api.catalog().then(setCatalog).catch(() => setCatalog(null)); }, []);
+  // The operator's AWS session lasts about an hour. Re-check every 30 s so the pill turns red with
+  // the reason when it expires, and green again once fresh credentials are in place (no restart).
+  useEffect(() => {
+    const check = () => api.aws().then(setAws).catch(() => setAws({ ok: false, error: "API not reachable" }));
+    check(); const t = setInterval(check, 30000); return () => clearInterval(t);
+  }, []);
 
   return (
     <CatalogCtx.Provider value={catalog}>
@@ -38,9 +44,10 @@ export default function App() {
             <NavLink to="/results"><span className="ico">📊</span> Results</NavLink>
           </nav>
           <div className="spacer" />
-          <div className={"status-pill " + (aws?.ok ? "" : "off")}>
-            <span className="dot" /> {aws == null ? "Checking AWS…" : aws.ok ? `AWS ${aws.account} · ${aws.identity}` : "AWS not reachable"}
+          <div className={"status-pill " + (aws?.ok ? "" : "off")} title={aws?.ok ? `Credentials: ${aws.credentials ?? ""}` : aws?.error ?? ""}>
+            <span className="dot" /> {aws == null ? "Checking AWS…" : aws.ok ? `AWS ${aws.account} · ${aws.identity}` : aws.expired ? "AWS session expired" : "AWS not reachable"}
           </div>
+          {aws && !aws.ok && aws.error && <div className="tiny" style={{ marginTop: 6, color: "var(--bad)" }}>{aws.error}</div>}
           <button className="btn sm" style={{ marginTop: 10 }} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? "☀️ Light mode" : "🌙 Dark mode"}
           </button>

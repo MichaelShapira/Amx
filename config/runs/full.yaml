@@ -34,11 +34,10 @@ run:
     - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m4-gemma-2-2b}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m5-flan-t5-xl}
     - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m5-flan-t5-xl}
-    - {target: t3-m8i-4xl-ov, precision: fp16, model: m3-roberta-large-mnli}
+    # FP16 on the CPU targets is gone: the EC2 hosts do not expose amx_fp16 (config/targets.yaml).
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m3-roberta-large-mnli}
     # Native PyTorch
     - {target: t4-m8i-4xl-torch, precision: bf16, model: m3-roberta-large-mnli}
-    - {target: t4-m8i-4xl-torch, precision: fp16, model: m3-roberta-large-mnli}
     - {target: t4-m8i-4xl-torch, precision: fp32, model: m3-roberta-large-mnli}
     - {target: t4-m8i-4xl-torch, precision: bf16, model: m5-flan-t5-xl}
   prompt_set: medium

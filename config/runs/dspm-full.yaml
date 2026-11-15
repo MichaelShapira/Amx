@@ -33,16 +33,13 @@ run:
     - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m4-gemma-2-2b}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m4-gemma-2-2b}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m5-flan-t5-xl}
-    - {target: t3-m8i-4xl-ov, precision: fp16, model: m3-roberta-large-mnli}
+    # FP16 on the CPU targets is gone: the EC2 hosts do not expose amx_fp16 (config/targets.yaml).
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m3-roberta-large-mnli}
-    - {target: t3-m8i-4xl-ov, precision: fp16, model: d2-roblox-pii-v2}
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: d2-roblox-pii-v2}
     - {target: t4-m8i-4xl-torch, precision: bf16, model: m5-flan-t5-xl}
     - {target: t4-m8i-4xl-torch, precision: bf16, model: m3-roberta-large-mnli}
-    - {target: t4-m8i-4xl-torch, precision: fp16, model: m3-roberta-large-mnli}
     - {target: t4-m8i-4xl-torch, precision: bf16, model: d1-privacy-filter}
     - {target: t4-m8i-4xl-torch, precision: bf16, model: d2-roblox-pii-v2}
-    - {target: t4-m8i-4xl-torch, precision: fp16, model: d2-roblox-pii-v2}
   prompt_set: dspm
   sampling: {temperature: 0.0, max_new_tokens: 4, ignore_eos: false, seed: 0}
   concurrency: [1, 4, 8, 16, 32, 64]

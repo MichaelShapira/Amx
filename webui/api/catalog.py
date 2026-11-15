@@ -61,7 +61,8 @@ PRECISIONS = {
     "bf16-ov": ("BF16 (OpenVINO)", "The same full-quality BF16 as the GPU side, served by OpenVINO on AMX: the "
                                    "like-for-like baseline on this option. Tick it next to INT8/INT4 to see what "
                                    "compression buys."),
-    "fp16": ("FP16 (half precision)", "Half precision; on CPUs it needs the AMX-FP16 feature."),
+    "fp16": ("FP16 (half precision)", "Half precision on the GPU. On CPUs it would need the AMX-FP16 feature, which the "
+                                      "AWS Intel instances do not expose, so it is greyed out for the CPU options."),
     "w8a8": ("INT8 compressed", "8-bit weights and activations: half the memory, faster on AMX, small quality loss."),
     "int8": ("INT8 compressed (OpenVINO)", "8-bit weights in OpenVINO's format: smaller and faster, small quality loss."),
     "int4": ("INT4 compressed (OpenVINO)", "4-bit weights: smallest and fastest, larger quality loss."),
@@ -115,6 +116,17 @@ PURCHASE = {
 }
 CONCURRENCY_HINTS = {1: "one user", 4: "a small team", 8: "a department", 16: "a busy service", 32: "a large service",
                      64: "peak load"}
+# Why a number format is greyed out for a CPU option: the CPU feature it needs (models.yaml
+# requires_cpu_flag) is not in the option's cpu_features (targets.yaml, measured on booted hosts).
+CPU_FLAG_NOTES = {
+    "amx_fp16": ("needs the AMX-FP16 CPU feature, which no current AWS Intel instance exposes: m8i, c8i and r8i report "
+                 "AMX-BF16 and AMX-INT8 but not AMX-FP16 (checked 2026-11-13 on m8i.4xlarge and c8i.4xlarge). No "
+                 "instance size changes this; keep BF16 or INT8 for the CPU side."),
+}
+
+
+def cpu_flag_note(flag: str) -> str:
+    return CPU_FLAG_NOTES.get(flag, f"needs the {flag} CPU feature, which this option's instances do not have.")
 
 
 def _targets():
@@ -135,7 +147,7 @@ def hardware_options() -> list[dict]:
         engines = list(dict.fromkeys(ENGINES[e][0] for e in t.engines))
         spec = pairing.spec(t.instance_type) or {}
         out.append({
-            "id": tid, "accelerator": t.accelerator,
+            "id": tid, "accelerator": t.accelerator, "cpu_features": sorted(t.cpu_features),
             "software": engines, "engines": list(t.engines),
             "software_help": " ".join(ENGINES[e][1] for e in t.engines),
             "default_instance_type": t.instance_type, "alternates": list(t.alternates),
@@ -158,7 +170,8 @@ def catalog() -> dict:
         for p, spec in m.precisions.items():
             if spec.enabled:
                 precs[p] = {"label": PRECISIONS.get(p, (p, ""))[0], "help": PRECISIONS.get(p, (p, ""))[1],
-                            "engines": list(spec.engines), "quality_only": bool(spec.quality_only)}
+                            "engines": list(spec.engines), "quality_only": bool(spec.quality_only),
+                            "requires_cpu_flag": spec.requires_cpu_flag}
         mods.append({"id": m.id, "name": name, "description": desc, "kind": MODEL_KIND.get(m.type, m.type),
                      "type": m.type, "params_b": round(m.params / 1e9, 2), "license": m.license,
                      "commercial_ok": m.license not in ("qwen-research",), "use_cases": list(m.suites),
@@ -175,6 +188,7 @@ def catalog() -> dict:
         "request_modes": {k: {"label": v[0], "help": v[1]} for k, v in REQUEST_MODES.items()},
         "purchase": {k: {"label": v[0], "help": v[1]} for k, v in PURCHASE.items()},
         "concurrency_hints": CONCURRENCY_HINTS,
+        "cpu_flag_notes": CPU_FLAG_NOTES,
         "precisions": {k: {"label": v[0], "help": v[1]} for k, v in PRECISIONS.items()},
         "engines": {k: {"label": v[0], "help": v[1]} for k, v in ENGINES.items()},
         "fair_ratio": list(pairing.FAIR_RATIO),

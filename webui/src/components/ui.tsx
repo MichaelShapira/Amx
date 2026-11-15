@@ -39,8 +39,10 @@ export function Tile({ selected, onClick, title, desc, kind, badge, disabled, ch
   );
 }
 
-export function Chips<T extends string | number>({ options, value, onChange, labels, disabled }: {
+export function Chips<T extends string | number>({ options, value, onChange, labels, disabled, blocked }: {
   options: T[]; value: T[]; onChange: (v: T[]) => void; labels?: (o: T) => string; disabled?: boolean;
+  /** Options shown greyed out and unselectable, each with the reason (tooltip and aria-label). */
+  blocked?: { option: T; reason: string }[];
 }) {
   const toggle = (o: T) => onChange(value.includes(o) ? value.filter((v) => v !== o) : [...value, o].sort((a, b) => Number(a) - Number(b)));
   return (
@@ -48,6 +50,12 @@ export function Chips<T extends string | number>({ options, value, onChange, lab
       {options.map((o) => (
         <button key={String(o)} type="button" className={"chip " + (value.includes(o) ? "on" : "")} onClick={() => toggle(o)} disabled={disabled}>
           {labels ? labels(o) : String(o)}
+        </button>
+      ))}
+      {(blocked ?? []).map((b) => (
+        <button key={"blocked-" + String(b.option)} type="button" className="chip blocked" disabled title={b.reason}
+                aria-label={`${labels ? labels(b.option) : String(b.option)}: not available. ${b.reason}`}>
+          {labels ? labels(b.option) : String(b.option)}
         </button>
       ))}
     </div>

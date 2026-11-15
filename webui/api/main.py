@@ -13,8 +13,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,12 +28,28 @@ from bench.config import RunConfig, load_models, load_targets, resolve_cells, ru
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import levels_for_cell  # noqa: E402
 from bench.pools import local_pool_sizes  # noqa: E402
+from webui.api import aws, compare, propose  # noqa: E402
 from webui.api import catalog as C  # noqa: E402
-from webui.api import compare, propose  # noqa: E402
 
 REGION, ACCOUNT = "us-east-1", "346399954218"
 app = FastAPI(title="GPU vs AMX CPU benchmark", docs_url=None, redoc_url=None)
 _CACHE: dict[str, Any] = {}
+
+
+@app.exception_handler(ClientError)
+@app.exception_handler(NoCredentialsError)
+@app.exception_handler(PartialCredentialsError)
+async def _aws_failure(request, exc):
+    """An AWS call failed inside a route. Until 2026-11-15 this surfaced as a bare 500 "Internal
+    Server Error" on every page once the operator's one-hour session had expired. Now: 401 with
+    the one sentence that says what to do when the session is gone (the UI shows it and keeps
+    polling /api/aws/status), 502 with the service's own message for anything else."""
+    if aws.is_expired(exc):
+        return JSONResponse(status_code=401, content={"detail": aws.expired_sentence(), "code": "aws_session_expired"})
+    err = getattr(exc, "response", {}).get("Error", {}) if isinstance(exc, ClientError) else {}
+    op = getattr(exc, "operation_name", None) or "an AWS call"
+    msg = f"{op} failed: {err.get('Code', type(exc).__name__)}: {str(err.get('Message') or exc)[:300]}"
+    return JSONResponse(status_code=502, content={"detail": msg, "code": "aws_error"})
 
 
 # ----------------------------------------------------------------------------- catalog and data
@@ -86,15 +103,24 @@ class Wizard(BaseModel):
     allow_unfair: bool = False
 
 
-def _available(mid: str, precision: str, hardware: str, cat: dict) -> bool:
-    """Does this number format of this model run on this hardware option's serving software?
-    (Qwen in BF16 runs on vLLM/PyTorch, not on the OpenVINO option; there it is INT8/INT4.)"""
+def _unavailable_reason(mid: str, precision: str, hardware: str, cat: dict) -> str | None:
+    """Why this number format of this model cannot run on this hardware option, or None when it
+    can. Two reasons exist: the option's serving software does not serve the model in that format
+    (Qwen in BF16 runs on vLLM/PyTorch, not on the OpenVINO option), or the format needs a CPU
+    feature the option's instances do not expose (FP16 needs AMX-FP16, which no AWS Intel
+    instance has). The wizard greys the format out from the same two facts, so a run that
+    reaches here with it is a stale copy, and it is dropped with this sentence."""
     m = next((x for x in cat["models"] if x["id"] == mid), None)
     h = next((x for x in cat["hardware"] if x["id"] == hardware), None)
     if not m or not h:
-        return True                     # let the config validator report unknown ids
+        return None                     # let the config validator report unknown ids
     spec = m["precisions"].get(precision)
-    return bool(spec) and not spec.get("quality_only") and any(e in h["engines"] for e in spec["engines"])
+    if not spec or spec.get("quality_only") or not any(e in h["engines"] for e in spec["engines"]):
+        return "is not available in {fmt} on this serving software; that measurement is left out."
+    flag = spec.get("requires_cpu_flag")
+    if flag and h["accelerator"] == "cpu" and flag not in (h.get("cpu_features") or []):
+        return "in {fmt} " + C.cpu_flag_note(flag) + " That measurement is left out."
+    return None
 
 
 def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
@@ -113,11 +139,12 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         before, dropped = len(cells), []
         for p in side.get("precisions") or [w.precision]:
             for mid in w.models:
-                if _available(mid, p, side["hardware"], cat):
+                why = _unavailable_reason(mid, p, side["hardware"], cat)
+                if why is None:
                     cells.append({"target": side["hardware"], "precision": p, "model": mid})
                 else:
-                    dropped.append(f"{hw.get(side['hardware'], {}).get('label', side['hardware'])}: {C.model_name(mid)} is not available "
-                                   f"in {C.PRECISIONS.get(p, (p,))[0]} on this serving software; that measurement is left out.")
+                    dropped.append(f"{hw.get(side['hardware'], {}).get('label', side['hardware'])}: {C.model_name(mid)} "
+                                   + why.format(fmt=C.PRECISIONS.get(p, (p,))[0]))
         if len(cells) > before and notes is not None:
             notes.extend(dropped)
         if len(cells) == before:
@@ -182,26 +209,6 @@ def _dedupe_cells(run: dict) -> dict:
     return {**run, "cells": out}
 
 
-FP16_FAMILIES = ("m8i", "c8i", "r8i")      # Granite Rapids: the only AMX generation with AMX-FP16
-
-
-def fp16_needs_granite_rapids(run: dict) -> list[str]:
-    """FP16 on a CPU option runs on AMX-FP16, which Sapphire Rapids (7i sizes) lacks; say so on the
-    Review step instead of letting the pre-checks refuse the run."""
-    cat = get_catalog()
-    hw = {h["id"]: h for h in cat["hardware"]}
-    out = []
-    for c in run.get("cells") or []:
-        if c["precision"] != "fp16" or hw.get(c["target"], {}).get("accelerator") != "cpu":
-            continue
-        itype = (run.get("instance_types") or {}).get(c["target"]) or hw.get(c["target"], {}).get("default_instance_type", "")
-        if itype.split(".")[0] not in FP16_FAMILIES:
-            out.append(f"{hw.get(c['target'], {}).get('label', c['target'])}: the FP16 (half precision) format needs AMX-FP16, "
-                       f"which the {itype} processor (Sapphire Rapids) does not have. Pick an m8i, c8i or r8i size for this option, "
-                       "or untick FP16 and keep BF16 / INT8.")
-    return out
-
-
 def refusal_sentences(errors: list[str]) -> list[str]:
     """The pre-check refusals (lambdas/preflight.py) for a reader who is not an engineer: every
     known message becomes what went wrong and what to do, with model and hardware names instead
@@ -211,6 +218,13 @@ def refusal_sentences(errors: list[str]) -> list[str]:
     out = []
     for e in errors or []:
         e = str(e)
+        # The config validator's form: "<model>/<precision> needs CPU flag <flag>, which <target> lacks".
+        m_flag = re.match(r"^([\w.-]+)/([\w.-]+) needs CPU flag (\w+), which ([\w.-]+) lacks$", e)
+        if m_flag:
+            mid, prec, flag, tid = m_flag.groups()
+            out.append(f"{C.model_name(mid)} on {hw.get(tid, tid)} in {C.PRECISIONS.get(prec, (prec,))[0]}: this format "
+                       f"{C.cpu_flag_note(flag)} Untick it for this option.")
+            continue
         m_cell = re.match(r"^([\w.-]+)\|([\w.-]+)\|([\w.-]+): (.*)$", e)
         if m_cell:
             mid, tid, prec, rest = m_cell.groups()
@@ -221,9 +235,8 @@ def refusal_sentences(errors: list[str]) -> list[str]:
                     out.append(f"{where}: refused by mistake. FP16 on a GPU never depended on a CPU feature; the pre-check "
                                "that said so was fixed on 2026-11-12. Start the run again.")
                 else:
-                    itype = rest.split(" has no")[0] if " has no" in rest else "this option's"
-                    out.append(f"{where}: the FP16 (half precision) format needs AMX-FP16, which the {itype} processor does not "
-                               "have. Pick an m8i, c8i or r8i size for this option, or untick FP16 and keep BF16 / INT8.")
+                    out.append(f"{where}: the FP16 (half precision) format {C.cpu_flag_note('amx_fp16')} Since 2026-11-15 the "
+                               "wizard greys FP16 out for the CPU options, so this cannot happen to a new run.")
             elif "none of" in rest and "available on" in rest:
                 out.append(f"{where}: this serving software cannot run the model in that number format. Untick the format "
                            "for this option.")
@@ -288,7 +301,6 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one detection scenario.")
     if not run["cells"] and w.models and (w.gpu or w.cpus):
         problems.append("No hardware option can serve the chosen model in the chosen number formats.")
-    problems += fp16_needs_granite_rapids(run)
     failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
               "grade": "quick" if run["mode"] == "smoke" else "full", "request_mode": w.request_mode, "yaml": "", "run": run}
     if problems:
@@ -463,9 +475,7 @@ def _capacity_notes() -> dict[str, int]:
         return _CACHE["cap"]
     notes: dict[str, int] = {}
     try:
-        import boto3
-
-        s3 = boto3.client("s3", region_name=REGION)
+        s3 = aws.client("s3")
         bucket = _outputs()["BucketName"]
         keys = []
         for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="runs/"):
@@ -488,9 +498,8 @@ def _capacity_notes() -> dict[str, int]:
 def _outputs() -> dict:
     if "outputs" in _CACHE and _CACHE.get("outputs_at", 0) > time.time() - 300:
         return _CACHE["outputs"]
-    import boto3
 
-    stk = boto3.client("cloudformation", region_name=REGION).describe_stacks(StackName="AmxBench-Core")["Stacks"][0]
+    stk = aws.client("cloudformation").describe_stacks(StackName="AmxBench-Core")["Stacks"][0]
     out = {o["OutputKey"]: o["OutputValue"] for o in stk.get("Outputs", [])}
     _CACHE["outputs"], _CACHE["outputs_at"] = out, time.time()
     return out
@@ -498,16 +507,20 @@ def _outputs() -> dict:
 
 @app.get("/api/aws/status")
 def aws_status():
+    """Never raises: the sidebar pill polls this, and when the session is gone the answer is the
+    same sentence the failing pages show, with `expired: true` so the UI can say "AWS session
+    expired" instead of "AWS not reachable"."""
     try:
-        import boto3
-
-        ident = boto3.client("sts", region_name=REGION).get_caller_identity()
+        ident = aws.client("sts").get_caller_identity()
         out = _outputs()
         dep = deployed_backend()
         return {"ok": True, "account": ident["Account"], "identity": ident["Arn"].split("/")[-1], "bucket": out.get("BucketName"),
+                "credentials": aws.source(),
                 "backend": {"commit": dep["commit"], "local_commit": dep["local_commit"], "behind": dep["behind"], "missing": dep["missing"]}}
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)[:300]}
+        if aws.is_expired(e):
+            return {"ok": False, "expired": True, "error": aws.expired_sentence(), "credentials": aws.source()}
+        return {"ok": False, "expired": False, "error": str(e)[:300], "credentials": aws.source()}
 
 
 # ----------------------------------------------------------------------------- deployed backend
@@ -538,9 +551,7 @@ def deployed_backend() -> dict:
         return _CACHE["deployed"]
     commit, error = None, None
     try:
-        import boto3
-
-        env = boto3.client("lambda", region_name=REGION).get_function_configuration(FunctionName=PREFLIGHT_FUNCTION)
+        env = aws.client("lambda").get_function_configuration(FunctionName=PREFLIGHT_FUNCTION)
         commit = (env.get("Environment") or {}).get("Variables", {}).get("HARNESS_COMMIT")
     except Exception as e:  # noqa: BLE001 - offline or no permission
         error = str(e)[:160]
@@ -577,14 +588,12 @@ def preview_slug(name: str = "", use_case: str = "standard"):
 
 @app.post("/api/runs")
 def start_run(w: Wizard):
-    import boto3
-
     plan = post_plan(w)
     if not plan["ok"]:
         raise HTTPException(400, "; ".join(plan["problems"]))
     out = _outputs()
     run_id = f"{plan['run']['name']}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
-    boto3.client("s3", region_name=REGION).put_object(Bucket=out["BucketName"], Key=f"runs/{run_id}/run.yaml",
+    aws.client("s3").put_object(Bucket=out["BucketName"], Key=f"runs/{run_id}/run.yaml",
                                                       Body=plan["yaml"].encode())
     # The row first, so the run is on the list the moment it starts; preflight overwrites the status.
     _table().put_item(Item={"pk": f"RUN#{run_id}", "sk": "META", "status": "planned", "name": w.name.strip() or plan["run"]["name"],
@@ -592,15 +601,13 @@ def start_run(w: Wizard):
                             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                             "purchase": plan["run"]["purchase"]["type"], "smoke": plan["grade"] == "quick",
                             "n_cells": len(plan["series"]), "model": (w.models or [None])[0]})
-    boto3.client("stepfunctions", region_name=REGION).start_execution(
+    aws.client("stepfunctions").start_execution(
         stateMachineArn=out["RunStateMachineArn"], name=run_id, input=json.dumps({"run_id": run_id}))
     return {"run_id": run_id}
 
 
 def _table():
-    import boto3
-
-    return boto3.resource("dynamodb", region_name=REGION).Table("amx-gpu-bench")
+    return aws.table()
 
 
 RUN_STATUS = {"running": "Running", "complete": "Finished", "refused": "Refused by the pre-checks", "planned": "Starting",
@@ -614,10 +621,8 @@ INSTANCE_STATE = {"pending": "Starting", "running": "Running", "stopping": "Stop
 
 
 def _s3_json(key: str):
-    import boto3
-
     try:
-        return json.loads(boto3.client("s3", region_name=REGION).get_object(Bucket=_outputs()["BucketName"], Key=key)["Body"].read())
+        return json.loads(aws.client("s3").get_object(Bucket=_outputs()["BucketName"], Key=key)["Body"].read())
     except Exception:  # noqa: BLE001 - absent until the first event
         return None
 
@@ -625,11 +630,10 @@ def _s3_json(key: str):
 def _instance_states(ids: list[str]) -> dict[str, dict]:
     if not ids:
         return {}
-    import boto3
 
     out = {}
     try:
-        r = boto3.client("ec2", region_name=REGION).describe_instances(InstanceIds=ids)
+        r = aws.client("ec2").describe_instances(InstanceIds=ids)
         for res in r["Reservations"]:
             for i in res["Instances"]:
                 out[i["InstanceId"]] = {"state": i["State"]["Name"], "type": i["InstanceType"],
@@ -872,9 +876,8 @@ def list_runs():
 def _reconcile(items: list[dict]) -> None:
     """A run whose Step Functions execution ended without the aggregation step (stopped, failed,
     timed out) keeps its last status in the table; ask Step Functions and record what happened."""
-    import boto3
 
-    sfn = boto3.client("stepfunctions", region_name=REGION)
+    sfn = aws.client("stepfunctions")
     base = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
     for i in items:
         if i.get("status") not in ("running", "planned"):
@@ -916,12 +919,10 @@ def _execution_row(ex: dict, sfn) -> dict:
 
 
 def _run_yaml_exists(run_id: str) -> bool:
-    import boto3
-
     if not RUN_ID.match(run_id):
         return False
     try:
-        boto3.client("s3", region_name=REGION).head_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")
+        aws.client("s3").head_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")
         return True
     except Exception:  # noqa: BLE001 - 404 or offline
         return False
@@ -932,11 +933,10 @@ def _orphan_executions(known: set[str]) -> list[dict]:
     example on a config field the deployed Lambda did not know) left no trace in the UI at all."""
     if _CACHE.get("orphans_at", 0) > time.time() - 30 and _CACHE.get("orphans_known") == known:
         return _CACHE["orphans"]
-    import boto3
 
     out: list[dict] = []
     try:
-        sfn = boto3.client("stepfunctions", region_name=REGION)
+        sfn = aws.client("stepfunctions")
         exs = sfn.list_executions(stateMachineArn=_outputs()["RunStateMachineArn"], maxResults=60)["executions"]
         # A run the operator deleted also has no row but has no run.yaml either; only runs whose
         # definition is still in the bucket are shown.
@@ -992,11 +992,10 @@ def get_run(run_id: str):
     items = [plain(x) for x in _table().query(KeyConditionExpression=Key("pk").eq(f"RUN#{run_id}"))["Items"]]
     if not items:
         # Known only to Step Functions? Then show what it says instead of 'unknown run'.
-        import boto3
 
         if RUN_ID.match(run_id) and _run_yaml_exists(run_id):
             try:
-                sfn = boto3.client("stepfunctions", region_name=REGION)
+                sfn = aws.client("stepfunctions")
                 arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:") + f":{run_id}"
                 d = sfn.describe_execution(executionArn=arn)
                 items = [_execution_row({**d, "executionArn": arn}, sfn)]
@@ -1077,7 +1076,6 @@ def delete_run_data(run_id: str) -> dict:
     """Everything the run left behind: every S3 object under runs/<id>/ (plan, raw records,
     quality outputs, capacity and target logs, the report) and every row of RUN#<id> in the table.
     Instances, the shared model cache (models/) and other runs are untouched. Irreversible."""
-    import boto3
 
     if not RUN_ID.match(run_id):
         raise HTTPException(400, "not a run id")
@@ -1091,18 +1089,17 @@ def delete_run_data(run_id: str) -> dict:
         raise HTTPException(409, "the run is still going: stop it first, then delete it")
     if not items:
         # Known only to Step Functions (failed in preflight): make sure it is not still running.
-        import boto3
 
         try:
             arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:") + f":{run_id}"
-            if boto3.client("stepfunctions", region_name=REGION).describe_execution(executionArn=arn)["status"] == "RUNNING":
+            if aws.client("stepfunctions").describe_execution(executionArn=arn)["status"] == "RUNNING":
                 raise HTTPException(409, "the run is still going: stop it first, then delete it")
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 - no execution: nothing to protect
             _CACHE["delete_note"] = str(e)[:120]
     terminated = terminate_run_instances(run_id)      # a leftover instance of a finished run goes with it
-    s3 = boto3.client("s3", region_name=REGION)
+    s3 = aws.client("s3")
     bucket = _outputs()["BucketName"]
     keys: list[str] = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"runs/{run_id}/"):
@@ -1128,11 +1125,10 @@ def terminate_run_instances(run_id: str) -> list[str]:
     a run is stopped from the UI (the state machine's own end-of-run step does not execute for an
     aborted execution; without this the reaper would only catch them after 30 idle minutes) and
     when a run is deleted."""
-    import boto3
 
     if not RUN_ID.match(run_id):
         return []
-    ec2 = boto3.client("ec2", region_name=REGION)
+    ec2 = aws.client("ec2")
     r = ec2.describe_instances(Filters=[{"Name": "tag:bench:managed", "Values": ["true"]},
                                         {"Name": "tag:bench:run", "Values": [run_id]},
                                         {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
@@ -1196,10 +1192,9 @@ def run_as_wizard(run_id: str):
     if not RUN_ID.match(run_id):
         raise HTTPException(400, "not a run id")
     text = None
-    import boto3
 
     try:
-        text = boto3.client("s3", region_name=REGION).get_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")["Body"].read().decode()
+        text = aws.client("s3").get_object(Bucket=_outputs()["BucketName"], Key=f"runs/{run_id}/run.yaml")["Body"].read().decode()
     except Exception:  # noqa: BLE001 - older run without run.yaml: fall back to the resolved definition
         text = None
     run = (yaml.safe_load(text) or {}).get("run") if text else (_s3_json(f"runs/{run_id}/resolved.json") or {}).get("run")
@@ -1211,13 +1206,11 @@ def run_as_wizard(run_id: str):
 
 @app.post("/api/runs/{run_id}/stop")
 def stop_run(run_id: str):
-    import boto3
-
     if not RUN_ID.match(run_id):
         raise HTTPException(400, "not a run id")
     arn = _outputs()["RunStateMachineArn"].replace(":stateMachine:", ":execution:")
     try:
-        boto3.client("stepfunctions", region_name=REGION).stop_execution(executionArn=f"{arn}:{run_id}", cause="stopped from the UI")
+        aws.client("stepfunctions").stop_execution(executionArn=f"{arn}:{run_id}", cause="stopped from the UI")
     except Exception as e:  # noqa: BLE001 - already ended: still make sure nothing is left running
         _CACHE["stop_note"] = str(e)[:120]
     terminated = terminate_run_instances(run_id)
@@ -1231,10 +1224,9 @@ def _summary(run_id: str) -> dict:
     key = f"summary:{run_id}"
     if key in _CACHE:
         return _CACHE[key]
-    import boto3
 
     try:
-        body = boto3.client("s3", region_name=REGION).get_object(Bucket=_outputs()["BucketName"],
+        body = aws.client("s3").get_object(Bucket=_outputs()["BucketName"],
                                                                  Key=f"runs/{run_id}/report/summary.json")["Body"].read()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(404, f"no report for {run_id}: {str(e)[:120]}") from e
@@ -1284,12 +1276,10 @@ class SummaryIn(CompareIn):
 
 @app.get("/api/executive-summary/model")
 def exec_model():
-    import boto3
-
     from webui.api import exec_summary
 
     try:
-        return exec_summary.newest_opus(boto3.client("bedrock", region_name=REGION))
+        return exec_summary.newest_opus(aws.client("bedrock"))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(503, f"Bedrock is not reachable: {str(e)[:200]}") from e
 

@@ -15,7 +15,7 @@ export default function Runs() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const load = () => api.runs().then(setRuns).catch((e) => setErr(e.message));
+  const load = () => api.runs().then((r) => { setRuns(r); setErr(null); }).catch((e) => setErr(e.message));
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
   const copyToNew = async (runId: string) => {
     setErr(null);
