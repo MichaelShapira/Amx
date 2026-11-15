@@ -519,3 +519,27 @@ def test_wizard_yaml_round_trips_through_the_cli_schema():
     rc = RunConfig.model_validate(yaml.safe_load(pl["yaml"])["run"])
     assert rc.dspm.sla_preset == "bulk" and rc.dspm.test_items == 1000 and rc.sla.p99_e2e_ms == 30000
     assert json.dumps(pl["run"], sort_keys=True)  # serializable
+
+
+def test_gemma_failures_of_2026_11_15_show_their_cause():
+    """Run gemma-20261115T102422Z, as stored. The OpenVINO cells showed only the CalledProcessError
+    wrapper; the stored stderr has the converter's ValueError, which is what the reader needs. The
+    W8A8 cell kept only the last 50 lines of the vLLM log, which name no cause: say so instead of
+    pretending the wrapper is the reason."""
+    from webui.api.main import cell_error_text
+
+    cells = json.loads((Path(__file__).parent / "fixtures/gemma-20261115-cells.json").read_text())
+    ov = cells["m4-gemma-2-2b|t3-m8i-4xl-ov|int8-ov"]
+    text = cell_error_text(ov["error"], ov["stderr"])
+    assert text.startswith("Converting the model to OpenVINO's format failed: the converter release refused this model")
+    assert "Cause: ValueError: The current version of Transformers does not allow for the export of the model." in text
+    assert "Maximum required is 5.0, got: 5.5.4" in text and "start this benchmark again" in text
+    assert "CalledProcessError" not in text and "returned non-zero exit status" not in text
+    w8 = cells["m4-gemma-2-2b|t2-m8i-4xl|w8a8"]
+    text = cell_error_text(w8["error"], w8["stderr"])
+    assert text.startswith("The serving software stopped while loading the model; the run kept only the last lines")
+    assert "runs since 2026-11-15 keep the whole log" in text
+    # With the root cause present (what a run since 2026-11-15 stores), it is named.
+    later = w8["stderr"] + "\n--- exception lines from the container log\n(EngineCore_DP0 pid=212) NotImplementedError: no kernel"
+    assert cell_error_text(w8["error"], later) == ("The serving software stopped while loading the model. "
+                                                   "Cause: NotImplementedError: no kernel")

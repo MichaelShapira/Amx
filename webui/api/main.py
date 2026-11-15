@@ -775,21 +775,37 @@ def _unwrap_error(raw: str) -> str:
     return s
 
 
-def cell_error_text(raw: str) -> str:
-    """A cell's failure for the reader: the known signatures get a sentence, then the raw tail."""
+def cell_error_text(raw: str, stderr: str = "") -> str:
+    """A cell's failure for the reader: the known signatures get a sentence, then the root cause
+    (the last exception line that is not a wrapper, from the stored stderr when the short error
+    lost it), then the raw tail."""
+    from lambdas.target_control import root_cause
+
     s = _unwrap_error(raw)
     if not s:
         return ""
     tail = s.split("failed (Failed):", 1)[1].strip() if "failed (Failed):" in s else s
+    cause = root_cause(stderr) or root_cause(s)
     if "No such container" in s and "exited before becoming healthy" in s:
         return ("Another run took over this instance while the model was loading (before 2026-11-13 runs shared one "
                 "instance per hardware option; every run now gets its own). Start this benchmark again. Details: " + tail[-200:])
-    if "export did not report a hash" in s or "Failed to export llm model" in s or "optimum-cli export" in s:
-        why = ("the export tool was not told the model's task, which it cannot infer for a local copy of the model (fixed "
-               "2026-11-12; start this benchmark again)" if "Failed to export llm model" in s else "see the details")
-        return f"Converting the model to OpenVINO's format failed: {why}. Details: {tail[-240:]}"
+    if "export did not report a hash" in s or "Failed to export llm model" in s or "optimum-cli export" in s \
+            or "OpenVINO export failed" in s:
+        if cause and "does not allow for the export of the model" in cause:
+            why = ("the converter release refused this model because its version table stops at an older Transformers "
+                   "library than the one pinned (Gemma 2: cap 5.0, pinned 5.5.4). Upstream lifted the cap; fixed here "
+                   "2026-11-15, start this benchmark again")
+        elif "Failed to export llm model" in s:
+            why = ("the export tool was not told the model's task, which it cannot infer for a local copy of the model (fixed "
+                   "2026-11-12; start this benchmark again)")
+        else:
+            why = "see the details"
+        return f"Converting the model to OpenVINO's format failed: {why}. " + (f"Cause: {cause}" if cause else f"Details: {tail[-240:]}")
     if "exited before becoming healthy" in s:
-        return "The serving software stopped while loading the model. Details: " + tail[-300:]
+        if cause:
+            return f"The serving software stopped while loading the model. Cause: {cause}"
+        return ("The serving software stopped while loading the model; the run kept only the last lines of its log, which do "
+                "not name the cause (runs since 2026-11-15 keep the whole log). Details: " + tail[-240:])
     if "bring-up of" in s and not tail:
         return ("The instance was taken away while the model was loading, and the run gave up after its replacements were "
                 "taken away too (before 2026-11-13 runs shared one instance per hardware option; every run now gets its own). "
@@ -1018,7 +1034,7 @@ def get_run(run_id: str):
                           "precision": C.PRECISIONS.get(prec, (prec,))[0], "engine": C.ENGINES.get(i.get("engine"), (i.get("engine"),))[0],
                           "status": i.get("status"), "status_label": CELL_STATUS.get(i.get("status"), i.get("status")),
                           "measurements": i.get("n_levels"), "instance_id": i.get("instance_id"),
-                          "error": cell_error_text(i.get("error") or i.get("reason") or i.get("stderr") or "")})
+                          "error": cell_error_text(i.get("error") or i.get("reason") or i.get("stderr") or "", i.get("stderr") or "")})
         elif i["sk"].startswith("LEVEL#"):
             key = i["sk"][6:]
             ck = i.get("cell_key") or "__".join(key.split("__")[:3])

@@ -566,3 +566,32 @@ def test_bringup_error_keeps_the_line_that_names_the_failure():
     assert stored == msg and stored.endswith("exit status 1")
     # Nothing but noise: fall back to the raw end so the reader still sees something.
     assert stderr_tail("a: Pulling fs layer\nb: Pull complete\n") == "a: Pulling fs layer\nb: Pull complete"
+
+
+def test_bringup_error_leads_with_the_root_cause_not_the_wrapper():
+    """2026-11-15, run gemma-20261115T102422Z: every OpenVINO cell's record ended in
+    "subprocess.CalledProcessError: Command '[optimum-cli ...]' returned non-zero exit status 1",
+    and the line that said why (Transformers 5.5.4 above the converter's Gemma cap of 5.0) was
+    cut off. The message now leads with the last exception that is not a wrapper."""
+    from pathlib import Path
+
+    from lambdas.target_control import root_cause, stderr_tail
+
+    cells = json.loads((Path(__file__).parent / "fixtures/gemma-20261115-cells.json").read_text())
+    ov = cells["m4-gemma-2-2b|t3-m8i-4xl-ov|int8-ov"]["stderr"]
+    cause = root_cause(ov)
+    assert cause == ("ValueError: The current version of Transformers does not allow for the export of the model. "
+                     "Maximum required is 5.0, got: 5.5.4")
+    tail = stderr_tail(ov)
+    assert tail.startswith(cause) and len(tail) <= 400 and tail.endswith("failed to run commands: exit status 1")
+    # vLLM: the engine-core process's exception wins over the final wrapper lines.
+    vllm = ("(EngineCore_DP0 pid=212) ERROR 11-15 10:59:29 [core.py:812] EngineCore failed to start.\n"
+            "(EngineCore_DP0 pid=212) Traceback (most recent call last):\n"
+            "(EngineCore_DP0 pid=212) torch._dynamo.exc.Unsupported: graph break\n"
+            "(EngineCore_DP0 pid=212) NotImplementedError: CPU int8 kernel does not support this layer\n"
+            "RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}\n"
+            "2026-11-15T10:59:31Z ERROR: container exited before becoming healthy\nfailed to run commands: exit status 1\n")
+    assert root_cause(vllm) == "NotImplementedError: CPU int8 kernel does not support this layer"
+    # No exception line: no invented cause, and the old tail behaviour is unchanged.
+    assert root_cause("stage: downloading\nERROR: not healthy after 2400s\n") is None
+    assert stderr_tail("a\nb\nfailed to run commands: exit status 1") == "a\nb\nfailed to run commands: exit status 1"

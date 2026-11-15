@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 
 OVMS_EXPORT = Path(__file__).with_name("ovms") / "export_model.py"
+# optimum-cli with the Transformers caps upstream has lifted (optimum_export.LIFTED); same arguments.
+OPTIMUM = [sys.executable, str(Path(__file__).with_name("optimum_export.py"))]
 OVMS_COMMIT = "6c25e51e064b967b371decb305483d6fb76032b1"
 TOOLS = ("optimum-intel", "optimum", "openvino", "openvino-tokenizers", "nncf", "transformers", "torch")
 
@@ -68,7 +70,7 @@ def commands(model_type: str, exp: dict, source: str, dest: Path) -> list[list[s
     if model_type == "decoder":
         task = exp.get("task") or "text-generation-with-past"
         model_dir = dest / "model"
-        optimum = ["optimum-cli", "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
+        optimum = [*OPTIMUM, "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
                    *_quant_flags(exp), "--trust-remote-code", str(model_dir)]
         # export_model.py sees openvino_model.xml in --source_model, skips conversion and only writes
         # <dest>/model/graph.pbtxt (+ a servable config next to it; its default config.json would land
@@ -80,7 +82,7 @@ def commands(model_type: str, exp: dict, source: str, dest: Path) -> list[list[s
         return [optimum, graph]
     task = exp.get("task") or ("text2text-generation-with-past" if model_type == "encoder-decoder"
                                else "text-classification")
-    return [["optimum-cli", "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
+    return [[*OPTIMUM, "export", "openvino", "--model", source, "--task", task, "--weight-format", wf,
              *_quant_flags(exp), str(dest / "model")]]
 
 
@@ -109,8 +111,13 @@ def run_ir(a: argparse.Namespace) -> int:
     tv = versions()
     h = export_hash({"model_type": a.model_type, **exp}, src_rev, tv)
     dest = Path(a.out) / h
+    # The lifted caps are recorded, not hashed: they change nothing for a model that was not refused,
+    # so IRs already cached for other architectures stay valid.
+    sys.path.insert(0, str(Path(__file__).parent))
+    from optimum_export import LIFTED
     record = {"export_hash": h, "model_type": a.model_type, "export": exp, "source": a.source,
-              "source_revision": src_rev, "tools": tv}
+              "source_revision": src_rev, "tools": tv,
+              "lifted_transformers_caps": {k: {"config": v[0], "upstream_commit": v[1]} for k, v in LIFTED.items()}}
     if (dest / "export.json").exists() and not a.force:
         print(json.dumps({**record, "reused": True}))
         return 0

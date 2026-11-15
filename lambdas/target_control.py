@@ -453,16 +453,42 @@ _NOISE = re.compile(r"TracerWarning|warnings\.warn|it/s\]|Pulling fs layer|Downl
                     r"Verifying Checksum|^\s*[0-9a-f]{12}: Waiting|^\s*\+ |Downloaded newer image|^Digest: sha256")
 
 
+# An exception line ("ValueError: ...", "(EngineCore_DP0 pid=7) RuntimeError: ...") and the
+# wrappers that only say something below failed.
+_CAUSE = re.compile(r"(?:^|[\s)\]])((?:[a-z_]\w*\.)*[A-Z]\w*(?:Error|Exception)): (\S.*)$")
+_WRAPPERS = ("CalledProcessError", "Engine core initialization failed", "container exited before becoming healthy")
+
+
+def root_cause(text: str) -> str | None:
+    """The last exception line in a failed command's output that is not a wrapper, e.g.
+    "ValueError: The current version of Transformers does not allow for the export of the model.
+    Maximum required is 5.0, got: 5.5.4" under a subprocess.CalledProcessError."""
+    found = None
+    for line in (text or "").replace("\r", "\n").splitlines():
+        m = _CAUSE.search(line.rstrip())
+        if m and not any(w in line for w in _WRAPPERS):
+            found = f"{m.group(1)}: {m.group(2)}"
+    return found
+
+
 def stderr_tail(text: str, limit: int = 400) -> str:
-    """The end of a failed command's stderr for a human: the last lines that are not tool chatter
-    (progress bars, tracer warnings, docker pull layers, echoed commands), cut from the FRONT so the
-    final line, which names the failure, is always kept. The first version kept a raw 500-char
-    window that a later [:500] cut mid-sentence: the bf16-ov export failure of 2026-11-13 reached
-    the UI as "graph.pbtxt has no" and the real reason had to be dug out of SSM."""
+    """A failed command's stderr for a human: the root cause first when there is one (the last
+    exception line that is not a wrapper), then the last lines that are not tool chatter (progress
+    bars, tracer warnings, docker pull layers, echoed commands), cut from the FRONT so the final
+    line is kept. The first version kept a raw 500-char window that a later [:500] cut mid-
+    sentence ("graph.pbtxt has no", 2026-11-13); the second kept only the last lines, which for a
+    failed export are the CalledProcessError wrapper and for vLLM the "Engine core initialization
+    failed" wrapper, so the cause never reached the run record (2026-11-15)."""
     lines = [ln.rstrip() for ln in text.replace("\r", "\n").splitlines()]
     kept = [ln for ln in lines if ln.strip() and not _NOISE.search(ln)]
-    out = "\n".join(kept[-8:]) or "\n".join(ln for ln in lines if ln.strip())[-limit:]
-    return out if len(out) <= limit else "…" + out[-(limit - 1):]
+    tail = "\n".join(kept[-6:]) or "\n".join(ln for ln in lines if ln.strip())[-limit:]
+    cause = root_cause(text)
+    if cause and cause not in tail:
+        cause = cause if len(cause) <= limit // 2 else cause[: limit // 2 - 1] + "…"
+        room = limit - len(cause) - 3
+        tail = tail if len(tail) <= room else "…" + tail[-(room - 1):]
+        return f"{cause}\n…\n{tail}"
+    return tail if len(tail) <= limit else "…" + tail[-(limit - 1):]
 
 
 def error_message(err: Any) -> str:

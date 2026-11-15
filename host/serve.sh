@@ -61,6 +61,7 @@ export_ov() {
   result=$(docker run --rm --network none -v "$MODELS_ROOT:/models" "$image" ir \
     --model-type "$mtype" --source "/models/hf/$repo/$rev" --source-revision "$rev" \
     --out "/models/ov/$repo/$rev/$prec" --export-json "$exp" | tail -n 1)
+  [[ -n "$result" ]] || die "OpenVINO export failed; the converter's error is above"
   hash=$(jq -r .export_hash <<<"$result")
   [[ "$hash" =~ ^[0-9a-f]{16}$ ]] || die "export did not report a hash: $result"
   if [[ "$(jq -r .reused <<<"$result")" != "true" ]]; then
@@ -69,13 +70,32 @@ export_ov() {
   echo "$out/$hash/model"
 }
 
+# container_failure SPEC: the engine container exited before becoming healthy. Keep its whole log
+# in the run's bringup/ prefix and repeat the exception lines last on stderr. vLLM prints the real
+# cause in the engine-core process traceback, far above the final "Engine core initialization
+# failed" lines, so the last 50 lines alone never named it (run gemma-20261115T102422Z, W8A8).
+container_failure() {
+  local spec=$1 log
+  log="$STATE_DIR/container-$(jq -r .cell_key "$spec").log"
+  docker logs "$CONTAINER" >"$log" 2>&1 || true
+  docker logs --tail 40 "$CONTAINER" >&2 || true
+  {
+    echo "--- exception lines from the container log (whole log: bringup/$(jq -r .cell_key "$spec").container.log.gz)"
+    grep -E '(^|[[:space:])])([a-z_][a-z0-9_]*\.)*[A-Z][A-Za-z0-9_]*(Error|Exception): ' "$log" \
+      | grep -v 'Engine core initialization failed' | tail -n 6 || true
+  } >&2
+  gzip -f "$log"
+  s3_put "$log.gz" "s3://$(jq -r .bucket "$spec")/runs/$(jq -r .run_id "$spec")/bringup/$(jq -r .cell_key "$spec").container.log.gz" \
+    || log "could not upload the container log"
+  die "container exited before becoming healthy"
+}
+
 wait_health() {
-  local base=$1 path=$2 timeout=$3 t0
+  local base=$1 path=$2 timeout=$3 spec=$4 t0
   t0=$(date +%s)
   until curl -sf -o /dev/null "$base$path"; do
     if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-      docker logs --tail 50 "$CONTAINER" >&2 || true
-      die "container exited before becoming healthy"
+      container_failure "$spec"
     fi
     (( $(date +%s) - t0 < timeout )) || die "not healthy after ${timeout}s"
     sleep 2
@@ -146,7 +166,7 @@ start() {
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry run: skipping health checks"; return 0
   fi
-  wait_health "$base" "$(jq -r .health.path "$spec")" "$(jq -r .health.timeout_s "$spec")"
+  wait_health "$base" "$(jq -r .health.path "$spec")" "$(jq -r .health.timeout_s "$spec")" "$spec"
   local load_to_healthy_s; load_to_healthy_s=$(elapsed "$t")
   t=$(now); api_path=$(first_request "$base" "$spec"); local first_request_s; first_request_s=$(elapsed "$t")
 
