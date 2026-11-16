@@ -17,6 +17,7 @@
 !webui/package.json
 !webui/package-lock.json
 !webui/requirements.lock
+!webui/Dockerfile
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
