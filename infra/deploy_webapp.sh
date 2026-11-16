@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the web app to AWS (stack AmxBench-WebApp: App Runner + Cognito + WAF) and make sure its
+# Deploy the web app to AWS (stack AmxBench-WebApp: ECS Fargate + CloudFront + Cognito + WAF) and make sure its
 # one user exists with a permanent password and the operator role.
 #
 #   infra/deploy_webapp.sh --email you@example.com                 # password prompted (hidden)

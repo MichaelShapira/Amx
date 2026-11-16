@@ -169,32 +169,44 @@ def test_webapp_client_is_public_code_grant_only_bound_to_the_service_url(templa
     assert cl["PreventUserExistenceErrors"] == "ENABLED" and cl["EnableTokenRevocation"] is True
     assert cl["SupportedIdentityProviders"] == ["COGNITO"]
     cb = json.dumps(cl["CallbackURLs"])
-    assert "ServiceUrl" in cb and cb.count('"/callback"') == 1 and "localhost" not in cb and "http://" not in cb
+    assert "DomainName" in cb and cb.count('"/callback"') == 1 and "localhost" not in cb and "http://" not in cb
     units = cl["TokenValidityUnits"]
     mins = {"minutes": 1, "hours": 60, "days": 1440}
     assert cl["AccessTokenValidity"] * mins[units["AccessToken"]] == 60           # one hour
     assert cl["RefreshTokenValidity"] * mins[units["RefreshToken"]] == 12 * 60    # half a day, then sign in again
 
 
-def test_webapp_service_is_gated_by_the_app_not_the_network(templates):
-    """Public ingress on purpose; the health path is the only route that answers without a token,
-    the container gets the pool (never a credential), and one always-on instance."""
+def test_webapp_is_private_behind_cloudfront_and_gated_by_the_app(templates):
+    """The task has no public address and takes its port only from the load balancer; the load
+    balancer is internal and takes port 80 only from CloudFront's origin-facing addresses;
+    CloudFront is the one public entry (HTTPS, WAF). The container gets the pool, never a credential."""
     res = _web(templates)
-    svc = next(r for r in res.values() if r["Type"] == "AWS::AppRunner::Service")["Properties"]
-    assert svc["NetworkConfiguration"]["IngressConfiguration"]["IsPubliclyAccessible"] is True
-    assert svc["HealthCheckConfiguration"]["Path"] == "/api/health"
-    env = {e["Name"]: e["Value"] for e in svc["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"]["RuntimeEnvironmentVariables"]}
-    assert {"AMXBENCH_COGNITO_USER_POOL_ID", "AMXBENCH_COGNITO_DOMAIN", "AMXBENCH_COGNITO_CLIENT_ID_PARAM",
-            "AMXBENCH_OUTPUTS", "AMXBENCH_BIND"} <= set(env)
-    assert env["AMXBENCH_CREDS_FILE"] == "" and not any(k.startswith("AWS_") for k in env)
-    assert "InstanceRoleArn" in svc["InstanceConfiguration"]
-    asc = next(r for r in res.values() if r["Type"] == "AWS::AppRunner::AutoScalingConfiguration")["Properties"]
-    assert asc["MinSize"] == 1 and asc["MaxSize"] == 1
-    waf = next(r for r in res.values() if r["Type"] == "AWS::WAFv2::WebACLAssociation")["Properties"]
-    assert "ServiceArn" in json.dumps(waf["ResourceArn"])
+    svc = next(r for r in res.values() if r["Type"] == "AWS::ECS::Service")["Properties"]
+    assert svc["NetworkConfiguration"]["AwsvpcConfiguration"]["AssignPublicIp"] == "DISABLED"
+    assert svc["DesiredCount"] == 1 and svc["DeploymentConfiguration"]["DeploymentCircuitBreaker"] == {"Enable": True, "Rollback": True}
+    lb = next(r for r in res.values() if r["Type"] == "AWS::ElasticLoadBalancingV2::LoadBalancer")["Properties"]
+    assert lb["Scheme"] == "internal" and lb["Type"] == "network" and lb["SecurityGroups"]
+    ingress = [r["Properties"] for r in res.values() if r["Type"] == "AWS::EC2::SecurityGroupIngress"]
+    assert sorted((i["FromPort"], "prefix" if "SourcePrefixListId" in i else "sg") for i in ingress) == [(80, "prefix"), (8080, "sg")]
+    for r in res.values():
+        if r["Type"] == "AWS::EC2::SecurityGroup":
+            assert not r["Properties"].get("SecurityGroupIngress")                   # no CIDR ingress anywhere
+    dist = next(r for r in res.values() if r["Type"] == "AWS::CloudFront::Distribution")["Properties"]["DistributionConfig"]
+    assert dist["Origins"][0]["VpcOriginConfig"] and len(dist["Origins"]) == 1
+    assert dist["DefaultCacheBehavior"]["ViewerProtocolPolicy"] == "redirect-to-https" and "WebACLId" in dist
+    assert dist["DefaultCacheBehavior"]["AllowedMethods"] == ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
     acl = next(r for r in res.values() if r["Type"] == "AWS::WAFv2::WebACL")["Properties"]
-    names = {r["Name"] for r in acl["Rules"]}
-    assert {"RateLimitPerIp", "AWSManagedRulesAmazonIpReputationList", "AWSManagedRulesCommonRuleSet"} <= names
+    assert acl["Scope"] == "CLOUDFRONT"
+    assert {"RateLimitPerIp", "AWSManagedRulesAmazonIpReputationList", "AWSManagedRulesCommonRuleSet"} <= {r["Name"] for r in acl["Rules"]}
+    td = next(r for r in res.values() if r["Type"] == "AWS::ECS::TaskDefinition")["Properties"]
+    c = td["ContainerDefinitions"][0]
+    env = {e["Name"]: e["Value"] for e in c["Environment"]}
+    assert {"AMXBENCH_COGNITO_USER_POOL_ID", "AMXBENCH_COGNITO_DOMAIN", "AMXBENCH_COGNITO_CLIENT_ID", "AMXBENCH_OUTPUTS",
+            "AMXBENCH_BIND"} <= set(env)
+    assert env["AMXBENCH_CREDS_FILE"] == "" and not any(k.startswith("AWS_") for k in env) and "Secrets" not in c
+    assert "/api/health" in " ".join(c["HealthCheck"]["Command"]) and td["RequiresCompatibilities"] == ["FARGATE"]
+    tg = next(r for r in res.values() if r["Type"] == "AWS::ElasticLoadBalancingV2::TargetGroup")["Properties"]
+    assert tg["HealthCheckPath"] == "/api/health" and tg["HealthCheckProtocol"] == "HTTP"
 
 
 def test_webapp_role_is_least_privilege(templates):
@@ -218,8 +230,7 @@ def test_webapp_role_is_least_privilege(templates):
     assert "ec2:RunInstances" not in actions and "ec2:StopInstances" not in actions
     assert "cloudformation:DescribeStacks" not in actions                  # outputs come from the environment
     assert {"dynamodb:Scan", "states:StartExecution", "states:StopExecution", "lambda:GetFunctionConfiguration",
-            "bedrock:InvokeModel", "ssm:GetParameter"} <= actions
-    roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"]
-    assert {r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] for r in roles} == {
-        "tasks.apprunner.amazonaws.com"}                                    # the ECR access role exists only with a built image
-    assert all("ManagedPolicyArns" not in r["Properties"] for r in roles)
+            "bedrock:InvokeModel"} <= actions
+    task_roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"
+                  and r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] == "ecs-tasks.amazonaws.com"]
+    assert len(task_roles) == 2 and all("ManagedPolicyArns" not in r["Properties"] for r in task_roles)   # task + execution

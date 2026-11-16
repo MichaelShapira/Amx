@@ -237,8 +237,10 @@ file holds a fresh session.
 ```bash
 infra/deploy_webapp.sh --email you@example.com        # prompts for the user's permanent password
 ```
-Deploys the same application to AWS App Runner (HTTPS on a platform domain, one always-on
-instance, a role instead of credentials) behind an Amazon Cognito user pool and AWS WAF, then
+Deploys the same application to ECS Fargate in the bench VPC's private subnet (no public address;
+one always-on task with a role instead of credentials), reachable only through an internal load
+balancer that only CloudFront can reach, behind an Amazon Cognito user pool and AWS WAF on the
+CloudFront distribution (HTTPS on its domain, HTTP redirected), then
 creates the one user it is given, with a permanent password, in the `operators` group. Nobody can
 sign up: accounts exist only when created by that script (or `admin-create-user`). Every `/api`
 call needs the signed-in user's access token (webui/api/auth.py); any pool user may read, only

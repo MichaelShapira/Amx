@@ -2,11 +2,15 @@
 
 Shape (why each piece):
 
-* AWS App Runner runs the container from webui/Dockerfile: HTTPS on a platform domain with a
-  managed certificate, one always-on instance (the API keeps AI-proposal jobs and caches in
-  process), the platform publishes the port, and it carries an instance role, so the app never
-  holds a credential. Ingress is public on purpose: the users are people in a browser anywhere;
-  what gates them is the user pool, not the network.
+* ECS Fargate runs the container from webui/Dockerfile in the bench VPC's private subnet (no public
+  IP), one always-on task (the API keeps AI-proposal jobs and caches in process), with a task role
+  so the app never holds a credential. An internal Network Load Balancer in the same subnet is the
+  only thing that can reach the task's port, and the only thing that can reach the load balancer
+  is CloudFront, through a VPC origin (CloudFront's origin-facing addresses, inside the VPC). The
+  CloudFront distribution is the single public entry: HTTPS on its own domain with a managed
+  certificate, HTTP redirected. Public on purpose: the users are people in a browser anywhere;
+  what gates them is the user pool, not the network. (AWS App Runner would have been simpler and
+  was the first version; this account cannot create App Runner services.)
 * Amazon Cognito user pool: nobody can sign up (admin-created users only, the deploy script
   creates the one user it is given), email sign-in, strong password policy, MFA offered, account
   recovery by email. The app client is public (PKCE, no secret), authorization-code only, with
@@ -17,11 +21,11 @@ Shape (why each piece):
 * Least privilege for the service's role: the bench bucket's run prefixes and read-only data
   prefixes, the one table, the run state machine, EC2 terminate only on instances tagged
   bench:managed, the pre-check function's configuration, Claude on Bedrock, one SSM parameter.
-* AWS WAF in front: AWS IP reputation list, the common rule set and a per-IP rate limit.
+* AWS WAF on the distribution: AWS IP reputation list, the common rule set and a per-IP rate limit.
 
-The client's callback URL is the service URL, which exists only after the service, and the
-service needs the client id: the id goes into an SSM parameter the app reads at start, so the
-dependency is pool -> service -> client -> parameter, with no cycle.
+Order of creation: pool and distribution first (neither depends on the other), then the app
+client (its callback is the distribution's domain), then the task definition (it carries the
+client id), then the service. No cycle, so the client id is a plain environment value.
 """
 
 from __future__ import annotations
@@ -29,23 +33,28 @@ from __future__ import annotations
 from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
-from aws_cdk import aws_apprunner as apprunner
+from aws_cdk import aws_cloudfront as cf
+from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
+from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
+from aws_cdk import aws_ecs as ecs
+from aws_cdk import aws_elasticloadbalancingv2 as elb
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_ssm as ssm
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_wafv2 as wafv2
+from aws_cdk import custom_resources as cr
 from constructs import Construct
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVICE_NAME = "amx-gpu-bench-webapp"
 OPERATOR_GROUP = "operators"
-CLIENT_ID_PARAM = "/amx-gpu-bench/webapp/cognito-client-id"
-PORT = "8080"
+PORT = 8080
+CLOUDFRONT_ORIGIN_FACING = "com.amazonaws.global.cloudfront.origin-facing"
 # Claude on Bedrock: the models webui/api/exec_summary.py and ai_propose.py can pick (newest Opus
 # via an inference profile, which routes to the foundation model in any US region).
 BEDROCK_MODEL_ARNS = ["arn:aws:bedrock:*::foundation-model/anthropic.claude-*"]
-PLACEHOLDER_IMAGE = "public.ecr.aws/aws-containers/hello-app-runner:latest"   # synth without building
+PLACEHOLDER_IMAGE = "public.ecr.aws/docker/library/python:3.12-slim"   # synth without building (tests)
 
 
 class WebAppStack(Stack):
@@ -78,48 +87,24 @@ class WebAppStack(Stack):
             "HostedLogin", cognito_domain=cognito.CognitoDomainOptions(domain_prefix=f"amx-gpu-bench-{self.account}"),
             managed_login_version=cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN)
 
-        # ---------------------------------------------------------------- roles
-        instance_role = iam.Role(self, "InstanceRole", assumed_by=iam.ServicePrincipal("tasks.apprunner.amazonaws.com"),
-                                 description="What the benchmark web app may do on behalf of signed-in users")
-        self._grant(instance_role)
+        # ---------------------------------------------------------------- network: task <- NLB <- CloudFront
+        vpc = core.network.vpc
+        sg_lb = ec2.SecurityGroup(self, "SgWebLb", vpc=vpc, allow_all_outbound=False,
+                                  description="web app load balancer: HTTP from the CloudFront origin-facing addresses only")
+        sg_lb.add_ingress_rule(ec2.Peer.prefix_list(self._managed_prefix_list(CLOUDFRONT_ORIGIN_FACING)),
+                               ec2.Port.tcp(80), "CloudFront VPC origin")
+        sg_task = ec2.SecurityGroup(self, "SgWebTask", vpc=vpc, allow_all_outbound=False,
+                                    description="web app task: its port from the load balancer only; HTTPS out")
+        sg_task.add_ingress_rule(sg_lb, ec2.Port.tcp(PORT), "app port from the load balancer")
+        sg_task.add_egress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(443), "AWS APIs, ECR, Bedrock, web search via NAT")
+        sg_lb.add_egress_rule(sg_task, ec2.Port.tcp(PORT), "to the task")
 
-        # ---------------------------------------------------------------- service
-        self.asset = None
-        if build_images:
-            self.asset = ecr_assets.DockerImageAsset(self, "Image", directory=str(ROOT), file="webui/Dockerfile",
-                                                     platform=ecr_assets.Platform.LINUX_AMD64)
-            access_role = iam.Role(self, "EcrAccessRole",
-                                   assumed_by=iam.ServicePrincipal("build.apprunner.amazonaws.com"),
-                                   description="Lets App Runner pull the web app image from the CDK asset repository")
-            self.asset.repository.grant_pull(access_role)
-            image = apprunner.CfnService.ImageRepositoryProperty(
-                image_identifier=self.asset.image_uri, image_repository_type="ECR",
-                image_configuration=self._image_configuration(harness_commit))
-            auth_cfg = apprunner.CfnService.AuthenticationConfigurationProperty(access_role_arn=access_role.role_arn)
-        else:
-            image = apprunner.CfnService.ImageRepositoryProperty(
-                image_identifier=PLACEHOLDER_IMAGE, image_repository_type="ECR_PUBLIC",
-                image_configuration=self._image_configuration(harness_commit))
-            auth_cfg = None
+        self.lb = elb.NetworkLoadBalancer(self, "Lb", vpc=vpc, internet_facing=False, security_groups=[sg_lb],
+                                          vpc_subnets=core.network.private_subnets, cross_zone_enabled=False)
+        self.distribution = self._distribution()
+        url = f"https://{self.distribution.distribution_domain_name}"
 
-        scaling = apprunner.CfnAutoScalingConfiguration(
-            self, "Scaling", auto_scaling_configuration_name=f"{SERVICE_NAME}-single", min_size=1, max_size=1,
-            max_concurrency=100)
-        self.service = apprunner.CfnService(
-            self, "Service", service_name=SERVICE_NAME,
-            source_configuration=apprunner.CfnService.SourceConfigurationProperty(
-                auto_deployments_enabled=False, authentication_configuration=auth_cfg, image_repository=image),
-            instance_configuration=apprunner.CfnService.InstanceConfigurationProperty(
-                cpu="1 vCPU", memory="2 GB", instance_role_arn=instance_role.role_arn),
-            health_check_configuration=apprunner.CfnService.HealthCheckConfigurationProperty(
-                protocol="HTTP", path="/api/health", interval=10, timeout=5, healthy_threshold=1, unhealthy_threshold=5),
-            network_configuration=apprunner.CfnService.NetworkConfigurationProperty(
-                ingress_configuration=apprunner.CfnService.IngressConfigurationProperty(is_publicly_accessible=True),
-                egress_configuration=apprunner.CfnService.EgressConfigurationProperty(egress_type="DEFAULT")),
-            auto_scaling_configuration_arn=scaling.attr_auto_scaling_configuration_arn)
-        url = f"https://{self.service.attr_service_url}"
-
-        # ---------------------------------------------------------------- app client (after the service: its URL)
+        # ---------------------------------------------------------------- app client (callback = the distribution)
         self.client = self.pool.add_client(
             "Web", user_pool_client_name="amx-gpu-bench-web", generate_secret=False,
             auth_flows=cognito.AuthFlow(user_srp=False, user_password=False, admin_user_password=False, custom=False),
@@ -133,14 +118,81 @@ class WebAppStack(Stack):
             refresh_token_validity=Duration.hours(12))
         cognito.CfnManagedLoginBranding(self, "Branding", user_pool_id=self.pool.user_pool_id,
                                         client_id=self.client.user_pool_client_id, use_cognito_provided_values=True)
-        self.client_param = ssm.StringParameter(self, "ClientIdParam", parameter_name=CLIENT_ID_PARAM,
-                                                string_value=self.client.user_pool_client_id,
-                                                description="App client id of the benchmark web app (read by the app at start)")
-        self.client_param.grant_read(instance_role)
 
-        # ---------------------------------------------------------------- WAF
+        # ---------------------------------------------------------------- the task and its role
+        task_role = iam.Role(self, "TaskRole", assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+                             description="What the benchmark web app may do on behalf of signed-in users")
+        self._grant(task_role)
+        self.cluster = ecs.Cluster(self, "Cluster", vpc=vpc, cluster_name=SERVICE_NAME,
+                                   container_insights_v2=ecs.ContainerInsights.ENABLED)
+        self.task = ecs.FargateTaskDefinition(
+            self, "Task", cpu=1024, memory_limit_mib=2048, task_role=task_role,
+            runtime_platform=ecs.RuntimePlatform(cpu_architecture=ecs.CpuArchitecture.X86_64,
+                                                 operating_system_family=ecs.OperatingSystemFamily.LINUX))
+        self.asset = None
+        if build_images:
+            self.asset = ecr_assets.DockerImageAsset(self, "Image", directory=str(ROOT), file="webui/Dockerfile",
+                                                     platform=ecr_assets.Platform.LINUX_AMD64)
+            image = ecs.ContainerImage.from_docker_image_asset(self.asset)
+        else:
+            image = ecs.ContainerImage.from_registry(PLACEHOLDER_IMAGE)
+        self.task.add_container(
+            "web", image=image, environment=self._environment(harness_commit),
+            port_mappings=[ecs.PortMapping(container_port=PORT, protocol=ecs.Protocol.TCP)],
+            readonly_root_filesystem=False,                   # the data sync writes under /app/prompts and /app/data
+            logging=ecs.LogDrivers.aws_logs(
+                stream_prefix="web", log_group=logs.LogGroup(self, "Logs", log_group_name=f"/ecs/{SERVICE_NAME}",
+                                                             retention=logs.RetentionDays.ONE_MONTH,
+                                                             removal_policy=RemovalPolicy.DESTROY)),
+            health_check=ecs.HealthCheck(command=["CMD-SHELL", f"python -c \"import urllib.request,sys; "
+                                                  f"sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{PORT}/api/health', "
+                                                  f"timeout=3).status == 200 else 1)\""],
+                                         interval=Duration.seconds(30), timeout=Duration.seconds(5), retries=3,
+                                         start_period=Duration.seconds(120)))
+        self.service = ecs.FargateService(
+            self, "Service", cluster=self.cluster, service_name=SERVICE_NAME, task_definition=self.task,
+            desired_count=1, min_healthy_percent=0, max_healthy_percent=100,     # one task; replaced in place
+            assign_public_ip=False, vpc_subnets=core.network.private_subnets, security_groups=[sg_task],
+            circuit_breaker=ecs.DeploymentCircuitBreaker(enable=True, rollback=True),
+            enable_execute_command=False, health_check_grace_period=Duration.seconds(180))
+        listener = self.lb.add_listener("Http", port=80, protocol=elb.Protocol.TCP)
+        listener.add_targets("Web", port=PORT, protocol=elb.Protocol.TCP, targets=[self.service],
+                             deregistration_delay=Duration.seconds(30), preserve_client_ip=False,
+                             health_check=elb.HealthCheck(protocol=elb.Protocol.HTTP, path="/api/health",
+                                                          interval=Duration.seconds(10), healthy_threshold_count=2,
+                                                          unhealthy_threshold_count=3))
+
+        for k, v in {"ServiceUrl": url, "UserPoolId": self.pool.user_pool_id,
+                     "UserPoolClientId": self.client.user_pool_client_id, "HostedLoginDomain": self.domain.base_url(),
+                     "OperatorGroup": OPERATOR_GROUP, "DistributionId": self.distribution.distribution_id,
+                     "LogGroup": f"/ecs/{SERVICE_NAME}"}.items():
+            CfnOutput(self, k, value=v)
+
+    # -------------------------------------------------------------------- helpers
+
+    def _environment(self, harness_commit: str) -> dict[str, str]:
+        core = self.core
+        outputs = {"BucketName": core.bucket.bucket_name, "TableName": core.table.table_name,
+                   "RunStateMachineArn": core.run_sm.state_machine_arn,
+                   "LevelStateMachineArn": core.level_sm.state_machine_arn}
+        return {
+            # In-container bind; only the load balancer's security group reaches the port, and the
+            # API refuses this bind without the pool.
+            "AMXBENCH_BIND": "0.0.0.0", "PORT": str(PORT), "AMXBENCH_DATA_SYNC": "1", "AMXBENCH_CREDS_FILE": "",  # noqa: S104
+            "AMXBENCH_OUTPUTS": self.to_json_string(outputs),
+            "AMXBENCH_COGNITO_USER_POOL_ID": self.pool.user_pool_id,
+            "AMXBENCH_COGNITO_REGION": self.region,
+            "AMXBENCH_COGNITO_DOMAIN": self.domain.base_url(),
+            "AMXBENCH_COGNITO_CLIENT_ID": self.client.user_pool_client_id,
+            "HARNESS_COMMIT": harness_commit,
+        }
+
+    def _distribution(self) -> cf.Distribution:
+        """CloudFront in front of the internal load balancer through a VPC origin. Nothing is cached
+        except the content-hashed /assets; every request forwards the viewer's headers (the
+        Authorization bearer token among them) and query string to the app."""
         acl = wafv2.CfnWebACL(
-            self, "Waf", name=f"{SERVICE_NAME}-waf", scope="REGIONAL", default_action={"allow": {}},
+            self, "Waf", name=f"{SERVICE_NAME}-waf", scope="CLOUDFRONT", default_action={"allow": {}},
             visibility_config=self._vis(f"{SERVICE_NAME}-waf"),
             rules=[
                 {"name": "RateLimitPerIp", "priority": 1, "action": {"block": {}},
@@ -154,34 +206,35 @@ class WebAppStack(Stack):
                  "statement": {"managedRuleGroupStatement": {"vendorName": "AWS", "name": "AWSManagedRulesCommonRuleSet"}},
                  "visibilityConfig": self._vis("CommonRuleSet")},
             ])
-        wafv2.CfnWebACLAssociation(self, "WafAssociation", resource_arn=self.service.attr_service_arn,
-                                   web_acl_arn=acl.attr_arn)
+        origin = origins.VpcOrigin.with_network_load_balancer(
+            self.lb, vpc_origin_name=SERVICE_NAME, http_port=80, protocol_policy=cf.OriginProtocolPolicy.HTTP_ONLY,
+            read_timeout=Duration.seconds(60), keepalive_timeout=Duration.seconds(60))
+        app_behavior = dict(origin=origin, viewer_protocol_policy=cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                            allowed_methods=cf.AllowedMethods.ALLOW_ALL, cached_methods=cf.CachedMethods.CACHE_GET_HEAD,
+                            cache_policy=cf.CachePolicy.CACHING_DISABLED,
+                            origin_request_policy=cf.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER, compress=True)
+        return cf.Distribution(
+            self, "Distribution", comment="GPU vs AMX CPU benchmark web app (Cognito-gated)",
+            default_behavior=cf.BehaviorOptions(**app_behavior),
+            additional_behaviors={"/assets/*": cf.BehaviorOptions(
+                origin=origin, viewer_protocol_policy=cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                allowed_methods=cf.AllowedMethods.ALLOW_GET_HEAD, cache_policy=cf.CachePolicy.CACHING_OPTIMIZED,
+                compress=True)},
+            web_acl_id=acl.attr_arn, http_version=cf.HttpVersion.HTTP2_AND_3,
+            minimum_protocol_version=cf.SecurityPolicyProtocol.TLS_V1_2_2021,
+            price_class=cf.PriceClass.PRICE_CLASS_100)
 
-        for k, v in {"ServiceUrl": url, "UserPoolId": self.pool.user_pool_id,
-                     "UserPoolClientId": self.client.user_pool_client_id, "HostedLoginDomain": self.domain.base_url(),
-                     "OperatorGroup": OPERATOR_GROUP, "ClientIdParameter": CLIENT_ID_PARAM}.items():
-            CfnOutput(self, k, value=v)
-
-    # -------------------------------------------------------------------- helpers
-
-    def _image_configuration(self, harness_commit: str) -> apprunner.CfnService.ImageConfigurationProperty:
-        core = self.core
-        outputs = {"BucketName": core.bucket.bucket_name, "TableName": core.table.table_name,
-                   "RunStateMachineArn": core.run_sm.state_machine_arn,
-                   "LevelStateMachineArn": core.level_sm.state_machine_arn}
-        env = {
-            # In-container bind; App Runner publishes the port and the API refuses this bind without the pool.
-            "AMXBENCH_BIND": "0.0.0.0", "PORT": PORT, "AMXBENCH_DATA_SYNC": "1", "AMXBENCH_CREDS_FILE": "",  # noqa: S104
-            "AMXBENCH_OUTPUTS": self.to_json_string(outputs),
-            "AMXBENCH_COGNITO_USER_POOL_ID": self.pool.user_pool_id,
-            "AMXBENCH_COGNITO_REGION": self.region,
-            "AMXBENCH_COGNITO_DOMAIN": self.domain.base_url(),
-            "AMXBENCH_COGNITO_CLIENT_ID_PARAM": CLIENT_ID_PARAM,
-            "HARNESS_COMMIT": harness_commit,
-        }
-        return apprunner.CfnService.ImageConfigurationProperty(
-            port=PORT, runtime_environment_variables=[
-                apprunner.CfnService.KeyValuePairProperty(name=k, value=v) for k, v in env.items()])
+    def _managed_prefix_list(self, name: str) -> str:
+        """The id of an AWS-managed prefix list (CloudFront's origin-facing addresses) at deploy time."""
+        res = cr.AwsCustomResource(
+            self, "CloudFrontPrefixList",
+            on_update=cr.AwsSdkCall(service="EC2", action="describeManagedPrefixLists",
+                                    parameters={"Filters": [{"Name": "prefix-list-name", "Values": [name]}]},
+                                    physical_resource_id=cr.PhysicalResourceId.of(f"pl-{name}"),
+                                    output_paths=["PrefixLists.0.PrefixListId"]),
+            policy=cr.AwsCustomResourcePolicy.from_sdk_calls(resources=cr.AwsCustomResourcePolicy.ANY_RESOURCE),
+            install_latest_aws_sdk=False)
+        return res.get_response_field("PrefixLists.0.PrefixListId")
 
     def _grant(self, role: iam.Role) -> None:
         core, acct, region = self.core, self.account, self.region
@@ -226,11 +279,4 @@ class WebAppStack(Stack):
         return {"sampledRequestsEnabled": True, "cloudWatchMetricsEnabled": True, "metricName": metric}
 
 
-def service_env_for_tests(stack: WebAppStack) -> dict:
-    """The environment the service passes to the container, resolved (tests)."""
-    svc = stack.service
-    cfg = svc.source_configuration.image_repository.image_configuration
-    return {kv.name: stack.resolve(kv.value) for kv in cfg.runtime_environment_variables}
-
-
-__all__ = ["WebAppStack", "service_env_for_tests", "CLIENT_ID_PARAM", "OPERATOR_GROUP", "SERVICE_NAME"]
+__all__ = ["WebAppStack", "OPERATOR_GROUP", "SERVICE_NAME"]
