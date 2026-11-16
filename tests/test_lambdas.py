@@ -544,7 +544,7 @@ def test_bringup_error_keeps_the_line_that_names_the_failure():
         [f"{i:012x}: Pulling fs layer" for i in range(40)]
         + [f"{i:012x}: Waiting" for i in range(40)] + [f"{i:012x}: Download complete" for i in range(40)]
         + ["Digest: sha256:196c999fea8b03470a5d24982c9c93fef8a8610eb5a950e60baa0b56dee82eaa",
-           "Status: Downloaded newer image for 346399954218.dkr.ecr.us-east-1.amazonaws.com/x:y",
+           "Status: Downloaded newer image for 111122223333.dkr.ecr.us-east-1.amazonaws.com/x:y",
            "+ optimum-cli export openvino --model /models/hf/Qwen/Qwen2.5-3B-Instruct/aa8e --task text-generation-with-past "
            "--weight-format fp16 --trust-remote-code /models/ov/Qwen/Qwen2.5-3B-Instruct/aa8e/bf16-ov/0ec1e1dd4be9abf6/model",
            "`torch_dtype` is deprecated! Use `dtype` instead!",

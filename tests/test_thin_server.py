@@ -255,7 +255,7 @@ def test_mnli_joined_string_equals_pair_encoding():
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(_snapshot(*MNLI, patterns=["*.json", "*.txt", "merges.txt", "vocab.json"]))
-    for a, b in [("The cat sat on the mat.", "A cat is sitting."), ("SSN 512-44-8790 for payroll", "This text contains a government ID number.")]:
+    for a, b in [("The cat sat on the mat.", "A cat is sitting."), ("SSN 000-00-0000 for payroll", "This text contains a government ID number.")]:
         assert tok(a, b)["input_ids"] == tok(a + "</s></s>" + b)["input_ids"]
 
 

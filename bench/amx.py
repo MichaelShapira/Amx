@@ -46,7 +46,15 @@ def parse_perf_csv(text: str) -> dict:
     return counts
 
 
-_VERBOSE_EXEC = re.compile(r"onednn_verbose,(?:[^,]*,)*?exec,cpu,([a-z_]+),([^,]+),")
+def _exec_fields(line: str) -> tuple[str, str] | None:
+    """(primitive kind, implementation) of an `onednn_verbose,...,exec,cpu,<kind>,<impl>,...` line.
+    Plain field splitting: the line is comma-separated and `exec,cpu` fixes the position."""
+    parts = line.split(",")
+    for i, tok in enumerate(parts[:-3]):
+        if tok == "exec" and parts[i + 1] == "cpu":
+            kind, impl = parts[i + 2], parts[i + 3]
+            return (kind, impl) if kind and impl else None
+    return None
 
 
 def parse_onednn_verbose(text: str) -> dict:
@@ -57,10 +65,10 @@ def parse_onednn_verbose(text: str) -> dict:
     for line in text.splitlines():
         if "onednn_verbose" not in line or ",exec," not in line:
             continue
-        m = _VERBOSE_EXEC.search(line)
-        if not m:
+        fields = _exec_fields(line)
+        if not fields:
             continue
-        kind, impl = m.group(1), m.group(2)
+        kind, impl = fields
         if kind not in GEMM_KINDS:
             continue
         impls[impl] += 1

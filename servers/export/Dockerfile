@@ -3,7 +3,7 @@
 # at model_server v2026.4.1 (commit 6c25e51e), checked by sha256. Runs on the T3 instance.
 # Build from the repository root:
 #   docker build -f servers/export/Dockerfile .
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 WORKDIR /app
 COPY servers/export/requirements.lock /app/requirements.lock

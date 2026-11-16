@@ -181,3 +181,23 @@ def test_public_bind_is_refused_without_a_pool(monkeypatch):
     auth.reset_for_tests()
     assert main.bind_address() == ("0.0.0.0", 8080)                  # noqa: S104 - with the pool, the container bind
     auth.reset_for_tests()
+
+
+def test_spa_route_never_serves_outside_dist():
+    """Holmes CSR finding 2026-11-16: the catch-all route joined the URL path onto dist/ and served
+    any file it landed on. Paths that resolve outside dist/ now get the app shell, like any
+    unknown route; real assets still serve."""
+    from webui.api import main
+
+    if not main.DIST.exists():
+        pytest.skip("webui/dist is not built")
+    c = TestClient(main.app)
+    index = (main.DIST / "index.html").read_bytes()
+    for p in ("/../pyproject.toml", "/..%2F..%2Fpyproject.toml", "/assets/../../pyproject.toml", "/%2e%2e/%2e%2e/README.md",
+              "//etc/passwd", "/runs/../../../.env"):
+        r = c.get(p)
+        assert r.status_code == 200 and r.content == index, p
+    asset = next((main.DIST / "assets").glob("*.js"))
+    r = c.get(f"/assets/{asset.name}")
+    assert r.status_code == 200 and r.content == asset.read_bytes()
+    assert c.get("/runs").content == index                      # client-side route

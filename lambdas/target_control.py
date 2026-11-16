@@ -455,7 +455,8 @@ _NOISE = re.compile(r"TracerWarning|warnings\.warn|it/s\]|Pulling fs layer|Downl
 
 # An exception line ("ValueError: ...", "(EngineCore_DP0 pid=7) RuntimeError: ...") and the
 # wrappers that only say something below failed.
-_CAUSE = re.compile(r"(?:^|[\s)\]])((?:[a-z_]\w*\.)*[A-Z]\w*(?:Error|Exception)): (\S.*)$")
+# One token (a dotted class name) ending in Error/Exception, then ": " and the message.
+_CAUSE = re.compile(r"(?:^|[\s)\]])([A-Za-z_][\w.]*(?:Error|Exception)): (\S.*)$")
 _WRAPPERS = ("CalledProcessError", "Engine core initialization failed", "container exited before becoming healthy")
 
 

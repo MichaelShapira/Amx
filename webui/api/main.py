@@ -1158,9 +1158,9 @@ def delete_run_data(run_id: str) -> dict:
         keys += [o["Key"] for o in page.get("Contents", [])]
     for i in range(0, len(keys), 1000):
         s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True})
-    with _table().batch_writer() as bw:
-        for it in items:
-            bw.delete_item(Key={"pk": it["pk"], "sk": it["sk"]})
+    tbl = _table()
+    for it in items:                               # one DeleteItem per row: the role has no BatchWriteItem
+        tbl.delete_item(Key={"pk": it["pk"], "sk": it["sk"]})
     for k in (f"summary:{run_id}", f"purchase:{run_id}", "cap_at", "orphans_at"):
         _CACHE.pop(k, None)
     return {"deleted": run_id, "objects": len(keys), "rows": len(items), "status_was": meta.get("status") or "failed",
@@ -1369,10 +1369,17 @@ DIST = ROOT / "webui/dist"
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
 
+    _DIST_ROOT = DIST.resolve()
+
     @app.get("/{path:path}")
     def spa(path: str):
-        f = DIST / path
-        return FileResponse(f if f.is_file() else DIST / "index.html")
+        """The app shell. A real file under dist/ is served as is; every other path, including
+        anything that resolves outside dist/ (".." segments, absolute paths), gets index.html so
+        the client-side router can answer. Nothing outside dist/ is ever read."""
+        f = (_DIST_ROOT / path).resolve() if path else _DIST_ROOT
+        if f.is_relative_to(_DIST_ROOT) and f.is_file():
+            return FileResponse(f)
+        return FileResponse(_DIST_ROOT / "index.html")
 
 
 def bind_address() -> tuple[str, int]:

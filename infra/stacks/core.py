@@ -222,6 +222,8 @@ class CoreStack(Stack):
             resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/amx-gpu-bench/*"]))
         preflight.add_to_role_policy(iam.PolicyStatement(
             actions=["lambda:GetFunctionConcurrency"], resources=[self.fns["worker"].function_arn]))
+        # DescribeInstanceTypeOfferings takes only "*" (no resource type). The price list is read for
+        # EC2 only, and the pricing actions accept no condition keys either, so the scope is the service.
         preflight.add_to_role_policy(iam.PolicyStatement(
             actions=["ec2:DescribeInstanceTypeOfferings", "pricing:GetProducts", "pricing:ListPriceLists"],
             resources=["*"]))

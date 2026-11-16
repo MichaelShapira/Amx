@@ -266,8 +266,15 @@ def sample(use_case: str, *, prompt_set: str | None = None, model: str | None = 
 
     rnd = random.Random(seed)  # noqa: S311 - display sampling
     if use_case == "standard":
-        p = ROOT / "prompts/generated" / (model or "m1-qwen2.5-3b") / f"{prompt_set or 'short'}.jsonl"
-        if not p.exists():
+        # Both values come from the request. Only catalog model ids and known prompt-set names name
+        # a file; anything else (a path, "..", an unknown name) is an empty sample, never a read.
+        model = model or "m1-qwen2.5-3b"
+        prompt_set = prompt_set or "short"
+        if model not in {m.id for m in load_models(ROOT / "config/models.yaml").models} or prompt_set not in PROMPT_SETS:
+            return []
+        base = (ROOT / "prompts/generated").resolve()
+        p = (base / model / f"{prompt_set}.jsonl").resolve()
+        if not p.is_relative_to(base) or not p.exists():
             return []
         lines = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
         out = []

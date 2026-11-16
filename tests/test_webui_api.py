@@ -543,3 +543,20 @@ def test_gemma_failures_of_2026_11_15_show_their_cause():
     later = w8["stderr"] + "\n--- exception lines from the container log\n(EngineCore_DP0 pid=212) NotImplementedError: no kernel"
     assert cell_error_text(w8["error"], later) == ("The serving software stopped while loading the model. "
                                                    "Cause: NotImplementedError: no kernel")
+
+
+def test_sample_never_reads_outside_the_prompt_directory():
+    """Holmes CSR finding 2026-11-16: /api/data/standard/sample built a file path from the
+    caller's `model` and `prompt_set`. Only catalog ids and known set names name a file now."""
+    from webui.api import catalog as C
+
+    assert C.sample("standard", model="../../pyproject", prompt_set="short") == []
+    assert C.sample("standard", model="m1-qwen2.5-3b", prompt_set="../../../pyproject") == []
+    assert C.sample("standard", model="m1-qwen2.5-3b", prompt_set="short/../../.env") == []
+    assert C.sample("standard", model="/etc/passwd", prompt_set="short") == []
+    for bad in ("..%2F..%2Fpyproject", "../../README", "m1-qwen2.5-3b/../../pyproject"):
+        r = c.get("/api/data/standard/sample", params={"model": bad, "prompt_set": "short", "n": 1})
+        assert r.status_code == 200 and r.json() == [], bad
+    # The real catalog still answers (when the prompt sets are built locally).
+    ok = C.sample("standard", model="m1-qwen2.5-3b", prompt_set="short", n=1)
+    assert isinstance(ok, list)

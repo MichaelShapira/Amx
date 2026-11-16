@@ -250,16 +250,21 @@ class WebAppStack(Stack):
             sid="WriteRunConfig", actions=["s3:PutObject"], resources=[bucket.arn_for_objects("runs/*/run.yaml")]))
         role.add_to_policy(iam.PolicyStatement(
             sid="DeleteRun", actions=["s3:DeleteObject"], resources=[bucket.arn_for_objects("runs/*")]))
+        # Scan stays: the Runs page lists every run's META row, which a single-table design without a
+        # secondary index can only reach by scan (the table is the app's own data, not a shared store).
         role.add_to_policy(iam.PolicyStatement(
             sid="RunTable", resources=[core.table.table_arn],
             actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
-                     "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))
+                     "dynamodb:Query", "dynamodb:Scan"]))
         role.add_to_policy(iam.PolicyStatement(
             sid="StartAndListRuns", actions=["states:StartExecution", "states:ListExecutions"],
             resources=[core.run_sm.state_machine_arn]))
         role.add_to_policy(iam.PolicyStatement(
             sid="InspectAndStopRuns", actions=["states:DescribeExecution", "states:StopExecution"],
             resources=[f"arn:aws:states:{region}:{acct}:execution:{core.run_sm.state_machine_name}:*"]))
+        # ec2:Describe* and bedrock:List* support no resource ARN or tag condition (IAM reference: these
+        # actions take only "*"); the role sees instance metadata and model names, nothing it can act on
+        # beyond the conditioned TerminateInstances and the named Claude models below.
         role.add_to_policy(iam.PolicyStatement(sid="SeeInstances", actions=["ec2:DescribeInstances"], resources=["*"]))
         role.add_to_policy(iam.PolicyStatement(
             sid="TerminateOnlyBenchInstances", actions=["ec2:TerminateInstances"],

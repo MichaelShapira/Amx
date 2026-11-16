@@ -4,7 +4,7 @@
 # published by the platform. Build from the repository root:
 #   docker build -f webui/Dockerfile .
 
-FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS ui
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS ui
 WORKDIR /ui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci --no-fund --no-audit
@@ -12,7 +12,7 @@ COPY webui/index.html webui/vite.config.ts webui/tsconfig.json ./
 COPY webui/src ./src
 RUN npm run build
 
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 WORKDIR /app
 COPY webui/requirements.lock /app/webui/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /app/webui/requirements.lock
@@ -31,4 +31,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/app \
     AMXBENCH_BIND=0.0.0.0 PORT=8080 AMXBENCH_DATA_SYNC=1 AMXBENCH_CREDS_FILE=
 USER 10001
 EXPOSE 8080
+# Liveness only (the ECS task definition runs the same probe); says nothing about data or identity.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3).status == 200 else 1)"]
 CMD ["python", "-m", "webui.api.entrypoint"]

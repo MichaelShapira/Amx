@@ -6,4 +6,4 @@ safetensors==0.8.0
 fastapi==0.162.2
 uvicorn==0.54.0
 protobuf==7.36.2
-sentencepiece
+sentencepiece==0.2.3
