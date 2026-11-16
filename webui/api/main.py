@@ -7,6 +7,7 @@ credentials. Serves the built React app from webui/dist when present.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -28,12 +29,38 @@ from bench.config import RunConfig, load_models, load_targets, resolve_cells, ru
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import levels_for_cell  # noqa: E402
 from bench.pools import local_pool_sizes  # noqa: E402
-from webui.api import aws, compare, propose  # noqa: E402
+from webui.api import auth, aws, compare, headers, propose  # noqa: E402
 from webui.api import catalog as C  # noqa: E402
 
 REGION, ACCOUNT = "us-east-1", "346399954218"
 app = FastAPI(title="GPU vs AMX CPU benchmark", docs_url=None, redoc_url=None)
 _CACHE: dict[str, Any] = {}
+
+# Cloud deployment (AmxBench-WebApp): every /api call needs a Cognito access token, see auth.py.
+# Locally (no pool configured, loopback bind) the gate is off. Security headers go on every
+# response; HSTS only where the app is served over HTTPS.
+def _header_policy() -> tuple[str, bool]:
+    s = auth.settings()
+    if not s:
+        return headers.csp([]), False
+    return headers.csp([s["domain"], f"https://cognito-idp.{s['region']}.amazonaws.com"]), True
+
+
+app.add_middleware(auth.CognitoAuthMiddleware)
+app.add_middleware(headers.SecurityHeadersMiddleware, policy=_header_policy)
+
+
+@app.get("/api/health")
+def health():
+    """Liveness for the platform's health check; says nothing about data or identity."""
+    return {"ok": True}
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    """Public: what the browser needs to start the sign-in (pool, client id, hosted-login
+    domain). `enabled: false` means the local, loopback-only mode."""
+    return auth.public_config()
 
 
 @app.exception_handler(ClientError)
@@ -499,11 +526,17 @@ def _capacity_notes() -> dict[str, int]:
 # ----------------------------------------------------------------------------- AWS
 
 def _outputs() -> dict:
+    """The Core stack's outputs (bucket, state machine). The cloud deployment gets them from the
+    environment (AMXBENCH_OUTPUTS, JSON, set by the WebApp stack from the Core stack's own
+    values) so its role needs no CloudFormation permission; locally they are read from the stack."""
     if "outputs" in _CACHE and _CACHE.get("outputs_at", 0) > time.time() - 300:
         return _CACHE["outputs"]
-
-    stk = aws.client("cloudformation").describe_stacks(StackName="AmxBench-Core")["Stacks"][0]
-    out = {o["OutputKey"]: o["OutputValue"] for o in stk.get("Outputs", [])}
+    env_json = os.environ.get("AMXBENCH_OUTPUTS", "").strip()
+    if env_json:
+        out = json.loads(env_json)
+    else:
+        stk = aws.client("cloudformation").describe_stacks(StackName="AmxBench-Core")["Stacks"][0]
+        out = {o["OutputKey"]: o["OutputValue"] for o in stk.get("Outputs", [])}
     _CACHE["outputs"], _CACHE["outputs_at"] = out, time.time()
     return out
 
@@ -1342,7 +1375,20 @@ if DIST.exists():
         return FileResponse(f if f.is_file() else DIST / "index.html")
 
 
+def bind_address() -> tuple[str, int]:
+    """Where to listen. Default: loopback, port 8601 (the local app). AMXBENCH_BIND=0.0.0.0 is
+    for the container, where the platform publishes the port and every request must carry a
+    Cognito token; without a user pool configured a non-loopback bind is refused."""
+    host = os.environ.get("AMXBENCH_BIND", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("PORT", "8601"))
+    if host not in ("127.0.0.1", "localhost", "::1") and not auth.enabled():
+        raise SystemExit(f"refusing to bind {host}: no Cognito user pool is configured (AMXBENCH_COGNITO_USER_POOL_ID), "
+                         "so the API would be reachable without authentication. Bind 127.0.0.1 or configure the pool.")
+    return host, port
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8601, log_level="info")
+    _host, _port = bind_address()
+    uvicorn.run(app, host=_host, port=_port, log_level="info", proxy_headers=_host != "127.0.0.1")

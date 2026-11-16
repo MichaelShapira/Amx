@@ -3,6 +3,7 @@
     cd infra && cdk synth                     # all stacks
     cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Target-t2-m8i-4xl
     cdk deploy AmxBench-Target-t1-g6 -c type_t1-g6=g5.xlarge     # capacity fallback
+    infra/deploy_webapp.sh --email you@example.com               # web app + Cognito + its one user
 
 Context: az_name (default: resolved from az_id use1-az1 at synth), skip_bundling,
 build_images (default true), type_<target-id> (instance type override).
@@ -24,6 +25,7 @@ from bench.config import load_targets  # noqa: E402
 from infra.stacks.core import CoreStack  # noqa: E402
 from infra.stacks.network import NetworkStack  # noqa: E402
 from infra.stacks.target import TargetStack  # noqa: E402
+from infra.stacks.webapp import WebAppStack  # noqa: E402
 
 ACCOUNT, REGION, AZ_ID = "346399954218", "us-east-1", "use1-az1"
 PROJECT_TAGS = {"project": "amx-gpu-bench", "owner": "operator", "purpose": "cpu-amx-vs-gpu-benchmark"}
@@ -57,7 +59,9 @@ def build(app: cdk.App) -> dict:
     net = NetworkStack(app, "AmxBench-Network", az_name=resolve_az_name(app), env=env)
     core = CoreStack(app, "AmxBench-Core", network=net, env=env, skip_bundling=flag("skip_bundling", False),
                      build_images=flag("build_images", True), harness_commit=harness_commit())
-    stacks = {"network": net, "core": core}
+    web = WebAppStack(app, "AmxBench-WebApp", core=core, env=env, build_images=flag("build_images", True),
+                      harness_commit=harness_commit())
+    stacks = {"network": net, "core": core, "webapp": web}
     for tid, t in load_targets(ROOT / "config/targets.yaml").resolved().items():
         if not t.enabled:
             continue

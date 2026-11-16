@@ -127,7 +127,7 @@ export default function Results() {
               {out.analysis.warnings.length > 0 && (
                 <div className="card mt"><h3>Notes from the reports</h3><ul className="muted small">{Array.from(new Set(out.analysis.warnings)).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
               )}
-              <div className="row mt">{selected.map((id) => <a key={id} className="btn sm" href={`/api/runs/${id}/report.md`} target="_blank" rel="noreferrer">Download report: {id}</a>)}</div>
+              <div className="row mt">{selected.map((id) => <button key={id} type="button" className="btn sm" onClick={() => api.downloadReport(id).catch((e) => setErr((e as Error).message))}>Download report: {id}</button>)}</div>
             </>
           )}
         </>

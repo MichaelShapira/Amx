@@ -139,3 +139,87 @@ def test_instance_role_scopes(templates):
     assert "cloudwatch:namespace" in text
     puts = [st for st in stmts if st["Action"] == "s3:PutObject"]
     assert puts and all("runs/*/raw" not in json.dumps(st["Resource"]) for st in puts)
+
+
+# ------------------------------------------------------------------ AmxBench-WebApp (2026-11-15)
+
+def _web(templates):
+    return templates["webapp"].to_json()["Resources"]
+
+
+def test_webapp_user_pool_admits_nobody_on_its_own(templates):
+    """No self sign-up, email sign-in, strong passwords, MFA offered, deletion-protected."""
+    pool = next(r for r in _web(templates).values() if r["Type"] == "AWS::Cognito::UserPool")["Properties"]
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
+    assert pool["UsernameAttributes"] == ["email"] and pool["AutoVerifiedAttributes"] == ["email"]
+    pw = pool["Policies"]["PasswordPolicy"]
+    assert pw["MinimumLength"] >= 8 and all(pw[k] for k in ("RequireLowercase", "RequireUppercase", "RequireNumbers", "RequireSymbols"))
+    assert pool["MfaConfiguration"] == "OPTIONAL" and pool["DeletionProtection"] == "ACTIVE"
+    assert pool["AccountRecoverySetting"]["RecoveryMechanisms"] == [{"Name": "verified_email", "Priority": 1}]
+    groups = [r for r in _web(templates).values() if r["Type"] == "AWS::Cognito::UserPoolGroup"]
+    assert [g["Properties"]["GroupName"] for g in groups] == ["operators"]
+
+
+def test_webapp_client_is_public_code_grant_only_bound_to_the_service_url(templates):
+    cl = next(r for r in _web(templates).values() if r["Type"] == "AWS::Cognito::UserPoolClient")["Properties"]
+    assert cl["GenerateSecret"] is False                                   # PKCE in the browser, no secret to leak
+    assert cl["AllowedOAuthFlows"] == ["code"] and cl["AllowedOAuthFlowsUserPoolClient"] is True
+    assert set(cl["AllowedOAuthScopes"]) == {"openid", "email", "profile"}
+    assert cl["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]          # no password or admin flows
+    assert cl["PreventUserExistenceErrors"] == "ENABLED" and cl["EnableTokenRevocation"] is True
+    assert cl["SupportedIdentityProviders"] == ["COGNITO"]
+    cb = json.dumps(cl["CallbackURLs"])
+    assert "ServiceUrl" in cb and cb.count('"/callback"') == 1 and "localhost" not in cb and "http://" not in cb
+    units = cl["TokenValidityUnits"]
+    mins = {"minutes": 1, "hours": 60, "days": 1440}
+    assert cl["AccessTokenValidity"] * mins[units["AccessToken"]] == 60           # one hour
+    assert cl["RefreshTokenValidity"] * mins[units["RefreshToken"]] == 12 * 60    # half a day, then sign in again
+
+
+def test_webapp_service_is_gated_by_the_app_not_the_network(templates):
+    """Public ingress on purpose; the health path is the only route that answers without a token,
+    the container gets the pool (never a credential), and one always-on instance."""
+    res = _web(templates)
+    svc = next(r for r in res.values() if r["Type"] == "AWS::AppRunner::Service")["Properties"]
+    assert svc["NetworkConfiguration"]["IngressConfiguration"]["IsPubliclyAccessible"] is True
+    assert svc["HealthCheckConfiguration"]["Path"] == "/api/health"
+    env = {e["Name"]: e["Value"] for e in svc["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"]["RuntimeEnvironmentVariables"]}
+    assert {"AMXBENCH_COGNITO_USER_POOL_ID", "AMXBENCH_COGNITO_DOMAIN", "AMXBENCH_COGNITO_CLIENT_ID_PARAM",
+            "AMXBENCH_OUTPUTS", "AMXBENCH_BIND"} <= set(env)
+    assert env["AMXBENCH_CREDS_FILE"] == "" and not any(k.startswith("AWS_") for k in env)
+    assert "InstanceRoleArn" in svc["InstanceConfiguration"]
+    asc = next(r for r in res.values() if r["Type"] == "AWS::AppRunner::AutoScalingConfiguration")["Properties"]
+    assert asc["MinSize"] == 1 and asc["MaxSize"] == 1
+    waf = next(r for r in res.values() if r["Type"] == "AWS::WAFv2::WebACLAssociation")["Properties"]
+    assert "ServiceArn" in json.dumps(waf["ResourceArn"])
+    acl = next(r for r in res.values() if r["Type"] == "AWS::WAFv2::WebACL")["Properties"]
+    names = {r["Name"] for r in acl["Rules"]}
+    assert {"RateLimitPerIp", "AWSManagedRulesAmazonIpReputationList", "AWSManagedRulesCommonRuleSet"} <= names
+
+
+def test_webapp_role_is_least_privilege(templates):
+    """Every statement names its resources, except the describe/list actions that have none; the
+    only destructive EC2 action is conditioned on the bench tag; no admin, IAM or wildcard action."""
+    res = _web(templates)
+    pol = [r for r in res.values() if r["Type"] == "AWS::IAM::Policy"]
+    stmts = [s for p in pol for s in p["Properties"]["PolicyDocument"]["Statement"]]
+    actions = {a for s in stmts for a in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])}
+    assert not any(a.endswith("*") or a.startswith("iam:") or a.startswith("sts:AssumeRole") for a in actions), actions
+    for s in stmts:
+        acts = [s["Action"]] if isinstance(s["Action"], str) else s["Action"]
+        if s["Resource"] == "*":
+            assert all(a.split(":")[1].startswith(("Describe", "List", "GetAuthorizationToken")) for a in acts), acts
+        if "ec2:TerminateInstances" in acts:
+            assert s["Condition"] == {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
+        if "s3:ListBucket" in acts:
+            assert set(s["Condition"]["StringLike"]["s3:prefix"]) == {"runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*"}
+        if "s3:PutObject" in acts:
+            assert json.dumps(s["Resource"]).count("runs/*/run.yaml") == 1
+    assert "ec2:RunInstances" not in actions and "ec2:StopInstances" not in actions
+    assert "cloudformation:DescribeStacks" not in actions                  # outputs come from the environment
+    assert {"dynamodb:Scan", "states:StartExecution", "states:StopExecution", "lambda:GetFunctionConfiguration",
+            "bedrock:InvokeModel", "ssm:GetParameter"} <= actions
+    roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"]
+    assert {r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] for r in roles} == {
+        "tasks.apprunner.amazonaws.com"}                                    # the ECR access role exists only with a built image
+    assert all("ManagedPolicyArns" not in r["Properties"] for r in roles)

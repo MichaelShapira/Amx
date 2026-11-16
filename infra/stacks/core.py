@@ -126,6 +126,7 @@ class CoreStack(Stack):
                     agg_run, control, reaper, preflight)
         self.level_sm = self._level_state_machine(init_level, warmup, perf, plan_wave, worker, wave_check, agg_level)
         self.run_sm = self._run_state_machine(preflight, control, amx_probe, membw, quality, agg_run)
+        self.preflight_fn = preflight                     # the web app reads its HARNESS_COMMIT
         events.Rule(self, "ReaperSchedule", schedule=events.Schedule.rate(Duration.minutes(10)),
                     targets=[targets.LambdaFunction(reaper)])
         for k, v in {"BucketName": self.bucket.bucket_name, "TableName": self.table.table_name,

@@ -1,4 +1,6 @@
-// Typed client for the local API (webui/api/main.py).
+// Typed client for the API (webui/api/main.py). In the cloud deployment every call carries the
+// signed-in user's Cognito access token (auth.ts); locally there is no sign-in.
+import { accessToken, authEnabled, signIn } from "./auth";
 
 export type UseCase = "standard" | "dspm";
 
@@ -115,7 +117,15 @@ export interface CompareOut {
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...init });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = await accessToken();                       // null locally (no sign-in)
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } });
+  if (r.status === 401 && authEnabled()) {
+    // The session is gone (expired refresh token, signed out elsewhere): back through the hosted login.
+    void signIn();
+    throw new Error("Your session has ended; signing you in again.");
+  }
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail ?? msg; } catch { /* keep statusText */ }
@@ -151,6 +161,17 @@ export const api = {
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
   stop: (id: string) => j<any>(`/api/runs/${id}/stop`, { method: "POST" }),
   summary: (id: string) => j<SummaryInfo>(`/api/runs/${id}/summary`),
+  /** The Markdown report, fetched with the session token and saved as a file (a plain link cannot carry the token). */
+  downloadReport: async (id: string) => {
+    const token = await accessToken();
+    const r = await fetch(`/api/runs/${id}/report.md`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (r.status === 401 && authEnabled()) { void signIn(); throw new Error("Your session has ended; signing you in again."); }
+    if (!r.ok) throw new Error(`report: HTTP ${r.status}`);
+    const url = URL.createObjectURL(await r.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: `${id}-report.md` });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   execModel: () => j<{ model_id: string; call_id: string; name: string; version: string }>("/api/executive-summary/model"),
   execSummary: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; force?: boolean }) =>
     j<ExecSummary>("/api/executive-summary", { method: "POST", body: JSON.stringify(body) }),

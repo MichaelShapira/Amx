@@ -233,6 +233,22 @@ the default AWS credential chain is used. When the session has expired every pag
 sentence and the sidebar pill reads "AWS session expired"; both recover on their own once the
 file holds a fresh session.
 
+### The web app on AWS (AmxBench-WebApp)
+```bash
+infra/deploy_webapp.sh --email you@example.com        # prompts for the user's permanent password
+```
+Deploys the same application to AWS App Runner (HTTPS on a platform domain, one always-on
+instance, a role instead of credentials) behind an Amazon Cognito user pool and AWS WAF, then
+creates the one user it is given, with a permanent password, in the `operators` group. Nobody can
+sign up: accounts exist only when created by that script (or `admin-create-user`). Every `/api`
+call needs the signed-in user's access token (webui/api/auth.py); any pool user may read, only
+`operators` may start, stop or delete runs. The service's role is scoped to the bench bucket's run
+and data prefixes, the run table, the run state machine, terminating instances tagged
+`bench:managed`, the pre-check function's configuration and Claude on Bedrock. The password is
+read from a prompt, `--password-stdin` or `AMXBENCH_INITIAL_PASSWORD`, never from an argument,
+and is not stored anywhere by the repository. The user pool is deletion-protected and retained
+on `cdk destroy`.
+
 It is written for the person deciding which instance to buy, not for the engineer. Light and dark
 themes; GPU is always green and CPU always blue.
 

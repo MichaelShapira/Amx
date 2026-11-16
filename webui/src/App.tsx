@@ -7,6 +7,7 @@ import Runs from "./pages/Runs";
 import Results from "./pages/Results";
 import DataPage from "./pages/Data";
 import ErrorBoundary from "./components/ErrorBoundary";
+import AuthGate, { useSession } from "./components/AuthGate";
 
 export const CatalogCtx = createContext<Catalog | null>(null);
 export const useCatalog = () => useContext(CatalogCtx);
@@ -14,6 +15,11 @@ export const useCatalog = () => useContext(CatalogCtx);
 type Theme = "light" | "dark";
 
 export default function App() {
+  return <AuthGate><Shell /></AuthGate>;
+}
+
+function Shell() {
+  const session = useSession();
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) ||
     (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -51,7 +57,14 @@ export default function App() {
           <button className="btn sm" style={{ marginTop: 10 }} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? "☀️ Light mode" : "🌙 Dark mode"}
           </button>
-          <div className="tiny" style={{ marginTop: 10 }}>Runs only on this machine (127.0.0.1). AWS calls use your own credentials.</div>
+          {session.enabled ? (
+            <div className="tiny" style={{ marginTop: 10 }}>
+              Signed in as <b>{session.label}</b>{session.operator ? "" : " (view only)"}.
+              <button className="btn sm" style={{ marginTop: 8, display: "block" }} onClick={() => void session.signOut()}>Sign out</button>
+            </div>
+          ) : (
+            <div className="tiny" style={{ marginTop: 10 }}>Runs only on this machine (127.0.0.1). AWS calls use your own credentials.</div>
+          )}
         </aside>
         <main className="main">
           <ErrorBoundary>
@@ -62,6 +75,7 @@ export default function App() {
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:id" element={<Runs />} />
             <Route path="/results" element={<Results />} />
+            <Route path="/callback" element={<Home />} />
           </Routes>
           </ErrorBoundary>
         </main>
