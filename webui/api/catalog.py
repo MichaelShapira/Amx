@@ -222,7 +222,9 @@ def dataset_info(use_case: str) -> dict:
             return {"available": False, "reason": "prompt sets are not built locally (tools/build_prompts.py)"}
         man = json.loads(man_p.read_text())
         sets = {}
-        for key, info in man["sets"].items():
+        # The manifest synced from the bucket may carry only pool sizes and hashes (bench.pools.manifest);
+        # the per-set statistics exist when tools/build_prompts.py or the onboarding job wrote them.
+        for key, info in (man.get("sets") or {}).items():
             mid, name = key.split("/", 1)
             if name in PROMPT_SETS:
                 sets.setdefault(name, {"label": PROMPT_SETS[name][0], "help": PROMPT_SETS[name][1], "models": {}})

@@ -27,9 +27,12 @@ COPY --from=ui /ui/dist /app/webui/dist
 # The app writes only under prompts/ and data/: the sync from the bench bucket at start (entrypoint.py)
 # and the prompt pools a model added in Setup gets (onboarding.py).
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /app/prompts /app/data && chown -R 10001:10001 /app/prompts /app/data \
+    && mkdir -p /app/prompts /app/data/home /app/data/cache && chown -R 10001:10001 /app/prompts /app/data \
     && find /app -name __pycache__ -type d -prune -exec rm -rf {} +
+# HOME and the Hugging Face cache point under the writable data tree: the app user has no home
+# directory, and the onboarding job downloads tokenizers and the quality-set sources there.
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/app \
+    HOME=/app/data/home HF_HOME=/app/data/cache/hf-home \
     AMXBENCH_BIND=0.0.0.0 PORT=8080 AMXBENCH_DATA_SYNC=1 AMXBENCH_CREDS_FILE=
 USER 10001
 EXPOSE 8080
