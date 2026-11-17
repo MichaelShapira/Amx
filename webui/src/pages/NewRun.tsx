@@ -332,7 +332,7 @@ function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applie
   const cat = useCatalog()!;
   const r = job.result;
   const p = r?.proposal ?? null;
-  const stepLine = (s: AiStep) => `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})`;
+  const stepLine = (s: AiStep) => s.kind === "repair" ? `Asked again for a shorter, JSON-only answer (${s.text})` : `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})`;
   const spec = (t: string) => cat.instances[t];
   const ratio = p && spec(p.gpu.instance_type) && spec(p.cpu.instance_type) ? spec(p.gpu.instance_type).usd_per_hour / spec(p.cpu.instance_type).usd_per_hour : null;
   const confKind = p?.confidence === "high" ? "ok" : p?.confidence === "low" ? "warn" : "accent";

@@ -30,6 +30,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 WEB_SEARCH_ID = "web-search.v1"
 MAX_TOOL_CALLS = 8           # searches per proposal
 MAX_ROUNDS = 8               # model turns that may ask for tools
+MAX_TOKENS = 8000            # per model turn; the final JSON must never be cut off
+REPAIR_PROMPT = ("Your answer could not be used: {problem}. Reply again with ONLY the JSON block described in the "
+                 "instructions, nothing before or after it. Keep each \"why\" and the \"summary\" under 60 words and "
+                 "each list under 6 items.")
 RESULTS_PER_SEARCH = 6
 RESULT_CHARS = 1_500         # characters of each result's text extract handed to the model
 JOB_TTL_S = 3600
@@ -78,7 +82,8 @@ Answer with ONE fenced ```json block and nothing else, with exactly these keys:
   "sources": ["<URL>", "..."]
 }
 Keep "why" and "summary" free of instance-family jargon unless explained (e.g. "m8i, the current Intel
-generation with AMX"). Never name a size that is not in the allowed lists."""
+generation with AMX"). Never name a size that is not in the allowed lists. Keep the whole answer short:
+each "why" and the "summary" at most 80 words, each list at most 6 items, nothing outside the JSON block."""
 
 TOOLS = {"tools": [
     {"toolSpec": {"name": "web_search",
@@ -172,15 +177,9 @@ def build_prompt(ctx: dict) -> str:
 def parse_proposal(text: str, allowed: dict) -> tuple[dict | None, str | None]:
     """The JSON block from the model's answer, validated against the allowed sizes. Returns
     (proposal, problem): a proposal only when both sizes are allowed; the problem says why not."""
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S) or re.search(r"(\{.*\})", text, re.S)
-    if not m:
-        return None, "the model answered without the expected JSON block"
-    try:
-        raw = json.loads(m.group(1))
-    except ValueError as e:
-        return None, f"the model's JSON could not be read ({type(e).__name__})"
-    if not isinstance(raw, dict):
-        return None, "the model's answer is not an object"
+    raw, problem = _extract_json(text)
+    if raw is None:
+        return None, problem
     gpu_ok = {t for t, _ in allowed["gpu"]}
     cpu_ok = {t for t, _ in allowed["cpu"]}
 
@@ -203,6 +202,32 @@ def parse_proposal(text: str, allowed: dict) -> tuple[dict | None, str | None]:
     return {"gpu": gpu, "cpu": cpu, "summary": _text(raw.get("summary")), "checked": _strs(raw.get("checked")),
             "caveats": _strs(raw.get("caveats")), "confidence": conf if conf in ("high", "medium", "low") else "medium",
             "sources": [u for u in _strs(raw.get("sources")) if u.startswith(("http://", "https://"))]}, None
+
+
+def _extract_json(text: str) -> tuple[dict | None, str | None]:
+    """The first complete JSON object in the answer: inside a ```json fence when there is one, else
+    from the first brace (raw_decode stops at the object's end, so trailing prose is fine). A cut-off
+    answer (no closing brace) is reported as such."""
+    candidates = []
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if m:
+        candidates.append(m.group(1))
+    i = text.find("{")
+    if i >= 0:
+        candidates.append(text[i:])
+    if not candidates:
+        return None, "the model answered without the expected JSON block"
+    err = "not an object"
+    for c in candidates:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(c)
+        except ValueError as e:
+            err = f"{type(e).__name__}: {str(e)[:80]}"
+            continue
+        if isinstance(obj, dict):
+            return obj, None
+    cut = "cut off" if text.rstrip().endswith(("\"", ",", ":")) or text.count("{") > text.count("}") else "unreadable"
+    return None, f"the model's JSON was {cut} ({err})"
 
 
 def _text(v) -> str:
@@ -237,15 +262,23 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
     job["model"] = model
     messages = [{"role": "user", "content": [{"text": build_prompt(ctx)}]}]
     calls, usage, t0 = 0, {"inputTokens": 0, "outputTokens": 0}, time.time()
-    text = ""
-    for _ in range(MAX_ROUNDS + 1):
+    text, stop = "", None
+
+    def turn() -> dict:
+        nonlocal text, stop
         r = rt.converse(modelId=model["call_id"], system=[{"text": SYSTEM}], messages=messages, toolConfig=TOOLS,
-                        inferenceConfig={"maxTokens": 4000})
+                        inferenceConfig={"maxTokens": MAX_TOKENS})
         for k in usage:
             usage[k] += (r.get("usage") or {}).get(k, 0)
         msg = r["output"]["message"]
         messages.append(msg)
         text = "".join(b.get("text", "") for b in msg["content"] if "text" in b) or text
+        stop = r.get("stopReason")
+        return r
+
+    for _ in range(MAX_ROUNDS + 1):
+        r = turn()
+        msg = messages[-1]
         if r.get("stopReason") != "tool_use":
             break
         results = []
@@ -266,6 +299,14 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
     else:
         text = text or "The reasoning model did not finish within its search budget. Try again."
     proposal, problem = parse_proposal(text, ctx["allowed"])
+    repaired = False
+    if proposal is None:
+        # One repair round: a cut-off or malformed answer is asked again, shorter and JSON only.
+        repaired = True
+        job["steps"].append({"kind": "repair", "text": problem, "n": 0})
+        messages.append({"role": "user", "content": [{"text": REPAIR_PROMPT.format(problem=problem)}]})
+        turn()
+        proposal, problem = parse_proposal(text, ctx["allowed"])
     # Sources: what the proposal cites, then every result the model saw, titled from the search results.
     cited = list(proposal["sources"]) if proposal else [u.rstrip(").,") for u in re.findall(r"https?://[^\s)\]\"']+", text)]
     seen_urls: list[str] = []
@@ -275,7 +316,7 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
     sources = [{"url": u, "title": job["seen"].get(u) or u} for u in seen_urls]
     return {"proposal": proposal, "problem": problem, "markdown": text if proposal is None else "", "model": model, "usage": usage,
             "tool_calls": calls, "seconds": round(time.time() - t0, 1), "sources": sources, "steps": job["steps"],
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            "repaired": repaired, "stop_reason": stop, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
 # ----------------------------------------------------------------------------- jobs

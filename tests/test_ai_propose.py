@@ -147,6 +147,36 @@ def test_parse_proposal_validates_sizes_against_the_allowed_lists():
     assert A.parse_proposal("I cannot decide.", allowed) == (None, "the model answered without the expected JSON block")
     assert A.parse_proposal("```json\n{broken\n```", allowed)[0] is None
     assert A.parse_proposal(json.dumps({**PROPOSAL, "confidence": "sure"}), allowed)[0]["confidence"] == "medium"
+    # Unfenced JSON followed by prose, and JSON with prose before it, both parse (raw_decode stops at the object).
+    p, problem = A.parse_proposal("Here you go.\n" + json.dumps(PROPOSAL) + "\n\nLet me know if you want changes.", allowed)
+    assert problem is None and p["gpu"]["instance_type"] == "g6.2xlarge"
+    # A fence whose content is cut off (the real failure: maxTokens reached mid-string) is reported as cut off.
+    cut = "```json\n" + json.dumps(PROPOSAL)[:-40]
+    p, problem = A.parse_proposal(cut, allowed)
+    assert p is None and problem.startswith("the model's JSON was cut off")
+
+
+def test_propose_repairs_a_cut_off_answer_once(settings_default):
+    from webui.api import main as M
+    ctx = M._ai_context(wizard())
+    ctx.pop("_module")
+
+    class CutThenGood(FakeRuntime):
+        def converse(self, **kw):
+            self.calls += 1
+            if self.calls == 1:            # the first answer is cut off by the token limit
+                assert kw["inferenceConfig"]["maxTokens"] == A.MAX_TOKENS
+                return {"stopReason": "max_tokens", "usage": {"inputTokens": 100, "outputTokens": 100},
+                        "output": {"message": {"role": "assistant", "content": [{"text": "```json\n" + json.dumps(PROPOSAL)[:-30]}]}}}
+            last = kw["messages"][-1]["content"][0]["text"]
+            assert "could not be used: the model's JSON was cut off" in last and "ONLY the JSON block" in last
+            return {"stopReason": "end_turn", "usage": {"inputTokens": 200, "outputTokens": 50},
+                    "output": {"message": {"role": "assistant", "content": [{"text": json.dumps(PROPOSAL)}]}}}
+
+    rt = CutThenGood()
+    out = A.propose(ctx, A._new_job(), bedrock=FakeBedrock(), runtime=rt, search=FakeSearch())
+    assert rt.calls == 2 and out["repaired"] and out["problem"] is None and out["proposal"]["cpu"]["instance_type"] == "m8i.4xlarge"
+    assert [s["kind"] for s in out["steps"]] == ["repair"] and out["stop_reason"] == "end_turn"
 
 
 def test_propose_drives_the_search_loop_and_returns_a_validated_proposal_with_sources(settings_default):
