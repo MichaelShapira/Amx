@@ -20,7 +20,7 @@ from typing import Any
 
 from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality
 from bench.cellspec import cell_key
-from bench.config import ModelSpec, ResolvedCell, RunConfig, load_models, load_targets
+from bench.config import ModelSpec, ResolvedCell, RunConfig, load_targets
 
 ROOT = Path(__file__).resolve().parents[1]
 def _vcpus(instance_type: str) -> int:
@@ -282,14 +282,14 @@ def dspm_accuracy(inp: RunInputs, cells: dict[str, ResolvedCell], models, target
         th = thresholds.get((ck, name), {}).get("threshold")
         preds = {}
         for r in rows:
-            preds[r["item_id"]] = None if r.get("error") else dspm.decide(model.slot, wl, r.get("output"),
+            preds[r["item_id"]] = None if r.get("error") else dspm.decide(model.dspm_profile, wl, r.get("output"),
                                                                            threshold=th if th is not None else 0.5)
         items = [test[i] for i in preds if i in test]
         if wl == "W2":
             items = [{**x, "label": x["category_top"]} for x in items]
         s = dspm_scoring.score(items, preds, workload=wl)
         s["fitness"] = dspm_scoring.fitness(s, recall_min=run.dspm.fitness_recall_min, fpr_max=run.dspm.fitness_fpr_max)
-        if model.slot == "M3":
+        if model.dspm_profile == "M3":
             s["threshold"] = thresholds.get((ck, name))
         results.setdefault(ck, {})[name] = s
         preds_by[(ck, name)] = preds
@@ -316,7 +316,9 @@ def dspm_accuracy(inp: RunInputs, cells: dict[str, ResolvedCell], models, target
 def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     res = inp.resolved
     run = RunConfig.model_validate(res["run"])
-    models = load_models(config_dir / "models.yaml")
+    from bench import catalog_store
+
+    models = catalog_store.load_catalog()
     targets = load_targets(config_dir / "targets.yaml").resolved()
     cells = {cell_key(c["cell_id"]): ResolvedCell.model_validate(c) for c in res["cells"]}
     prices = res.get("prices", {})

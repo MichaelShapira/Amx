@@ -17,12 +17,11 @@ from typing import Any
 
 import yaml
 
-from bench import cellspec, cost, pairing, plan
+from bench import catalog_store, cellspec, cost, pairing, plan
 from bench.amx import parse_cpu_flags
 from bench.config import (
     RunConfig,
     config_hash,
-    load_models,
     load_targets,
     resolve_cells,
     run_alternates,
@@ -139,7 +138,7 @@ def handler(event: dict, context: Any = None) -> dict:
     raw = common.get_bytes(f"{prefix}/run.yaml").decode()
     data = yaml.safe_load(raw)
     run = RunConfig.model_validate(data["run"] if "run" in data else data)
-    models, targets = load_models(CONFIG_DIR / "models.yaml"), load_targets(CONFIG_DIR / "targets.yaml")
+    models, targets = catalog_store.load_catalog(), load_targets(CONFIG_DIR / "targets.yaml")
     tmap = targets.resolved()
     cells = resolve_cells(run, models, targets)
     errors: list[str] = []

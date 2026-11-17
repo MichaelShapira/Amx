@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -104,6 +104,24 @@ class ModelSpec(Strict):
     @property
     def non_commercial(self) -> bool:
         return self.license in {"qwen-research", "cc-by-nc-4.0", "cc-by-nc-nd-4.0"}
+
+    # The DSPM suite's rules (which workloads, how to read an answer) were written per shipped
+    # model and keyed by slot. A shipped alternate (slot "M3-alt") stands in for its slot. A model
+    # added later gets the rules of the shipped model it is most like: any chat model behaves like
+    # M1, any encoder-decoder like M5; classifiers and detectors added later have no label mapping,
+    # so no DSPM rules (standard suite only).
+    DSPM_SHIPPED: ClassVar[frozenset[str]] = frozenset({"M1", "M2", "M3", "M4", "M5", "D1", "D2"})
+
+    @property
+    def dspm_profile(self) -> str | None:
+        base = self.slot.split("-")[0]
+        if base in self.DSPM_SHIPPED:
+            return base
+        return {"decoder": "M1", "encoder-decoder": "M5"}.get(self.type)
+
+    @property
+    def user_added(self) -> bool:
+        return self.slot.startswith("U")
 
 
 class ModelCatalog(Strict):

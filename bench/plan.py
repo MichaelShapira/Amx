@@ -123,18 +123,18 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
     assert run.dspm is not None
     variant = cell.variant
     for wl in run.dspm.workloads:
-        if model.slot not in WORKLOAD_SLOTS[wl]:
+        if model.dspm_profile not in WORKLOAD_SLOTS[wl]:
             continue
         if wl in LABELS and model.type == "token-classifier" and wl not in ("W1", "W3"):
             continue
         for bkt in WORKLOAD_BUCKETS[wl]:
-            if bkt == "long" and model.slot in SHORT_ONLY_SLOTS:
+            if bkt == "long" and (model.dspm_profile in SHORT_ONLY_SLOTS or model.max_input_tokens < 2560):
                 continue
             key = dspm_pool(model, wl, bkt)
             payload = dspm_payload(model, wl, variant) if model.type in GENERATIVE else {"model": model.id}
             name = wl if bkt is None else f"{wl}-{bkt}"
             add(f"{name}-accuracy", key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl)
-            if model.slot in DEV_THRESHOLD_SLOTS:
+            if model.dspm_profile in DEV_THRESHOLD_SLOTS:
                 # M3's decision threshold is chosen on dev items only (design 24.4, Requirement 23).
                 dev_key = dspm_pool(model, f"dev-{wl}", bkt)
                 add(f"dev-{name}-accuracy", dev_key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl,

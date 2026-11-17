@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bench import pairing
-from bench.config import load_models, load_targets
+from bench import catalog_store, pairing
+from bench.config import load_targets
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -159,13 +159,13 @@ def hardware_options() -> list[dict]:
 
 
 def catalog() -> dict:
-    models = load_models(ROOT / "config/models.yaml")
+    models = catalog_store.load_catalog()
     cat = pairing.load_catalog()
     mods = []
     for m in models.models:
         if not m.enabled:
             continue
-        name, desc = MODELS.get(m.id, (m.id, ""))
+        name, desc = _display(m)
         precs = {}
         for p, spec in m.precisions.items():
             if spec.enabled:
@@ -176,7 +176,8 @@ def catalog() -> dict:
                      "type": m.type, "params_b": round(m.params / 1e9, 2), "license": m.license,
                      "commercial_ok": m.license not in ("qwen-research",), "use_cases": list(m.suites),
                      "precisions": precs, "batch_capable": m.type not in ("decoder", "encoder-decoder"),
-                     "batch_sizes_default": (m.classifier.batch_sizes if m.classifier else [1])})
+                     "batch_sizes_default": (m.classifier.batch_sizes if m.classifier else [1]),
+                     "hf_repo": m.hf_repo, "user_added": m.user_added})
     insts = {t: {**s, "type": t} for t, s in cat["instances"].items() if s.get("usd_per_hour")}
     return {
         "use_cases": USE_CASES, "models": mods, "hardware": hardware_options(),
@@ -196,8 +197,21 @@ def catalog() -> dict:
     }
 
 
+def _display(m) -> tuple[str, str]:
+    """Name and one-line description: the shipped text for shipped models; for a model added in
+    Setup, the repository's own name and the onboarding note."""
+    if m.id in MODELS:
+        return MODELS[m.id]
+    return m.hf_repo.split("/")[-1], m.notes or "added from Hugging Face in Setup"
+
+
 def model_name(mid: str) -> str:
-    return MODELS.get(mid, (mid, ""))[0]
+    if mid in MODELS:
+        return MODELS[mid][0]
+    try:
+        return _display(catalog_store.load_catalog().get(mid))[0]
+    except KeyError:
+        return mid
 
 
 def dataset_info(use_case: str) -> dict:
@@ -270,7 +284,7 @@ def sample(use_case: str, *, prompt_set: str | None = None, model: str | None = 
         # a file; anything else (a path, "..", an unknown name) is an empty sample, never a read.
         model = model or "m1-qwen2.5-3b"
         prompt_set = prompt_set or "short"
-        if model not in {m.id for m in load_models(ROOT / "config/models.yaml").models} or prompt_set not in PROMPT_SETS:
+        if model not in {m.id for m in catalog_store.load_catalog().models} or prompt_set not in PROMPT_SETS:
             return []
         base = (ROOT / "prompts/generated").resolve()
         p = (base / model / f"{prompt_set}.jsonl").resolve()

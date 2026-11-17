@@ -1,15 +1,12 @@
 """Executive summary of a results analysis, written by the newest Claude Opus on Amazon
 Bedrock. The model is given only the computed findings (verdicts, best measurements,
 equivalence, accuracy, comparability, caveats) and is told to use no number that is not in
-them. The model id is discovered at call time, so a newer Opus is picked up automatically."""
+them. The model is the one chosen in Setup (webui/api/settings.py); default: the newest Opus."""
 
 from __future__ import annotations
 
 import json
-import re
 import time
-
-_MODEL_CACHE: dict = {}
 
 SYSTEM = """You write executive summaries for product and business decision makers choosing between
 NVIDIA GPU instances and Intel AMX CPU instances on AWS for running AI models. The reader is not an
@@ -29,42 +26,6 @@ Rules:
 - Bottom line: at most three sentences. Whole summary: at most 450 words.
 - Say "measurement" or "load setting", never "level"; say "repeated" rather than "passes".
 """
-
-
-def newest_opus(bedrock) -> dict:
-    """Pick the newest Anthropic Opus the account can call: highest version numbers in the model
-    id (claude-opus-5-5 > claude-opus-5 > claude-opus-4-8 ...), ACTIVE, with a us. inference
-    profile when the model is profile-only."""
-    if _MODEL_CACHE.get("at", 0) > time.time() - 3600:
-        return _MODEL_CACHE["model"]
-    models = bedrock.list_foundation_models(byProvider="anthropic")["modelSummaries"]
-    profiles = {p["inferenceProfileId"] for p in bedrock.list_inference_profiles()["inferenceProfileSummaries"]}
-
-    def version(mid: str) -> tuple:
-        m = re.search(r"opus-(\d+)(?:-(\d+))?", mid)
-        if not m:
-            return (0,)
-        major, minor = int(m.group(1)), int(m.group(2) or 0)
-        if major == 3:              # claude-3-opus is the oldest family
-            return (3, 0)
-        return (major, minor)
-
-    cands = []
-    for m in models:
-        mid = m["modelId"]
-        if "opus" not in mid or m.get("modelLifecycle", {}).get("status") != "ACTIVE":
-            continue
-        types = set(m.get("inferenceTypesSupported") or [])
-        call_id = mid if "ON_DEMAND" in types else (f"us.{mid}" if f"us.{mid}" in profiles else None)
-        if call_id:
-            cands.append((version(mid), mid, call_id, m.get("modelName", mid)))
-    if not cands:
-        raise RuntimeError("no callable Anthropic Opus model found in Bedrock for this account and region")
-    cands.sort(reverse=True)
-    v, mid, call_id, name = cands[0]
-    out = {"model_id": mid, "call_id": call_id, "name": name, "version": ".".join(map(str, v))}
-    _MODEL_CACHE.update(model=out, at=time.time())
-    return out
 
 
 def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> dict:
@@ -99,9 +60,10 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
 def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> dict:
     from webui.api import aws
 
-    bedrock = aws.client("bedrock")
     rt = aws.client("bedrock-runtime")
-    model = newest_opus(bedrock)
+    from webui.api import settings
+
+    model = settings.reasoning_model()                 # Setup → Reasoning model; default newest Opus
     payload = _compact(analysis, comparability, sla, runs)
     prompt = ("FINDINGS JSON:\n" + json.dumps(payload, indent=1, default=str) +
               "\n\nWrite the executive summary now.")

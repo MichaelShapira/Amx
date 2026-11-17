@@ -8,6 +8,7 @@ export interface ModelInfo {
   id: string; name: string; description: string; kind: string; type: string; params_b: number; license: string;
   commercial_ok: boolean; use_cases: UseCase[]; batch_capable: boolean; batch_sizes_default: number[];
   precisions: Record<string, { label: string; help: string; engines: string[]; quality_only: boolean; requires_cpu_flag: string | null }>;
+  hf_repo: string; user_added: boolean;
 }
 export interface Hardware {
   id: string; accelerator: "gpu" | "cpu"; cpu_features: string[]; software: string[]; engines: string[]; software_help: string;
@@ -51,22 +52,19 @@ export const defaultWizard: Wizard = {
   name: "", allow_unfair: false, sized_for: null, copied_from: null,
 };
 
-export interface Reason { kind: string; ok: boolean; text: string }
-export interface Candidate { instance_type: string; spec: InstanceSpec; fit: "recommended" | "possible" | "not_advisable"; reasons: Reason[] }
-export interface Proposal { gpu: Candidate[]; cpu: Candidate[]; pairing: Pairing | null; weights_gib: number }
-export interface Suggested extends Candidate { ratio: number | null; fair: boolean; role?: "match" | "headroom" | "economy"; role_label?: string; role_help?: string }
-export interface Suggestion {
-  gpu_type: string; gpu_spec?: InstanceSpec; best: Suggested | null; alternatives: Suggested[]; others: Suggested[]; rejected: Suggested[];
-  basis: string[]; weights_gib?: number; error: string | null;
+// The AI hardware proposal (webui/api/ai_propose.py): reasoned per model with web search, validated against the allowed sizes.
+export interface AiStep { kind: "search"; text: string; n?: number; error?: string | null }
+export interface AiProposal {
+  gpu: { instance_type: string; why: string; alternates: string[] };
+  cpu: { instance_type: string; why: string };
+  summary: string; checked: string[]; caveats: string[]; confidence: "high" | "medium" | "low"; sources: string[];
 }
-export interface GpuSuggestion { best: Suggested | null; alternatives: Suggested[]; others: Suggested[]; rejected: Suggested[]; basis: string[]; weights_gib: number; error: string | null }
-export interface InitialSelection { gpu: GpuSuggestion; cpu: Suggestion | null; summary: string | null; gpu_alternates: string[] }
-export interface AiStep { kind: "search" | "fetch"; text: string; n?: number; chars?: number; error?: string | null }
-export interface AiReview {
-  markdown: string; model: { model_id: string; call_id: string; name: string; version: string }; usage: { inputTokens: number; outputTokens: number };
+export interface AiResult {
+  proposal: AiProposal | null; problem: string | null; markdown: string;
+  model: { model_id: string; call_id: string; name: string; provider?: string }; usage: { inputTokens: number; outputTokens: number };
   tool_calls: number; seconds: number; sources: { url: string; title: string }[]; steps: AiStep[]; generated_at: string;
 }
-export interface AiJob { id: string; status: "running" | "done" | "error"; steps: AiStep[]; tool_calls: number; model: AiReview["model"] | null; seconds: number; error: string | null; result: AiReview | null }
+export interface AiJob { id: string; status: "running" | "done" | "error"; steps: AiStep[]; tool_calls: number; model: AiResult["model"] | null; seconds: number; error: string | null; result: AiResult | null }
 export interface Pairing { cpu: string; gpu: string; ratio: number | null; fair: boolean | null; reason: string; cpu_target?: string; gpu_target?: string }
 
 export interface Plan {
@@ -136,19 +134,37 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
 
 export interface AwsStatus { ok: boolean; account?: string; identity?: string; error?: string; expired?: boolean; credentials?: string }
 
+// Setup page (webui/api/settings.py, onboarding.py, catalog_store.py)
+export interface HfTokenStatus { configured: boolean; available: boolean; name?: string; last_changed?: string | null; reason?: string }
+export interface ReasoningModel { model_id: string; call_id: string; name: string; provider: string; family: string; source?: "setup" | "default" }
+export interface SetupModel {
+  id: string; name: string; repo: string; revision: string; type: string; kind: string; params_b: number; license: string; gated: boolean;
+  suites: string[]; user_added: boolean; enabled: boolean; notes: string | null;
+  engines: { id: string; label: string; proven: boolean }[];
+}
+export interface OnboardJob {
+  id: string; repo: string; status: "running" | "done" | "failed"; stage: string; elapsed_s: number; notes: string[]; error: string | null;
+  model: { id: string; name: string; type: string; params_b: number; license: string; gated: boolean } | null;
+  pools?: { prompt_files: number; dspm_files: number };
+}
+export interface Setup {
+  hf_token: HfTokenStatus; models: SetupModel[]; catalog_source: string | null; proven_error: string | null;
+  reasoning: { models: ReasoningModel[]; current: ReasoningModel | null; error?: string }; running_job: OnboardJob | null;
+}
+
 export const api = {
+  setup: () => j<Setup>("/api/setup"),
+  setHfToken: (token: string) => j<HfTokenStatus>("/api/setup/hf-token", { method: "POST", body: JSON.stringify({ token }) }),
+  setReasoningModel: (call_id: string) => j<ReasoningModel>("/api/setup/reasoning-model", { method: "POST", body: JSON.stringify({ call_id }) }),
+  addModel: (repo: string) => j<{ job_id: string }>("/api/setup/models", { method: "POST", body: JSON.stringify({ repo }) }),
+  addModelJob: (id: string) => j<OnboardJob>(`/api/setup/models/jobs/${id}`),
+  removeModel: (id: string) => j<{ removed: string; remaining: number }>(`/api/setup/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
   catalog: () => j<Catalog>("/api/catalog"),
   data: (uc: UseCase) => j<any>(`/api/data/${uc}`),
   sample: (uc: UseCase, q: Record<string, string | number | undefined>) => {
     const qs = Object.entries(q).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");
     return j<any[]>(`/api/data/${uc}/sample?${qs}`);
   },
-  propose: (body: { models: string[]; precision: string; gpu_type?: string | null; cpu_type?: string | null }) =>
-    j<Proposal>("/api/propose", { method: "POST", body: JSON.stringify(body) }),
-  suggest: (body: { models: string[]; precision: string; gpu_type: string }) =>
-    j<Suggestion>("/api/suggest", { method: "POST", body: JSON.stringify(body) }),
-  initial: (body: { model: string; precision: string }) =>
-    j<InitialSelection>("/api/suggest/initial", { method: "POST", body: JSON.stringify(body) }),
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
   wizardFrom: (id: string) => j<Wizard>(`/api/runs/${id}/wizard`),

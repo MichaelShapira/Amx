@@ -19,8 +19,10 @@ Shape (why each piece):
 * Authorization: any pool user may read; the `operators` group may start, stop and delete runs
   (webui/api/auth.py). The deploy script adds the initial user to the group.
 * Least privilege for the service's role: the bench bucket's run prefixes and read-only data
-  prefixes, the one table, the run state machine, EC2 terminate only on instances tagged
-  bench:managed, the pre-check function's configuration, Claude on Bedrock, one SSM parameter.
+  prefixes, the live model catalog and the prompt pools the Setup page writes, the one table, the
+  run state machine, EC2 terminate only on instances tagged bench:managed, the pre-check
+  function's configuration, Claude and OpenAI models on Bedrock, the AgentCore web-search tool,
+  and the Hugging Face token secret (write, describe, and read for the onboarding job only).
 * AWS WAF on the distribution: AWS IP reputation list, the common rule set and a per-IP rate limit.
 
 Order of creation: pool and distribution first (neither depends on the other), then the app
@@ -51,9 +53,14 @@ SERVICE_NAME = "amx-gpu-bench-webapp"
 OPERATOR_GROUP = "operators"
 PORT = 8080
 CLOUDFRONT_ORIGIN_FACING = "com.amazonaws.global.cloudfront.origin-facing"
-# Claude on Bedrock: the models webui/api/exec_summary.py and ai_propose.py can pick (newest Opus
-# via an inference profile, which routes to the foundation model in any US region).
-BEDROCK_MODEL_ARNS = ["arn:aws:bedrock:*::foundation-model/anthropic.claude-*"]
+# Bedrock: the models Setup -> Reasoning model may offer (webui/api/settings.py: Anthropic Claude and
+# OpenAI only), by foundation model and by us. inference profile (which routes to the model in any
+# US region). The list must stay in step with settings.ALLOWED_PROVIDERS.
+BEDROCK_MODEL_ARNS = ["arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+                      "arn:aws:bedrock:*::foundation-model/openai.*"]
+BEDROCK_PROFILE_PATTERNS = ["us.anthropic.claude-*", "us.openai.*"]
+# The AgentCore built-in web search tool (bedrock-agentcore:InvokeWebSearch), an AWS-owned resource.
+WEB_SEARCH_TOOL_ARN = "arn:aws:bedrock-agentcore:{region}:aws:tool/web-search.v1"
 PLACEHOLDER_IMAGE = "public.ecr.aws/docker/library/python:3.12-slim"   # synth without building (tests)
 
 
@@ -184,6 +191,7 @@ class WebAppStack(Stack):
             "AMXBENCH_COGNITO_REGION": self.region,
             "AMXBENCH_COGNITO_DOMAIN": self.domain.base_url(),
             "AMXBENCH_COGNITO_CLIENT_ID": self.client.user_pool_client_id,
+            "AMXBENCH_HF_SECRET_ARN": core.hf_secret.secret_arn,      # Setup -> Hugging Face token writes here
             "HARNESS_COMMIT": harness_commit,
         }
 
@@ -239,7 +247,7 @@ class WebAppStack(Stack):
     def _grant(self, role: iam.Role) -> None:
         core, acct, region = self.core, self.account, self.region
         bucket = core.bucket
-        read_prefixes = ["runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*"]
+        read_prefixes = ["runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*", "config/*"]
         role.add_to_policy(iam.PolicyStatement(
             sid="ListRunAndDataPrefixes", actions=["s3:ListBucket"], resources=[bucket.bucket_arn],
             conditions={"StringLike": {"s3:prefix": read_prefixes}}))
@@ -248,6 +256,18 @@ class WebAppStack(Stack):
             resources=[bucket.arn_for_objects(p) for p in read_prefixes]))
         role.add_to_policy(iam.PolicyStatement(
             sid="WriteRunConfig", actions=["s3:PutObject"], resources=[bucket.arn_for_objects("runs/*/run.yaml")]))
+        # Setup -> Models: the live catalog object and the prompt pools of a model a user adds. No delete:
+        # removing a model rewrites the catalog and leaves its pools in place.
+        role.add_to_policy(iam.PolicyStatement(
+            sid="WriteCatalogAndPools", actions=["s3:PutObject"],
+            resources=[bucket.arn_for_objects(p) for p in
+                       ("config/models.yaml", "artifacts/prompts/*", "artifacts/dspm/v1/requests/*")]))
+        # Setup -> Hugging Face token: the app writes the value and reports when it last changed; it reads
+        # the value only inside the onboarding job (a gated model's tokenizer download) and never returns it.
+        role.add_to_policy(iam.PolicyStatement(
+            sid="HfTokenSecret", actions=["secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret",
+                                          "secretsmanager:GetSecretValue"],
+            resources=[core.hf_secret.secret_arn]))
         role.add_to_policy(iam.PolicyStatement(
             sid="DeleteRun", actions=["s3:DeleteObject"], resources=[bucket.arn_for_objects("runs/*")]))
         # Scan stays: the Runs page lists every run's META row, which a single-table design without a
@@ -274,11 +294,15 @@ class WebAppStack(Stack):
             sid="ReadPreflightVersion", actions=["lambda:GetFunctionConfiguration"],
             resources=[core.preflight_fn.function_arn]))
         role.add_to_policy(iam.PolicyStatement(
-            sid="ClaudeOnBedrock", actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-            resources=[*BEDROCK_MODEL_ARNS, f"arn:aws:bedrock:{region}:{acct}:inference-profile/us.anthropic.claude-*"]))
+            sid="ReasoningModelsOnBedrock", actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+            resources=[*BEDROCK_MODEL_ARNS,
+                       *(f"arn:aws:bedrock:{region}:{acct}:inference-profile/{p}" for p in BEDROCK_PROFILE_PATTERNS)]))
         role.add_to_policy(iam.PolicyStatement(
             sid="ListBedrockModels", actions=["bedrock:ListFoundationModels", "bedrock:ListInferenceProfiles"],
             resources=["*"]))
+        role.add_to_policy(iam.PolicyStatement(
+            sid="WebSearchTool", actions=["bedrock-agentcore:InvokeWebSearch"],
+            resources=[WEB_SEARCH_TOOL_ARN.format(region=region)]))
 
     def _vis(self, metric: str) -> dict:
         return {"sampledRequestsEnabled": True, "cloudWatchMetricsEnabled": True, "metricName": metric}

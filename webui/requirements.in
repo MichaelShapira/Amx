@@ -6,5 +6,12 @@ pydantic>=2.9,<3
 pyyaml>=6
 numpy>=2.1,<3
 httpx>=0.28,<1
-boto3>=1.40
+boto3>=1.44.4                 # bedrock-agentcore InvokeWebSearch (webui/api/ai_propose.py)
 PyJWT[crypto]>=2.10,<3
+# Setup -> Models -> Add (webui/api/onboarding.py): the model's tokenizer cuts its prompt pools.
+# transformers without torch: fast tokenizers only, plus sentencepiece for the slow T5/Llama ones.
+huggingface_hub>=0.30,<1
+transformers>=4.50,<5
+sentencepiece>=0.2
+protobuf>=4,<7
+pyarrow>=17                   # the quality sets are read from parquet (tools/build_prompts.py)

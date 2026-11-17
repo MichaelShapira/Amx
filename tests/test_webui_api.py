@@ -51,20 +51,6 @@ def test_data_previews_show_documents_with_expected_answers():
         assert len(p) == 2 and p[0]["tokens"] > 100
 
 
-def test_proposals_carry_reasons_and_fairness():
-    p = c.post("/api/propose", json={"models": ["m2-qwen3-4b-2507"], "cpu_type": "m8i.4xlarge"}).json()
-    assert p["gpu"][0]["instance_type"] == "g6.xlarge" and p["gpu"][0]["fit"] == "recommended"
-    kinds = {r["kind"] for r in p["gpu"][0]["reasons"]}
-    assert {"memory", "gpus", "price", "generation"} <= kinds
-    assert any("7.5 GiB" in r["text"] for r in p["gpu"][0]["reasons"])
-    big = c.post("/api/propose", json={"models": ["m2-qwen3-4b-2507"], "gpu_type": "g6.48xlarge"}).json()
-    # against an 8-GPU box the fair CPU counterparts are the 48xlarge CPUs: price band, not size, decides
-    assert all(x["spec"]["vcpus"] >= 128 for x in big["cpu"][:3])
-    assert big["pairing"] is None
-    both = c.post("/api/propose", json={"models": ["m1-qwen2.5-3b"], "gpu_type": "g6.xlarge", "cpu_type": "m8i.4xlarge"}).json()
-    assert both["pairing"]["fair"] is True
-
-
 def test_plan_builds_a_valid_run_and_refuses_unfair_pairs():
     w = {"use_case": "standard", "models": ["m1-qwen2.5-3b"], "gpu": GPU, "cpus": [CPU], "request_mode": "concurrent",
          "concurrency": [1, 10], "depth": "full", "sla": {"p99_ttft_ms": 2000, "p50_tpot_ms": 150}}

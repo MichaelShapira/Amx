@@ -43,7 +43,7 @@ def items_for(items: list[dict], workload: str, bucket: str | None) -> list[dict
 
 
 def render_line(model, tok, policy: dspm.Policy, item: dict, workload: str) -> dict:
-    text, slot = item["text"], model.slot
+    text, slot = item["text"], model.dspm_profile
     line = {"id": item["id"], "item_id": item["id"], "bytes": item["bytes"]}
     if slot in ("M1", "M2", "M4"):
         r = render(model, tok, dspm.decoder_user_message(text, workload), system_text=policy.text)
@@ -67,6 +67,11 @@ def render_line(model, tok, policy: dspm.Policy, item: dict, workload: str) -> d
 
 def build(dataset: Path, out: Path, tokenizers: dict, seed: int = 20261109) -> dict:
     models = [m for m in load_models(ROOT / "config/models.yaml").models if m.enabled and "dspm" in m.suites]
+    return build_for_models(dataset, out, models, tokenizers, seed)
+
+
+def build_for_models(dataset: Path, out: Path, models: list, tokenizers: dict, seed: int = 20261109) -> dict:
+    """The request pools for the given models only (the Setup page adds one model at a time)."""
     policy = dspm.load_policy()
     splits = {"test": read_jsonl_gz(dataset / "test.jsonl.gz"), "dev": read_jsonl_gz(dataset / "dev.jsonl.gz")}
     sizes: dict[str, int] = {}
@@ -74,19 +79,19 @@ def build(dataset: Path, out: Path, tokenizers: dict, seed: int = 20261109) -> d
     for m in models:
         tok = tokenizers[m.id]
         for wl, slots in WORKLOAD_SLOTS.items():
-            if m.slot not in slots or wl == "W5":
+            if m.dspm_profile not in slots or wl == "W5":
                 continue
             if m.type == "token-classifier" and wl not in ("W1", "W3"):
                 continue
             for bkt in WORKLOAD_BUCKETS[wl]:
-                if bkt == "long" and m.slot in SHORT_ONLY_SLOTS:
+                if bkt == "long" and (m.dspm_profile in SHORT_ONLY_SLOTS or m.max_input_tokens < 2560):
                     continue
                 for split in ("test", "dev"):
-                    if split == "dev" and m.slot != "M3":
+                    if split == "dev" and m.dspm_profile != "M3":
                         continue
                     sel = sorted(items_for(splits[split], wl, bkt), key=lambda x: _order(x["id"], seed))
                     lines = [render_line(m, tok, policy, x, wl) for x in sel]
-                    window = WINDOW.get(m.slot)
+                    window = WINDOW.get(m.dspm_profile)
                     if window:
                         worst = max((x.get("max_input_tokens", x["prompt_tokens_expected"]) for x in lines), default=0)
                         if worst > window:

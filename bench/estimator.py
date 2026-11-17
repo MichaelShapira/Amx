@@ -208,10 +208,12 @@ def recommend(m: ModelInput, summary: dict | None, sla: SlaInput, *, catalog, li
 
 def estimate(p: ProjectInput, *, cfg: dict | None = None, journal: list[JournalEntry] | None = None,
              summary: dict | None = None, catalog=None) -> dict:
-    from bench.config import load_models
 
     cfg = cfg or load_config()
-    catalog = catalog or load_models(ROOT / "config/models.yaml")
+    if catalog is None:
+        from bench import catalog_store
+
+        catalog = catalog_store.load_catalog()
     factors = calibration_factors(journal or [], cfg["calibration"]["clamp"])
     lines: list[dict] = []
 

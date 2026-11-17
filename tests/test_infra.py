@@ -224,13 +224,27 @@ def test_webapp_role_is_least_privilege(templates):
         if "ec2:TerminateInstances" in acts:
             assert s["Condition"] == {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
         if "s3:ListBucket" in acts:
-            assert set(s["Condition"]["StringLike"]["s3:prefix"]) == {"runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*"}
+            assert set(s["Condition"]["StringLike"]["s3:prefix"]) == {"runs/*", "artifacts/prompts/*", "datasets/*",
+                                                                      "artifacts/dspm/*", "config/*"}
         if "s3:PutObject" in acts:
-            assert json.dumps(s["Resource"]).count("runs/*/run.yaml") == 1
+            text = json.dumps(s["Resource"])
+            assert text.count("runs/*/run.yaml") == 1 or (        # Setup: the catalog object and a new model's pools
+                text.count("config/models.yaml") == 1 and "artifacts/prompts/*" in text and "artifacts/dspm/v1/requests/*" in text)
+        if any(a.startswith("secretsmanager:") for a in acts):  # the one secret, by complete ARN; no create/delete/list
+            assert set(acts) == {"secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"}
+            assert "hf-token-naqygX" in json.dumps(s["Resource"])
+        if "bedrock:InvokeModel" in acts:                       # Claude and OpenAI only (settings.ALLOWED_PROVIDERS)
+            text = json.dumps(s["Resource"])
+            assert "anthropic.claude-*" in text and "openai.*" in text and "foundation-model/*" not in text
+        if "bedrock-agentcore:InvokeWebSearch" in acts:
+            assert s["Resource"].endswith(":aws:tool/web-search.v1") and len(acts) == 1
     assert "ec2:RunInstances" not in actions and "ec2:StopInstances" not in actions
     assert "cloudformation:DescribeStacks" not in actions                  # outputs come from the environment
     assert {"dynamodb:Scan", "states:StartExecution", "states:StopExecution", "lambda:GetFunctionConfiguration",
-            "bedrock:InvokeModel"} <= actions
+            "bedrock:InvokeModel", "bedrock-agentcore:InvokeWebSearch", "secretsmanager:PutSecretValue"} <= actions
+    env = {e["Name"]: e["Value"] for r in res.values() if r["Type"] == "AWS::ECS::TaskDefinition"
+           for e in r["Properties"]["ContainerDefinitions"][0]["Environment"]}
+    assert "hf-token-naqygX" in env["AMXBENCH_HF_SECRET_ARN"]
     task_roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"
                   and r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] == "ecs-tasks.amazonaws.com"]
     assert len(task_roles) == 2 and all("ManagedPolicyArns" not in r["Properties"] for r in task_roles)   # task + execution

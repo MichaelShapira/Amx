@@ -1,5 +1,5 @@
 # Docker build context for the thin-server, export and web-app images: code only. The web app
-# image (webui/Dockerfile) adds bench/, lambdas/, config/ and the front-end sources; never the
+# image (webui/Dockerfile) adds bench/, lambdas/, tools/, config/ and the front-end sources; never the
 # local node_modules, dist, data, credentials or git history.
 *
 !servers/__init__.py
@@ -7,6 +7,7 @@
 !servers/export/**
 !bench/**
 !lambdas/**
+!tools/**
 !config/**
 !webui/__init__.py
 !webui/api/**

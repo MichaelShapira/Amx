@@ -210,11 +210,12 @@ class CoreStack(Stack):
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["cloudwatch:GetMetricData"], resources=["*"]))
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         agg_run.add_to_role_policy(s3_list)
-        agg_run.add_to_role_policy(s3_get("runs/*", "datasets/*"))
+        agg_run.add_to_role_policy(s3_get("runs/*", "datasets/*", "config/models.yaml"))   # the live model catalog
         agg_run.add_to_role_policy(s3_put("runs/*/report/*"))
         agg_run.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         preflight.add_to_role_policy(s3_list)
-        preflight.add_to_role_policy(s3_get("runs/*", "hosts/*", "artifacts/*", "datasets/dspm/v1/manifest.json"))
+        preflight.add_to_role_policy(s3_get("runs/*", "hosts/*", "artifacts/*", "datasets/dspm/v1/manifest.json",
+                                            "config/models.yaml"))
         preflight.add_to_role_policy(s3_put("runs/*"))
         preflight.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         preflight.add_to_role_policy(iam.PolicyStatement(

@@ -80,7 +80,7 @@ A read-only role is enough for `bench status`, `bench report` and the UI results
 
 ## Hugging Face token
 
-The token is stored as the Secrets Manager secret `amx-gpu-bench/hf-token` (plain string).
+The token is stored as the Secrets Manager secret `amx-gpu-bench/hf-token` (plain string); the web app's Setup page writes it there too.
 Gemma (M4) is gated; the token's account has accepted its license. Preflight checks that
 the token reaches the pinned revision of every gated model and refuses the run otherwise.
 The token is never written to logs, S3 or the repo: hosts read it in `stage_model.sh`
@@ -257,20 +257,20 @@ themes; GPU is always green and CPU always blue.
 - **Start here**: what the tool is for, how a run works, how to read the findings and compare runs.
 - **New benchmark**, a seven-step wizard: use case → test data with a live preview of the real
   prompts or documents and their expected answers → quick check or full test → models → hardware,
-  where you pick the GPU size first and **Auto suggest** sizes the CPU side against it: one best
-  match (closest hourly price, the fairest like-for-like), at most two alternatives ("more CPU
-  headroom" at the top of the fair band, "cheaper fair option" at the bottom), the rest folded
-  away. The model's architecture and size set the floor (a 3–4B chat model needs 16 vCPUs and
-  ~7.5 GiB for weights; a classifier needs 8), the price band decides fairness, previous-generation
-  and memory-optimized sizes are only fallbacks. **Propose with AI** sends the models, both sizes,
-  the test shape and the tool's own judgement to the newest Claude Opus on Amazon Bedrock, which
-  verifies them against current web data (prices, hardware specs, model and serving-software
-  support, public benchmarks) and recommends keeping or changing the sizes, with its sources
-  listed; the review runs as a background job (one to three minutes, ~90k input tokens) and the
-  page shows each search and page read as it happens. Claude on Bedrock has no server-side web
-  search, so the app provides `web_search` (DuckDuckGo, no key) and `fetch_page` tools over
-  Converse tool use; fetched content is treated as untrusted data and private or local addresses
-  are refused. Then parallel or sequential execution and Spot or On-Demand → load (single request, N concurrent,
+  where the **reasoning model** (Setup → Reasoning model; the newest Claude Opus on Amazon
+  Bedrock by default) proposes the GPU size and the AMX CPU size to compare. It receives the
+  model's size and kind, the test's shape, every allowed instance size with its catalog specs and
+  prices and the fairness rule (hourly prices within half to double of each other), looks up what
+  it is not sure of with the AgentCore built-in **web search** (`bedrock-agentcore:InvokeWebSearch`;
+  the model's architecture, GPU memory, current prices, serving-software support) and answers with
+  a structured proposal: the GPU, the CPU, why each, why the pair is fair, what was checked, the
+  caveats and the sources. The page shows it as a card in plain words, applies it the first time
+  the step is shown for a model, and keeps manual changes afterwards (**Propose again** asks once
+  more). The proposal is validated against the allowed size lists before it may be applied;
+  search results are treated as untrusted data; the job runs in the background (one to three
+  minutes) and the page shows each search as it happens. There is no sizing table in the code
+  any more: the model catalog is open (see Setup below), so sizing is reasoned per model. Private
+  or local addresses are never fetched because nothing is fetched: web search is the only tool. Then parallel or sequential execution and Spot or On-Demand → load (single request, N concurrent,
   or batched for classifiers) and acceptance targets → review with the estimate. Every control has a
   help icon.
 - **Test data**: the full dataset browser with filters by scenario, expected answer and hard-negative
@@ -296,10 +296,30 @@ themes; GPU is always green and CPU always blue.
   deltas, how many CPU instances replace one GPU with the limit drawn, and throughput /
   responsiveness / cost across load levels with the target line; "one at a time" shows a single
   hardware option. Targets are editable and everything is re-judged. **Executive summary**: one
-  button sends the computed findings (never raw data) to the newest Claude Opus available on
-  Amazon Bedrock in the account (discovered at call time, `us.` inference profile) and renders a
+  button sends the computed findings (never raw data) to the reasoning model chosen under Setup
+  (the newest Claude Opus available on Amazon Bedrock by default, `us.` inference profile) and renders a
   450-word summary with the exact numbers; cached per selection, one Bedrock call per generation.
-
+- **Setup** (operators change, everyone sees): the **Hugging Face token** (written to the
+  deployment's Secrets Manager secret; the page shows only whether it is set and when it last
+  changed), the **models** the benchmark offers, and the **reasoning model**. *Models* lists the
+  live catalog with, per model, the serving software and whether it is **proven in a run**
+  (a finished measurement exists in the run table) or **not yet run**. *Add model* takes a
+  Hugging Face repository id and runs a job in the web app: look the repository up (exists,
+  gated, license, latest commit pinned), derive the catalog entry from `config.json` (kind from
+  the architecture suffix, size from the safetensors metadata, context length, chat template,
+  labels), cut its prompt pools with its own tokenizer (the same code as `tools/build_prompts.py`
+  and `tools/dspm/build_requests.py`, uploaded next to the shipped pools and merged into the
+  manifests), and append it to the live catalog. The page says plainly what it cannot promise:
+  the serving software is *expected* to load a new model from its architecture family; the first
+  run is the proof. *Remove* takes a model off the list (finished runs keep their data; pools stay
+  for a re-add). *Reasoning model* lists the Anthropic Claude and OpenAI text models the account
+  can call through Bedrock Converse (the extent of the task role's `bedrock:InvokeModel` grant),
+  default the newest Opus; it writes the hardware proposals and executive summaries.
+  The live catalog is the object `config/models.yaml` in the bench bucket
+  (`bench/catalog_store.py`); every reader — the web app, the pre-check and the report Lambdas —
+  falls back to the repository's `config/models.yaml` (the seven shipped models) when the object
+  is absent. Settings live in the run table (`pk=SETTINGS`, `sk=app`). Locally, export
+  `AMXBENCH_HF_SECRET_ARN=<the secret's ARN>` to enable the token form.
 `webui/smoke.mjs` drives every page headlessly with Playwright and fails on any console error;
 `tests/test_webui_api.py` covers the API offline.
 

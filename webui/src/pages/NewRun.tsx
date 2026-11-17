@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
-import { api, defaultWizard, fmt, type AiJob, type Catalog, type Hardware, type InitialSelection, type ModelInfo, type Plan, type Side, type Suggested, type Suggestion, type UseCase, type Wizard } from "../api";
+import { api, defaultWizard, fmt, type AiJob, type AiProposal, type AiStep, type Catalog, type Hardware, type ModelInfo, type Plan, type Side, type UseCase, type Wizard } from "../api";
 import { useCatalog } from "../App";
 import DataPreview from "../components/DataPreview";
-import { Badge, Chips, Help, Label, Note, Reasons, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
+import { Badge, Chips, Help, Label, Note, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
 
 const STEPS = ["Use case", "Test data", "Depth", "Models", "Hardware", "Load & targets", "Review"];
 
@@ -163,7 +163,7 @@ function StepModels({ w, set }: SP) {
       <div className="tiles">
         {models.map((m) => (
           <Tile key={m.id} selected={w.models[0] === m.id} onClick={() => pick(m.id)} title={m.name}
-            badge={<><Badge>{m.params_b}B</Badge><Badge kind={m.commercial_ok ? "ok" : "warn"}>{m.commercial_ok ? m.license : "research license"}</Badge></>}
+            badge={<><Badge>{m.params_b}B</Badge><Badge kind={m.commercial_ok ? "ok" : "warn"}>{m.commercial_ok ? m.license : "research license"}</Badge>{m.user_added && <Badge kind="accent">added in Setup · not yet run</Badge>}</>}
             desc={<><div><b>{m.kind}</b>{m.batch_capable ? " · supports batched requests" : ""}</div><div>{m.description}</div></>} />
         ))}
       </div>
@@ -178,19 +178,21 @@ function StepHardware({ w, set }: SP) {
   const cat = useCatalog()!;
   const gpuHw = cat.hardware.filter((h) => h.accelerator === "gpu");
   const cpuHw = cat.hardware.filter((h) => h.accelerator === "cpu");
-  const [sug, setSug] = useState<Suggestion | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [sugErr, setSugErr] = useState<string | null>(null);
   const [ai, setAi] = useState<AiJob | null>(null);
   const [aiErr, setAiErr] = useState<string | null>(null);
-  const [initial, setInitial] = useState<InitialSelection | null>(null);
-  const [sizing, setSizing] = useState(false);
   const chosenModels = cat.models.filter((m) => w.models.includes(m.id));
   const model = chosenModels[0];
+  // Poll the proposal job; when it ends with a valid proposal and nothing was sized for this model
+  // yet, apply it (the page's pre-selection). Later proposals wait for "Use this proposal".
   useEffect(() => {
     if (!ai || ai.status !== "running") return;
-    const t = setInterval(() => api.aiProposeStatus(ai.id).then(setAi).catch((e) => { setAiErr(e.message); setAi(null); }), 2000);
+    const t = setInterval(() => api.aiProposeStatus(ai.id).then((j) => {
+      setAi(j);
+      if (j.status === "done" && j.result?.proposal && sizeKey && w.sized_for !== sizeKey) { applyProposal(j.result.proposal); }
+      else if (j.status !== "running" && sizeKey && w.sized_for !== sizeKey) set({ sized_for: sizeKey });
+    }).catch((e) => { setAiErr(e.message); setAi(null); }), 2000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ai]);
 
   // A number format the option's serving software serves but whose CPU feature the option's
@@ -216,33 +218,34 @@ function StepHardware({ w, set }: SP) {
   // The default number format for a hardware option: BF16 when its serving software can run the
   // model in BF16 (OpenVINO's own BF16 cell counts), otherwise the first format it can.
   const defaultPrecs = (hwId: string) => { const ok = precsFor(hwId); const bf16 = ["bf16", "bf16-ov"].find((p) => ok.includes(p)); return bf16 ? [bf16] : ok.slice(0, 1); };
-  // Pre-select both sides for the chosen model the first time this step is shown for it (or after
-  // the model or number format changed). Manual changes afterwards are kept until the model changes.
+  // Number formats carried over from another model may not exist for this one: keep the valid ones, else the default.
+  const fixPrecs = (hwId: string, cur: string[] | undefined) => { const ok = precsFor(hwId); const kept = (cur ?? []).filter((p) => ok.includes(p)); return kept.length ? kept : defaultPrecs(hwId); };
+  const applyProposal = (p: AiProposal) => {
+    const gpuId = w.gpu?.hardware ?? gpuHw[0].id;
+    const firstOk = cpuHw.find((h) => precsFor(h.id).length > 0) ?? cpuHw[0];      // vLLM cannot serve every model
+    const base = w.cpus.length ? w.cpus : [{ hardware: firstOk.id, instance_type: p.cpu.instance_type, precisions: [] as string[], alternates: firstOk.alternates }];
+    set({ sized_for: sizeKey ?? undefined,
+      gpu: { hardware: gpuId, instance_type: p.gpu.instance_type, precisions: fixPrecs(gpuId, w.gpu?.precisions), alternates: p.gpu.alternates },
+      cpus: base.map((c) => ({ ...c, instance_type: p.cpu.instance_type, precisions: fixPrecs(c.hardware, c.precisions) })) });
+  };
+  const aiPropose = async () => {
+    setAiErr(null);
+    try { const { job_id } = await api.aiProposeStart(w); setAi(await api.aiProposeStatus(job_id)); }
+    catch (e) { setAiErr((e as Error).message); }
+  };
+  // The first time this step is shown for a model (or after the model or number format changed),
+  // ask the reasoning model for the pair to compare. Manual changes afterwards are kept until the model changes.
   const sizeKey = model ? `${model.id}|${w.precision}` : null;
   useEffect(() => {
-    if (!model || !sizeKey || w.sized_for === sizeKey) return;
-    let alive = true;
-    setSizing(true); setSugErr(null);
-    api.initial({ model: model.id, precision: w.precision }).then((r) => {
-      if (!alive) return;
-      setInitial(r);
-      setSug(r.cpu);
-      const gpuBest = r.gpu.best?.instance_type;
-      const cpuBest = r.cpu?.best?.instance_type;
-      // Number formats carried over from another model may not exist for this one: keep the valid ones, else the default.
-      const fixPrecs = (hwId: string, cur: string[] | undefined) => { const ok = precsFor(hwId); const kept = (cur ?? []).filter((p) => ok.includes(p)); return kept.length ? kept : defaultPrecs(hwId); };
-      const patch: Partial<Wizard> = { sized_for: sizeKey };
-      const gpuId = w.gpu?.hardware ?? gpuHw[0].id;
-      if (gpuBest) patch.gpu = { hardware: gpuId, instance_type: gpuBest, precisions: fixPrecs(gpuId, w.gpu?.precisions), alternates: r.gpu_alternates };
-      if (cpuBest) {
-        // Tick the first CPU option whose serving software can run this model (vLLM cannot serve every model).
-        const firstOk = cpuHw.find((h) => precsFor(h.id).length > 0) ?? cpuHw[0];
-        const base = w.cpus.length ? w.cpus : [{ hardware: firstOk.id, instance_type: cpuBest, precisions: [] as string[], alternates: firstOk.alternates }];
-        patch.cpus = base.map((c) => ({ ...c, instance_type: cpuBest, precisions: fixPrecs(c.hardware, c.precisions) }));
-      }
-      set(patch);
-    }).catch((e) => alive && setSugErr(e.message)).finally(() => alive && setSizing(false));
-    return () => { alive = false; };
+    if (!model || !sizeKey || w.sized_for === sizeKey || ai?.status === "running") return;
+    // A starting point before (or without) the proposal: the GPU option and the first CPU option
+    // whose serving software can run this model, each at its default size.
+    if (!w.gpu || w.cpus.length === 0) {
+      const firstOk = cpuHw.find((h) => precsFor(h.id).length > 0) ?? cpuHw[0];
+      set({ gpu: w.gpu ?? { hardware: gpuHw[0].id, instance_type: gpuHw[0].default_instance_type, precisions: defaultPrecs(gpuHw[0].id), alternates: gpuHw[0].alternates },
+            cpus: w.cpus.length ? w.cpus : [{ hardware: firstOk.id, instance_type: firstOk.default_instance_type, precisions: defaultPrecs(firstOk.id), alternates: firstOk.alternates }] });
+    }
+    void aiPropose();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sizeKey, w.sized_for]);
   const toggleGpu = (hw: typeof gpuHw[number]) => set({ gpu: w.gpu?.hardware === hw.id ? null : { hardware: hw.id, instance_type: w.gpu?.instance_type ?? hw.default_instance_type, precisions: defaultPrecs(hw.id), alternates: w.gpu?.alternates ?? hw.alternates } });
@@ -254,26 +257,10 @@ function StepHardware({ w, set }: SP) {
     if (w.gpu?.hardware === hwId) set({ gpu: { ...w.gpu, ...patch } });
     else set({ cpus: w.cpus.map((c) => (c.hardware === hwId ? { ...c, ...patch } : c)) });
   };
-  const suggest = async () => {
-    if (!w.gpu) return;
-    setBusy(true); setSugErr(null);
-    try { setSug(await api.suggest({ models: w.models, precision: w.precision, gpu_type: w.gpu.instance_type })); }
-    catch (e) { setSugErr((e as Error).message); }
-    finally { setBusy(false); }
-  };
-  const aiPropose = async () => {
-    setAiErr(null);
-    try { const { job_id } = await api.aiProposeStart(w); setAi(await api.aiProposeStatus(job_id)); }
-    catch (e) { setAiErr((e as Error).message); }
-  };
-  const useCpu = (t: string) => {
-    if (w.cpus.length) set({ cpus: w.cpus.map((c) => ({ ...c, instance_type: t })) });
-    else set({ cpus: [{ hardware: cpuHw[0].id, instance_type: t, precisions: defaultPrecs(cpuHw[0].id), alternates: cpuHw[0].alternates }] });
-  };
   const gpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "gpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);
   const cpuTypes = Object.values(cat.instances).filter((s) => s.accelerator === "cpu").sort((a, b) => a.usd_per_hour - b.usd_per_hour);
-  const currentCpu = w.cpus[0]?.instance_type;
-  const stale = sug && w.gpu && sug.gpu_type !== w.gpu.instance_type;
+  const proposal = ai?.result?.proposal ?? null;
+  const applied = !!proposal && w.gpu?.instance_type === proposal.gpu.instance_type && w.cpus.length > 0 && w.cpus.every((c) => c.instance_type === proposal.cpu.instance_type);
 
   const sideBlock = (hw: typeof cat.hardware[number], side: Side | undefined, kind: "gpu" | "cpu") => (
     <div key={hw.id} className={`tile ${kind} ${side ? "selected" : ""}`} style={{ cursor: "default" }}>
@@ -284,7 +271,7 @@ function StepHardware({ w, set }: SP) {
       </div>
       {side && (
         <div className="mt">
-          <Label help={kind === "gpu" ? "The AWS instance size for the GPU side. Pick it first: the CPU suggestions below are sized against it. The report prices results with the On-Demand rate of the size that ran." : "The AWS instance size for this option. Press Auto suggest below for sizes matched to your GPU choice, with reasons."}>Instance size</Label>
+          <Label help={kind === "gpu" ? "The AWS instance size for the GPU side. The proposal below picks one for this model; change it here if you know better. The report prices results with the On-Demand rate of the size that ran." : "The AWS instance size for this option. The proposal below picks one priced close to the GPU; change it here if you know better."}>Instance size</Label>
           <select value={side.instance_type} onChange={(e) => setSide(hw.id, { instance_type: e.target.value })} style={{ width: "100%" }}>
             {(kind === "gpu" ? gpuTypes : cpuTypes).map((s) => <option key={s.type} value={s.type}>{s.type} · {instanceLine(s, true)}</option>)}
           </select>
@@ -300,18 +287,12 @@ function StepHardware({ w, set }: SP) {
   return (
     <div>
       <h2>5 · Which hardware to compare?</h2>
-      <p className="muted">Both sides are pre-selected for <b>{model?.name ?? "the chosen model"}</b>: the GPU size that holds it and can feed it, and the AMX CPU size that costs about the same. Change either size, tick more CPU options (different serving software is a different option; each becomes one test instance), or ask for suggestions below.</p>
-      {sizing && <Spinner label={`Sizing the hardware for ${model?.name ?? "the model"}…`} />}
-      {initial?.summary && !sizing && (
-        <Note kind="ok"><b>Pre-selected.</b> {initial.summary}
-          {initial.gpu.best && <details className="mt"><summary className="small">Why {initial.gpu.best.instance_type} on the GPU side</summary>
-            <div className="small mt">{initial.gpu.basis.map((b, i) => <div key={i}>{b}</div>)}</div>
-            <div className="mt"><Reasons reasons={initial.gpu.best.reasons} /></div>
-            {initial.gpu.alternatives.length > 0 && <div className="small muted mt">If AWS has no {initial.gpu.best.instance_type} available, the run tries {initial.gpu_alternates.join(" and ")} automatically.</div>}
-            {initial.gpu.rejected.length > 0 && <div className="small muted mt">Not chosen: {initial.gpu.rejected.slice(0, 3).map((c) => `${c.instance_type} (${c.reasons.filter((r) => !r.ok)[0]?.text ?? ""})`).join("; ")}</div>}
-          </details>}
-        </Note>
+      <p className="muted">The reasoning model (Setup → Reasoning model) proposes the GPU size and the AMX CPU size to compare for <b>{model?.name ?? "the chosen model"}</b>, checking the model, the hardware and today's prices on the web, and explains why in plain words. The proposal is applied for you the first time; change either size, or tick more CPU options (different serving software is a different option; each becomes one test instance).</p>
+      {model?.user_added && (
+        <Note kind="warn"><b>{model.name} was added in Setup.</b> Nothing has run it here yet, so which serving software really loads it is expected, not proven. The first benchmark is the real test; if a hardware option cannot start the model, the run page says exactly why and the other options still finish.</Note>
       )}
+      {aiErr && <Note kind="bad">{aiErr}</Note>}
+      {ai && <AiProposalView job={ai} applied={applied} onAgain={aiPropose} onApply={applyProposal} />}
       <div className="grid c2 mt">
         <div>
           <h3><Badge kind="gpu">GPU side</Badge></h3>
@@ -322,28 +303,6 @@ function StepHardware({ w, set }: SP) {
           <div className="grid" style={{ gap: 10 }}>{cpuHw.map((hw) => sideBlock(hw, w.cpus.find((c) => c.hardware === hw.id), "cpu"))}</div>
         </div>
       </div>
-      <div className="hr" />
-      <div className="row between">
-        <div>
-          <h3 style={{ margin: 0 }}>Which CPU size matches your GPU? <Help text="Auto suggest sizes the CPU side against the GPU you chose: the model's architecture and size set the minimum memory and number of AMX cores, and the hourly price decides fairness (half to double the GPU's price; the closer, the fairer). You get one best match and at most two alternatives; the rest are folded away. Propose with AI asks the newest Claude Opus on Amazon Bedrock to verify the whole selection against up-to-date facts from the web (prices, hardware, model support) and to recommend keeping or changing it." /></h3>
-          <div className="small muted">
-            {w.gpu ? <>Sized against <b>{w.gpu.instance_type}</b> for {chosenModels.map((m) => m.name).join(", ") || "the chosen models"}{w.precision !== "bf16" ? ` in ${cat.precisions[w.precision]?.label ?? w.precision}` : ""}.</>
-              : <>Tick the GPU option and pick its size first; CPU suggestions are sized against it.</>}
-          </div>
-        </div>
-        <div className="row">
-          <button className="btn primary" onClick={suggest} disabled={busy || !w.gpu || w.models.length === 0} title={!w.gpu ? "Pick the GPU size first" : undefined}>{busy ? <Spinner label="Sizing…" /> : "Auto suggest"}</button>
-          <button className="btn" onClick={aiPropose} disabled={!w.gpu || w.cpus.length === 0 || w.models.length === 0 || ai?.status === "running"}
-            title={!w.gpu || w.cpus.length === 0 ? "Choose the GPU size and at least one CPU option first" : "Claude Opus on Bedrock checks the selection with web search (one to three minutes)"}>
-            {ai?.status === "running" ? <Spinner label="Checking…" /> : "Propose with AI"}
-          </button>
-        </div>
-      </div>
-      {sugErr && <Note kind="bad">{sugErr}</Note>}
-      {aiErr && <Note kind="bad">{aiErr}</Note>}
-      {sug && stale && <Note kind="warn">These suggestions were sized against {sug.gpu_type}; you have since picked {w.gpu!.instance_type}. Press Auto suggest again.</Note>}
-      {sug && <SuggestionView sug={sug} current={currentCpu} onPick={useCpu} />}
-      {ai && <AiReviewView job={ai} onAgain={aiPropose} onPick={useCpu} cpuTypes={cpuTypes.map((s) => s.type)} />}
       <div className="hr" />
       <Label help="Run every hardware option at the same time (fastest; one instance per option is up at once) or one after another (fewer instances running at any moment; the run takes longer). Results are the same either way.">How to run the hardware options</Label>
       <Toggle value={w.parallel_targets ? "par" : "seq"} onChange={(v) => set({ parallel_targets: v === "par" })} options={[{ value: "par", label: "All in parallel" }, { value: "seq", label: "One after another" }]} />
@@ -369,72 +328,69 @@ function StepHardware({ w, set }: SP) {
   );
 }
 
-function SuggestCard({ c, current, onPick, big }: { c: Suggested; current?: string; onPick: (t: string) => void; big?: boolean }) {
-  const roleKind = c.role === "match" ? "ok" : c.role === "headroom" ? "accent" : "warn";
-  return (
-    <div className={`tile cpu ${current === c.instance_type ? "selected" : ""}`} style={{ cursor: "default" }}>
-      <div className="row between">
-        <div className="t" style={big ? { fontSize: 18 } : undefined}>{c.instance_type} {c.role_label && <Badge kind={roleKind}>{c.role_label}</Badge>}{c.role_help && <Help text={c.role_help} />}</div>
-        <button className="btn sm" onClick={() => onPick(c.instance_type)} disabled={current === c.instance_type}>{current === c.instance_type ? "Selected" : "Use this"}</button>
-      </div>
-      <div className="d">{instanceLine(c.spec)}{c.ratio != null ? ` · the GPU costs ${c.ratio.toFixed(2)}x as much` : ""}</div>
-      <div className="mt"><Reasons reasons={c.reasons} /></div>
-    </div>
-  );
-}
-
-function SuggestionView({ sug, current, onPick }: { sug: Suggestion; current?: string; onPick: (t: string) => void }) {
-  return (
-    <div className="mt">
-      <Note kind="ok">{sug.basis.map((b, i) => <div key={i}>{b}</div>)}</Note>
-      {sug.error && <Note kind="bad">{sug.error}</Note>}
-      {sug.best && <div className="mt"><SuggestCard c={sug.best} current={current} onPick={onPick} big /></div>}
-      {sug.alternatives.length > 0 && <div className="grid c2 mt">{sug.alternatives.map((c) => <SuggestCard key={c.instance_type} c={c} current={current} onPick={onPick} />)}</div>}
-      {sug.others.length > 0 && (
-        <details className="mt"><summary className="small">Other fair sizes ({sug.others.length}) — also inside the price band, but a worse match on price, generation or memory type</summary>
-          <div className="chips mt">{sug.others.map((c) => <button key={c.instance_type} className={"chip " + (current === c.instance_type ? "on" : "")} onClick={() => onPick(c.instance_type)} title={c.reasons.filter((r) => !r.ok).map((r) => r.text).join(" ") || instanceLine(c.spec)}>{c.instance_type} · {instanceLine(c.spec, true)}</button>)}</div>
-        </details>
-      )}
-      {sug.rejected.length > 0 && (
-        <details className="mt"><summary className="small">Not suitable for this test ({sug.rejected.length} shown)</summary>
-          <ul className="small muted mt">{sug.rejected.map((c) => <li key={c.instance_type}><b>{c.instance_type}</b>: {c.reasons.filter((r) => !r.ok).map((r) => r.text).join(" ")}</li>)}</ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function AiReviewView({ job, onAgain, onPick, cpuTypes }: { job: AiJob; onAgain: () => void; onPick: (t: string) => void; cpuTypes: string[] }) {
+function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applied: boolean; onAgain: () => void; onApply: (p: AiProposal) => void }) {
+  const cat = useCatalog()!;
   const r = job.result;
-  const stepLine = (s: AiJob["steps"][number]) => s.kind === "search" ? `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})` : `Read: ${s.text}${s.error ? ` (${s.error})` : ""}`;
-  // Instance sizes the review names in its Recommendation section, offered as one-click picks.
-  const named = r ? Array.from(new Set((r.markdown.split(/## Recommendation/)[1] ?? "").split(/## Sources/)[0].match(/\b[a-z]\d[a-z]*\.\d*x?large\b/g) ?? [])).filter((t) => cpuTypes.includes(t)) : [];
+  const p = r?.proposal ?? null;
+  const stepLine = (s: AiStep) => `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})`;
+  const spec = (t: string) => cat.instances[t];
+  const ratio = p && spec(p.gpu.instance_type) && spec(p.cpu.instance_type) ? spec(p.gpu.instance_type).usd_per_hour / spec(p.cpu.instance_type).usd_per_hour : null;
+  const confKind = p?.confidence === "high" ? "ok" : p?.confidence === "low" ? "warn" : "accent";
   return (
     <div className="card mt" style={{ borderColor: "var(--accent)" }}>
       <div className="row between">
-        <h3 style={{ margin: 0 }}>AI review of the selection <Help text="The newest Claude Opus available on Amazon Bedrock in this account receives the models, the GPU and CPU sizes, the test shape and this tool's own fairness judgement, then searches the web (prices, hardware specs, model and software support) to verify them and recommends keeping or changing the sizes. Everything it reads on the web is treated as data, not instructions; the sources it used are listed so you can check them." /></h3>
+        <h3 style={{ margin: 0 }}>Proposed pair for this test <Help text="The reasoning model chosen in Setup (Claude Opus by default) receives the model, the test's shape, every allowed instance size with its catalog specs and prices, and this tool's fairness rule (hourly prices within half to double of each other). It searches the web for what it is not sure of (the model's size and architecture, GPU memory, current prices, whether the serving software supports the model) and proposes one GPU size and one CPU size, with reasons in plain words. Everything it reads on the web is treated as data, not instructions, and the proposal is only offered when both sizes are on this tool's allowed lists." /></h3>
         <div className="row small muted">
           {job.model && <span>{job.model.name} · Bedrock</span>}
-          {job.status !== "running" && <button className="btn sm" onClick={onAgain}>Review again</button>}
+          {job.status !== "running" && <button className="btn sm" onClick={onAgain}>Propose again</button>}
         </div>
       </div>
       {job.status === "running" && (
         <div className="mt">
-          <Spinner label={`Checking with web search… ${job.steps.length} step${job.steps.length === 1 ? "" : "s"} so far, ${Math.round(job.seconds)} s. This usually takes one to three minutes.`} />
+          <Spinner label={`Working it out with web search… ${job.steps.length} search${job.steps.length === 1 ? "" : "es"} so far, ${Math.round(job.seconds)} s. This usually takes one to three minutes; you can change the sizes below meanwhile.`} />
           <ul className="small muted mt">{job.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>
         </div>
       )}
-      {job.status === "error" && <Note kind="bad"><b>The AI review failed.</b> {job.error}</Note>}
-      {r && (
+      {job.status === "error" && <Note kind="bad"><b>The proposal failed.</b> {job.error} Pick the sizes by hand below, or press Propose again.</Note>}
+      {r && !p && (
+        <div className="mt">
+          <Note kind="warn"><b>No proposal this time:</b> {r.problem}. Pick the sizes by hand below, or press Propose again. What the model wrote:</Note>
+          {r.markdown && <div className="prose mt"><Markdown>{r.markdown}</Markdown></div>}
+        </div>
+      )}
+      {r && p && (
         <>
-          <div className="prose mt"><Markdown>{r.markdown}</Markdown></div>
-          {named.length > 0 && (
-            <div className="row mt small"><span className="muted">Sizes named in the recommendation:</span>{named.map((t) => <button key={t} className="btn sm" onClick={() => onPick(t)}>Use {t}</button>)}</div>
+          <div className="grid c2 mt">
+            <div className="tile gpu selected" style={{ cursor: "default" }}>
+              <div className="t" style={{ fontSize: 18 }}><Badge kind="gpu">GPU</Badge> {p.gpu.instance_type}</div>
+              {spec(p.gpu.instance_type) && <div className="d">{instanceLine(spec(p.gpu.instance_type))}</div>}
+              <div className="small mt">{p.gpu.why}</div>
+              {p.gpu.alternates.length > 0 && <div className="tiny mt">If AWS has none available, the run tries {p.gpu.alternates.join(" and ")}.</div>}
+            </div>
+            <div className="tile cpu selected" style={{ cursor: "default" }}>
+              <div className="t" style={{ fontSize: 18 }}><Badge kind="cpu">CPU</Badge> {p.cpu.instance_type}</div>
+              {spec(p.cpu.instance_type) && <div className="d">{instanceLine(spec(p.cpu.instance_type))}</div>}
+              <div className="small mt">{p.cpu.why}</div>
+            </div>
+          </div>
+          <Note kind="ok">
+            <b>Why this is a fair comparison.</b> {p.summary}
+            {ratio != null && <span> The GPU costs <b>{ratio.toFixed(2)}x</b> as much per hour as the CPU{ratio >= cat.fair_ratio[0] && ratio <= cat.fair_ratio[1] ? ", inside this tool's fair band" : ", OUTSIDE this tool's fair band (half to double)"}.</span>}
+          </Note>
+          <div className="row mt">
+            <button className="btn primary" disabled={applied} onClick={() => onApply(p)}>{applied ? "✓ Selected below" : "Use this proposal"}</button>
+            <Badge kind={confKind}>confidence: {p.confidence}</Badge>
+          </div>
+          {p.caveats.length > 0 && (
+            <div className="mt"><div className="label">Good to know</div><ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{p.caveats.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
           )}
-          <details className="mt"><summary className="small">What the reviewer did ({r.tool_calls} web lookups, {r.seconds} s, {(r.usage.inputTokens / 1000).toFixed(0)}k tokens read)</summary>
-            <ul className="small muted mt">{r.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>
+          <details className="mt"><summary className="small">What was checked ({p.checked.length} facts, {r.tool_calls} web searches, {r.seconds} s)</summary>
+            <ul className="small muted mt">{p.checked.map((x, i) => <li key={i}>{x}</li>)}</ul>
+            <div className="label mt">Searches</div>
+            <ul className="small muted">{r.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>
+            {r.sources.length > 0 && <><div className="label mt">Sources</div><ul className="small">{r.sources.map((s) => <li key={s.url}><a href={s.url} target="_blank" rel="noreferrer">{s.title}</a></li>)}</ul></>}
           </details>
-          <div className="tiny muted mt">Written by {r.model.name} ({r.model.call_id}) at {r.generated_at}. The review is advice from a language model grounded in the pages it lists under Sources; check a source before acting on a number.</div>
+          <div className="tiny muted mt">Written by {r.model.name} ({r.model.call_id}) at {r.generated_at}. Advice from a language model grounded in the pages it lists; check a source before acting on a number.</div>
         </>
       )}
     </div>

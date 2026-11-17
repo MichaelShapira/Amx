@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The web app for AWS App Runner (infra/stacks/webapp.py): the React front end built from source
+# The web app for ECS Fargate (infra/stacks/webapp.py): the React front end built from source
 # and served by the FastAPI API, Python dependencies from the hashed lock only, non-root, port 8080
 # published by the platform. Build from the repository root:
 #   docker build -f webui/Dockerfile .
@@ -18,12 +18,14 @@ COPY webui/requirements.lock /app/webui/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /app/webui/requirements.lock
 COPY bench /app/bench
 COPY lambdas /app/lambdas
+COPY tools /app/tools
 COPY config /app/config
 COPY webui/__init__.py /app/webui/__init__.py
 COPY webui/api /app/webui/api
 COPY --from=ui /ui/dist /app/webui/dist
 
-# The app writes only the data it syncs from the bench bucket at start (entrypoint.py).
+# The app writes only under prompts/ and data/: the sync from the bench bucket at start (entrypoint.py)
+# and the prompt pools a model added in Setup gets (onboarding.py).
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app \
     && mkdir -p /app/prompts /app/data && chown -R 10001:10001 /app/prompts /app/data \
     && find /app -name __pycache__ -type d -prune -exec rm -rf {} +

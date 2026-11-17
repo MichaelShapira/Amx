@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,17 +24,18 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import pairing, report  # noqa: E402
-from bench.config import RunConfig, load_models, load_targets, resolve_cells, run_instance_types  # noqa: E402
+from bench import catalog_store, pairing, report  # noqa: E402
+from bench.config import RunConfig, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import levels_for_cell  # noqa: E402
 from bench.pools import local_pool_sizes  # noqa: E402
-from webui.api import auth, aws, compare, headers, propose  # noqa: E402
+from webui.api import auth, aws, compare, headers  # noqa: E402
 from webui.api import catalog as C  # noqa: E402
 
 REGION, ACCOUNT = "us-east-1", "346399954218"
 app = FastAPI(title="GPU vs AMX CPU benchmark", docs_url=None, redoc_url=None)
 _CACHE: dict[str, Any] = {}
+catalog_store.s3_factory = lambda: aws.client("s3")       # the live catalog is read with the app's (file-refreshed) credentials
 
 # Cloud deployment (AmxBench-WebApp): every /api call needs a Cognito access token, see auth.py.
 # Locally (no pool configured, loopback bind) the gate is off. Security headers go on every
@@ -83,8 +84,10 @@ async def _aws_failure(request, exc):
 
 @app.get("/api/catalog")
 def get_catalog():
-    if "catalog" not in _CACHE:
-        _CACHE["catalog"] = C.catalog()
+    """The wizard's choices. Cached for a minute: the model list is live (Setup adds and removes
+    models) and a change must show on the next page load, not the next restart."""
+    if "catalog" not in _CACHE or _CACHE.get("catalog_at", 0) < time.time() - 60:
+        _CACHE["catalog"], _CACHE["catalog_at"] = C.catalog(), time.time()
     return _CACHE["catalog"]
 
 
@@ -320,7 +323,7 @@ def post_plan(w: Wizard):
 
     notes: list[str] = []
     run = _dedupe_cells(_run_dict(w, notes))
-    models, targets = load_models(ROOT / "config/models.yaml"), load_targets(ROOT / "config/targets.yaml")
+    models, targets = catalog_store.load_catalog(), load_targets(ROOT / "config/targets.yaml")
     tmap = targets.resolved()
     problems: list[str] = []
     if not w.models:
@@ -382,70 +385,20 @@ def post_plan(w: Wizard):
             "request_mode": compare.request_mode(run)}
 
 
-class ProposeIn(BaseModel):
-    models: list[str] = []
-    precision: str = "bf16"
-    gpu_type: str | None = None
-    cpu_type: str | None = None
-
-
-@app.post("/api/propose")
-def post_propose(p: ProposeIn):
-    cat = get_catalog()
-    mods = [m for m in cat["models"] if m["id"] in p.models] or cat["models"][:1]
-    return propose.propose(mods, p.precision, p.gpu_type, p.cpu_type, _capacity_notes())
-
-
-class SuggestIn(BaseModel):
-    models: list[str] = []
-    precision: str = "bf16"
-    gpu_type: str
-
-
-class InitialIn(BaseModel):
-    model: str
-    precision: str = "bf16"
-
-
-@app.post("/api/suggest/initial")
-def post_suggest_initial(p: InitialIn):
-    """What the hardware step pre-selects for the chosen model: GPU best fit, then the CPU best
-    match against it, both with reasons. A classifier and a chat model get different pairs."""
-    cat = get_catalog()
-    mods = [m for m in cat["models"] if m["id"] == p.model]
-    if not mods:
-        raise HTTPException(400, f"unknown model {p.model}")
-    return propose.initial_selection(mods, p.precision, _capacity_notes())
-
-
-@app.post("/api/suggest")
-def post_suggest(p: SuggestIn):
-    """Auto-suggest: CPU sizes for the chosen GPU and models — one best match, up to two
-    alternatives, the rest folded away."""
-    cat = get_catalog()
-    mods = [m for m in cat["models"] if m["id"] in p.models]
-    if not mods:
-        raise HTTPException(400, "pick at least one model first")
-    if p.gpu_type not in cat["instances"]:
-        raise HTTPException(400, f"{p.gpu_type} is not in the instance catalog")
-    return propose.suggest_cpu(mods, p.precision, p.gpu_type, _capacity_notes())
-
-
 def _ai_context(w: Wizard) -> dict:
-    """What the AI reviewer is told: the wizard state plus the tool's own analysis, in plain facts."""
+    """What the reasoning model is told: the chosen model(s), the test, every allowed instance size
+    with its catalog facts, the fairness rule, recent capacity refusals and, when the page already
+    has a selection, that selection with the tool's own price check. No sizing rule of ours: the
+    model catalog is open, so the proposal is reasoned per model (ai_propose.py)."""
     from webui.api import ai_propose
 
     cat = get_catalog()
-    if not w.gpu or not w.cpus:
-        raise HTTPException(400, "choose the GPU option with its size and at least one CPU option first")
     mods = [m for m in cat["models"] if m["id"] in w.models]
     if not mods:
         raise HTTPException(400, "pick at least one model first")
-    specs = {m.id: m for m in load_models(ROOT / "config/models.yaml").models}
+    specs = {m.id: m for m in catalog_store.load_catalog().models}
     hw = {h["id"]: h for h in cat["hardware"]}
-    gpu_spec, cpu_specs = cat["instances"].get(w.gpu["instance_type"]), {c["hardware"]: cat["instances"].get(c["instance_type"]) for c in w.cpus}
-    if not gpu_spec or any(s is None for s in cpu_specs.values()):
-        raise HTTPException(400, "an instance size is not in the catalog")
+    instances = cat["instances"]
     depth = C.DEPTHS.get(w.depth)
     requests = w.requests if w.depth == "custom" else (depth[2] if depth else 50)
     passes = w.passes if w.depth == "custom" else (depth[3] if depth else 1)
@@ -461,28 +414,30 @@ def _ai_context(w: Wizard) -> dict:
     else:
         test["scenarios"] = "; ".join(C.WORKLOADS.get(x, (x,))[0] for x in w.workloads)
         test["decision deadline"] = C.PRESETS.get(w.preset, (w.preset, "", None))[0]
+    proven = _proven_engines() if any(specs.get(m["id"]) and specs[m["id"]].user_added for m in mods) else {}
     models_ctx = []
     for m in mods:
         s = specs.get(m["id"])
         models_ctx.append({"name": m["name"], "hf_repo": s.hf_repo if s else "?", "kind": m["kind"], "type": m["type"],
                            "params_b": m["params_b"], "license": m["license"], "max_input_tokens": s.max_input_tokens if s else "?",
-                           "precisions": {p: v["engines"] for p, v in m["precisions"].items()}})
-    sug = propose.suggest_cpu(mods, w.precision, w.gpu["instance_type"], _capacity_notes())
-    sug_small = {"basis": sug["basis"], "best": {"instance_type": sug["best"]["instance_type"]} if sug["best"] else None,
-                 "alternatives": [{"instance_type": a["instance_type"], "role_label": a["role_label"]} for a in sug["alternatives"]]}
+                           "precisions": {p: v["engines"] for p, v in m["precisions"].items()},
+                           "user_added": bool(s and s.user_added), "notes": s.notes if s else None,
+                           "proven_engines": sorted(proven.get(m["id"], ()))})
+    allowed = {side: [(t, instances[t]) for t in pairing.types_for(side) if t in instances] for side in ("gpu", "cpu")}
+    current = None
+    if w.gpu and w.cpus and w.gpu["instance_type"] in instances and all(c["instance_type"] in instances for c in w.cpus):
+        current = {"gpu": {"instance_type": w.gpu["instance_type"], "software": hw.get(w.gpu["hardware"], {}).get("software", [])},
+                   "cpus": [{"instance_type": c["instance_type"], "software": hw.get(c["hardware"], {}).get("software", [])} for c in w.cpus],
+                   "pairing": [pairing.judge(c["instance_type"], w.gpu["instance_type"]) for c in w.cpus]}
+    watched = {t for t, _ in allowed["gpu"]} | {t for t, _ in allowed["cpu"]}
     return {"region": REGION, "az": "use1-az1", "price_snapshot": cat.get("price_snapshot"), "test": test, "models": models_ctx,
-            "gpu": {"instance_type": w.gpu["instance_type"], "spec": gpu_spec, "software": hw.get(w.gpu["hardware"], {}).get("software", [])},
-            "cpus": [{"instance_type": c["instance_type"], "spec": cpu_specs[c["hardware"]],
-                      "software": hw.get(c["hardware"], {}).get("software", [])} for c in w.cpus],
-            "pairing": [pairing.judge(c["instance_type"], w.gpu["instance_type"]) for c in w.cpus],
-            "suggest": sug_small, "capacity_notes": {k: v for k, v in _capacity_notes().items() if k in {w.gpu["instance_type"], *[c["instance_type"] for c in w.cpus]}},
-            "allowed": {"gpu": pairing.types_for("gpu"), "cpu": pairing.types_for("cpu")},
-            "_module": ai_propose}
+            "allowed": allowed, "fair_ratio": list(pairing.FAIR_RATIO), "current": current,
+            "capacity_notes": {k: v for k, v in _capacity_notes().items() if k in watched}, "_module": ai_propose}
 
 
 @app.post("/api/propose/ai")
 def post_propose_ai(w: Wizard):
-    """Start the AI review as a background job; poll /api/propose/ai/{id}."""
+    """Start the hardware proposal as a background job; poll /api/propose/ai/{id}."""
     ctx = _ai_context(w)
     mod = ctx.pop("_module")
     return {"job_id": mod.start(ctx), "prompt_preview": mod.build_prompt(ctx)}
@@ -1328,10 +1283,11 @@ class SummaryIn(CompareIn):
 
 @app.get("/api/executive-summary/model")
 def exec_model():
-    from webui.api import exec_summary
 
     try:
-        return exec_summary.newest_opus(aws.client("bedrock"))
+        from webui.api import settings
+
+        return settings.reasoning_model()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(503, f"Bedrock is not reachable: {str(e)[:200]}") from e
 
@@ -1361,6 +1317,143 @@ def get_report_md(run_id: str):
     from fastapi.responses import PlainTextResponse
 
     return PlainTextResponse(report.render(_summary(run_id), with_charts=False)["summary.md"].decode())
+
+
+# ----------------------------------------------------------------------------- setup
+
+class HfTokenIn(BaseModel):
+    token: str
+
+
+class ReasoningModelIn(BaseModel):
+    call_id: str
+
+
+class AddModelIn(BaseModel):
+    repo: str
+
+
+def _who(request: Request) -> str | None:
+    u = getattr(request.state, "user", None) if hasattr(request, "state") else None
+    return (u or {}).get("username") if isinstance(u, dict) else None
+
+
+@app.get("/api/setup")
+def get_setup():
+    """Everything the Setup page shows. Reads only; the token is reported as set/unset and when."""
+    from webui.api import onboarding, settings
+
+    cat = catalog_store.load_catalog(fresh=True)
+    _CACHE.pop("proven_error", None)
+    proven = _proven_engines()
+    models = []
+    for m in cat.models:
+        engines = sorted({e for p in m.precisions.values() if p.enabled for e in p.engines})
+        models.append({"id": m.id, "name": C.model_name(m.id), "repo": m.hf_repo, "revision": m.revision[:12], "type": m.type,
+                       "kind": C.MODEL_KIND.get(m.type, m.type), "params_b": m.nominal_size_b, "license": m.license,
+                       "gated": m.gated, "suites": list(m.suites), "user_added": m.user_added, "enabled": m.enabled,
+                       "engines": [{"id": e, "label": C.ENGINES.get(e, (e,))[0], "proven": e in proven.get(m.id, set())}
+                                   for e in engines],
+                       "notes": m.notes})
+    try:
+        reasoning = {"models": settings.list_reasoning_models(), "current": settings.reasoning_model()}
+    except Exception as e:  # noqa: BLE001
+        reasoning = {"models": [], "current": None, "error": aws.expired_sentence() if aws.is_expired(e) else str(e)[:200]}
+    return {"hf_token": settings.hf_token_status(), "models": models, "catalog_source": catalog_store.source(),
+            "proven_error": _CACHE.get("proven_error"),      # badges default to "not yet run" when the run table is unreadable
+            "reasoning": reasoning, "running_job": next((onboarding.status(j) for j, v in onboarding._jobs.items()
+                                                         if v["status"] == "running"), None)}
+
+
+def _proven_engines() -> dict[str, set[str]]:
+    """Which serving software has served which model to a finished measurement here: from the
+    run table's cells (status ready). Nothing else counts as proof."""
+    out: dict[str, set[str]] = {}
+    try:
+        kw = {"FilterExpression": "begins_with(sk, :c) AND #s = :r", "ExpressionAttributeNames": {"#s": "status"},
+              "ExpressionAttributeValues": {":c": "CELL#", ":r": "ready"}, "ProjectionExpression": "sk, engine"}
+        while True:
+            r = _table().scan(**kw)
+            for it in r["Items"]:
+                mid = it["sk"][5:].split("|")[0]
+                if it.get("engine"):
+                    out.setdefault(mid, set()).add(it["engine"])
+            if "LastEvaluatedKey" not in r:
+                break
+            kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    except Exception as e:  # noqa: BLE001 - the page still renders, without badges
+        _CACHE["proven_error"] = aws.expired_sentence() if aws.is_expired(e) else f"{type(e).__name__}: {str(e)[:120]}"
+    return out
+
+
+@app.post("/api/setup/hf-token")
+def post_hf_token(body: HfTokenIn, request: Request):
+    from webui.api import settings
+
+    try:
+        return settings.set_hf_token(body.token, _who(request))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/setup/reasoning-model")
+def post_reasoning_model(body: ReasoningModelIn, request: Request):
+    from webui.api import settings
+
+    try:
+        return settings.set_reasoning_model(body.call_id, _who(request))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/setup/models")
+def post_add_model(body: AddModelIn, request: Request):
+    from webui.api import onboarding
+
+    try:
+        job_id = onboarding.start(body.repo, _who(request))
+    except onboarding.OnboardingError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"job_id": job_id}
+
+
+@app.get("/api/setup/models/jobs/{job_id}")
+def get_add_model_job(job_id: str):
+    from webui.api import onboarding
+
+    s = onboarding.status(job_id)
+    if not s:
+        raise HTTPException(404, "unknown job")
+    if s["status"] == "done":
+        _CACHE.pop("catalog", None)
+    return s
+
+
+@app.delete("/api/setup/models/{model_id}")
+def delete_model(model_id: str, request: Request):
+    from webui.api import onboarding
+
+    running = [i for i in _running_runs_using(model_id)]
+    if running:
+        raise HTTPException(409, f"{C.model_name(model_id)} is used by a run that is still going ({running[0]}); "
+                                 "stop or finish it first.")
+    try:
+        out = onboarding.remove(model_id, _who(request))
+    except onboarding.OnboardingError as e:
+        raise HTTPException(404 if "no such" in str(e) else 409, str(e)) from e
+    _CACHE.pop("catalog", None)
+    return out
+
+
+def _running_runs_using(model_id: str) -> list[str]:
+    out = []
+    try:
+        for r in list_runs():
+            if r.get("status") in ("running", "planned") and model_id in (r.get("models") or []):
+                out.append(r["run_id"])
+    except Exception as e:  # noqa: BLE001 - an unreadable run table must not block removal; the page shows the reason
+        _CACHE["runs_error"] = str(e)[:120]
+    return out
 
 
 # ----------------------------------------------------------------------------- static app
