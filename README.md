@@ -194,12 +194,17 @@ for 8 hours with no live run, or found stopped. Root volumes are deleted with th
 .venv/bin/python -m tools.dspm.build_dataset --out data/dspm/v1 --hf-token-secret amx-gpu-bench/hf-token
 .venv/bin/python -m tools.dspm.build_requests --dataset data/dspm/v1 --hf-token-secret amx-gpu-bench/hf-token
 .venv/bin/bench upload-artifacts
+.venv/bin/python tools/build_prompts.py --publish-corpus amx-gpu-bench-<account>-us-east-1  # once per account
 ```
 
 `bench upload-artifacts` copies the prompt sets, the DSPM request pools, and the DSPM
 dataset (`dev`, `test`, `manifest.json`) to the bucket. Run it again after any rebuild:
 preflight refuses a DSPM run whose request pools were built from a different dataset than
-the uploaded one.
+the uploaded one. `--publish-corpus` copies the five public-domain Gutenberg texts the
+prompt pools are cut from to `datasets/gutenberg/` in the bucket, after checking each
+against its pinned SHA-256 (`GUTENBERG_SHA256`): the web app's Setup page cuts an added
+model's pools from these same bytes (gutenberg.org answers the container with HTTP 503,
+and a different text would make the new model's pools incomparable with the shipped ones).
 
 ## Run
 

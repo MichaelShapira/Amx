@@ -216,7 +216,7 @@ def build_pools(model: ModelSpec, token: str | None, bucket: str, progress) -> d
     progress("Downloading the tokenizer")
     tok = tokenizer_for(model, token)                           # the one cost of a gated model: the token
     progress("Loading the public-domain text corpus")
-    sentences, _hashes = bp.gutenberg_corpus(CACHE_DIR / "gutenberg")
+    sentences, _hashes = bp.gutenberg_corpus(CACHE_DIR / "gutenberg", bucket, s3)
     out = PROMPTS_DIR
     progress("Cutting prompts to the model's token lengths")
     manifest_sets = bp.build_length_sets([model], sentences, out, 100, 0, ["short", "medium", "long"], token)

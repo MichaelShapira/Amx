@@ -250,3 +250,40 @@ def test_one_job_at_a_time_and_removal_rules(cloud, monkeypatch):
     catalog_store.save_catalog(one)
     with pytest.raises(O.OnboardingError, match="cannot be empty"):
         O.remove(seed.models[1].id, "me")
+
+
+# ------------------------------------------------------------------------- the prompt corpus
+
+def test_corpus_comes_from_the_bucket_and_must_match_the_pinned_text(tmp_path, monkeypatch):
+    import hashlib
+
+    from tools import build_prompts as bp
+
+    real = {gid: (f"*** START OF x\nText {gid}. Another sentence here that is long enough. *** END OF x").encode() for gid in bp.GUTENBERG}
+    monkeypatch.setattr(bp, "GUTENBERG_SHA256", {gid: hashlib.sha256(b).hexdigest() for gid, b in real.items()})
+    monkeypatch.setattr(bp, "fetch", lambda url: (_ for _ in ()).throw(RuntimeError("HTTP Error 503")))   # gutenberg.org refuses
+
+    class S3:
+        def __init__(self, corrupt=()):
+            self.calls, self.corrupt = [], set(corrupt)
+
+        def get_object(self, Bucket, Key):
+            self.calls.append(Key)
+            gid = int(Key.rsplit("pg", 1)[1].split(".")[0])
+            body = b"tampered" if gid in self.corrupt else real[gid]
+            import io
+            return {"Body": io.BytesIO(body)}
+
+    s3 = S3()
+    sentences, hashes = bp.gutenberg_corpus(tmp_path / "a", "bench-bucket", s3)
+    assert sorted(s3.calls) == sorted(f"datasets/gutenberg/pg{g}.txt" for g in bp.GUTENBERG)
+    assert hashes == {str(g): h for g, h in bp.GUTENBERG_SHA256.items()} and any("Another sentence" in x for x in sentences)
+    # Cached: no second download.
+    bp.gutenberg_corpus(tmp_path / "a", "bench-bucket", S3())
+    # A text that does not match the pinned hash is refused (and not cached), with the reason.
+    with pytest.raises(RuntimeError, match="does not match the pinned text"):
+        bp.gutenberg_corpus(tmp_path / "b", "bench-bucket", S3(corrupt=[84]))
+    assert not (tmp_path / "b" / "pg84.txt").exists()
+    # No bucket and no origin: the error names both and the one-off publish command.
+    with pytest.raises(RuntimeError, match="publish-corpus"):
+        bp.gutenberg_corpus(tmp_path / "c", None, None)

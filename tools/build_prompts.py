@@ -31,6 +31,16 @@ GUTENBERG = {  # id -> title; public domain in the US
     1342: "Pride and Prejudice", 84: "Frankenstein", 2701: "Moby Dick",
     1661: "The Adventures of Sherlock Holmes", 98: "A Tale of Two Cities",
 }
+# The exact texts the shipped pools were cut from (prompts/generated/manifest.json, gutenberg_sha256).
+# A model added later gets pools from byte-identical text or none at all.
+GUTENBERG_SHA256 = {
+    84: "2b97b7f8aad508649481d8dd4f6b54f9b965ddb3ba634e9151c815f537b49e42",
+    98: "d54c2b80d40a40b982cd88852c6180bb944d95acdb028af3d0e01a1750681784",
+    1342: "3f6bb9d6f78e0293b56acd4714dd68cb7d6d1d293402031ce9d5a216bcaf9d75",
+    1661: "922e2a12ccb43a4c9544c260b2166c6ad2097aeb5957faeee113f173bb857cd0",
+    2701: "b5e88b71a1cda068e9ab1d94344c9d932338ba6da1a66def97a1aecd9cfcc87d",
+}
+CORPUS_PREFIX = "datasets/gutenberg/"       # the same five files, kept in the bench bucket for the web app
 DOLLY = ("databricks/databricks-dolly-15k", "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
          "databricks-dolly-15k.jsonl")
 SNLI = ("stanfordnlp/snli", "cdb5c3d5eed6ead6e5a341c8e56e669bb666725b",
@@ -49,16 +59,25 @@ def fetch(url: str) -> bytes:
         return r.read()
 
 
-def gutenberg_corpus(cache: Path) -> tuple[list[str], dict]:
+def gutenberg_corpus(cache: Path, bucket: str | None = None, s3=None) -> tuple[list[str], dict]:
+    """The five texts, from the local cache, else the bench bucket (datasets/gutenberg/, where
+    `publish_corpus` put them), else gutenberg.org (which refuses some clients with HTTP 503).
+    Every file must match its pinned SHA-256: the pools of a model added later are cut from the
+    same bytes as the shipped ones, or the add fails with a clear reason."""
     cache.mkdir(parents=True, exist_ok=True)
     sentences: list[str] = []
     hashes = {}
     for gid in sorted(GUTENBERG):
         path = cache / f"pg{gid}.txt"
         if not path.exists():
-            path.write_bytes(fetch(f"https://www.gutenberg.org/cache/epub/{gid}/pg{gid}.txt"))
+            path.write_bytes(_fetch_text(gid, bucket, s3))
         raw = path.read_bytes()
-        hashes[str(gid)] = hashlib.sha256(raw).hexdigest()
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != GUTENBERG_SHA256[gid]:
+            path.unlink(missing_ok=True)
+            raise RuntimeError(f"pg{gid}.txt ({GUTENBERG[gid]}) does not match the pinned text (sha256 {digest[:12]} != "
+                               f"{GUTENBERG_SHA256[gid][:12]}); the prompt pools would differ from the shipped ones")
+        hashes[str(gid)] = digest
         text = raw.decode("utf-8", errors="ignore")
         start = text.find("*** START OF")
         end = text.find("*** END OF")
@@ -66,6 +85,37 @@ def gutenberg_corpus(cache: Path) -> tuple[list[str], dict]:
         body = re.sub(r"\s+", " ", body)
         sentences += [s.strip() for s in re.split(r"(?<=[.!?])\s+", body) if len(s.strip()) > 20]
     return sentences, hashes
+
+
+def _fetch_text(gid: int, bucket: str | None, s3) -> bytes:
+    key = f"{CORPUS_PREFIX}pg{gid}.txt"
+    errors = []
+    if bucket:
+        try:
+            import boto3
+
+            c = s3 or boto3.client("s3", region_name="us-east-1")
+            return c.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except Exception as e:  # noqa: BLE001 - absent or unreadable: try the origin next
+            errors.append(f"s3://{bucket}/{key}: {type(e).__name__}")
+    try:
+        return fetch(f"https://www.gutenberg.org/cache/epub/{gid}/pg{gid}.txt")
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"gutenberg.org: {type(e).__name__}: {str(e)[:80]}")
+    raise RuntimeError(f"the public-domain text pg{gid}.txt ({GUTENBERG[gid]}) could not be fetched ({'; '.join(errors)}). "
+                       f"Publish it to the bucket once: tools/build_prompts.py --publish-corpus <bucket>")
+
+
+def publish_corpus(cache: Path, bucket: str, s3=None) -> int:
+    """Copy the five verified texts from the local cache to the bench bucket (one-off, operator)."""
+    import boto3
+
+    c = s3 or boto3.client("s3", region_name="us-east-1")
+    gutenberg_corpus(cache)                     # fetch if needed and verify every hash first
+    for gid in sorted(GUTENBERG):
+        c.put_object(Bucket=bucket, Key=f"{CORPUS_PREFIX}pg{gid}.txt", Body=(cache / f"pg{gid}.txt").read_bytes(),
+                     ContentType="text/plain; charset=utf-8")
+    return len(GUTENBERG)
 
 
 def hf_file(repo: str, revision: str, filename: str, cache: Path) -> Path:
@@ -191,7 +241,13 @@ def main(argv=None) -> int:
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--hf-token-secret", default=None)
+    ap.add_argument("--publish-corpus", metavar="BUCKET", default=None,
+                    help="copy the five Gutenberg texts to s3://BUCKET/datasets/gutenberg/ and exit")
     args = ap.parse_args(argv)
+    if args.publish_corpus:
+        n = publish_corpus(Path(args.cache) / "gutenberg", args.publish_corpus)
+        print(f"published {n} texts to s3://{args.publish_corpus}/{CORPUS_PREFIX}")
+        return 0
     import os
 
     token = os.environ.get("HF_TOKEN")
