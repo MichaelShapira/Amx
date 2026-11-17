@@ -14,6 +14,7 @@ Fails if an input exceeds a model's window (512 tokens for Flan-T5, RoBERTa-MNLI
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import sys
@@ -27,7 +28,15 @@ from bench import dspm  # noqa: E402
 from bench.config import load_models  # noqa: E402
 from bench.plan import SHORT_ONLY_SLOTS, WORKLOAD_BUCKETS, WORKLOAD_SLOTS, dspm_pool  # noqa: E402
 from bench.prompts import count_tokens, render, roblox_format  # noqa: E402
-from tools.dspm.build_dataset import read_jsonl_gz  # noqa: E402
+
+
+def read_jsonl_gz(path: Path) -> list[dict]:
+    """Same as tools.dspm.build_dataset.read_jsonl_gz, kept here so the web app's onboarding job
+    (which renders requests for an added model) does not import the dataset generator and its
+    dependencies (faker)."""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
 
 WINDOW = {"M5": 512, "M3": 512, "D2": 512}
 
