@@ -240,7 +240,9 @@ def build_pools(model: ModelSpec, token: str | None, bucket: str, progress) -> d
         from tools.dspm import build_requests as br
 
         req_out = DSPM_DIR / "requests"
-        local_manifest = br.build_for_models(DSPM_DIR, req_out, [model], {model.id: tok})
+        # merge: the container's copy of the manifest serves the plan for EVERY model; overwriting it with
+        # one model's pools made every shipped DSPM pool "missing from the manifest" until a restart.
+        local_manifest = br.build_for_models(DSPM_DIR, req_out, [model], {model.id: tok}, merge=True)
         for f in sorted((req_out / model.id).glob("*.jsonl")):
             s3.put_object(Bucket=bucket, Key=f"artifacts/dspm/v1/requests/{model.id}/{f.name}", Body=f.read_bytes())
             result["dspm_files"] += 1

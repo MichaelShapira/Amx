@@ -79,8 +79,11 @@ def build(dataset: Path, out: Path, tokenizers: dict, seed: int = 20261109) -> d
     return build_for_models(dataset, out, models, tokenizers, seed)
 
 
-def build_for_models(dataset: Path, out: Path, models: list, tokenizers: dict, seed: int = 20261109) -> dict:
-    """The request pools for the given models only (the Setup page adds one model at a time)."""
+def build_for_models(dataset: Path, out: Path, models: list, tokenizers: dict, seed: int = 20261109, *,
+                     merge: bool = False) -> dict:
+    """The request pools for the given models only (the Setup page adds one model at a time).
+    merge=True keeps the other models' entries in out/manifest.json (the web app's copy of the
+    shared manifest is what the plan reads for every model); the CLI rebuilds it from scratch."""
     policy = dspm.load_policy()
     splits = {"test": read_jsonl_gz(dataset / "test.jsonl.gz"), "dev": read_jsonl_gz(dataset / "dev.jsonl.gz")}
     sizes: dict[str, int] = {}
@@ -117,7 +120,17 @@ def build_for_models(dataset: Path, out: Path, models: list, tokenizers: dict, s
                                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     manifest = {"pool_sizes": sizes, "pools": stats, "policy": policy.hashes(), "seed": seed,
                 "dataset_manifest_sha256": hashlib.sha256((dataset / "manifest.json").read_bytes()).hexdigest()}
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return write_manifest(out / "manifest.json", manifest, merge=merge)
+
+
+def write_manifest(path: Path, manifest: dict, *, merge: bool) -> dict:
+    """Write the requests manifest; with merge, the pools of models not rebuilt this time stay."""
+    if merge and path.exists():
+        prev = json.loads(path.read_text())
+        manifest = {**prev, **manifest, "pool_sizes": {**prev.get("pool_sizes", {}), **manifest["pool_sizes"]},
+                    "pools": {**prev.get("pools", {}), **manifest["pools"]}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
 
 

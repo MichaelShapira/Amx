@@ -2,6 +2,8 @@
 of a Hugging Face model. Offline: moto for S3, DynamoDB and Secrets Manager; a fake Bedrock."""
 from __future__ import annotations
 
+import json
+
 import boto3
 import moto
 import pytest
@@ -287,3 +289,18 @@ def test_corpus_comes_from_the_bucket_and_must_match_the_pinned_text(tmp_path, m
     # No bucket and no origin: the error names both and the one-off publish command.
     with pytest.raises(RuntimeError, match="publish-corpus"):
         bp.gutenberg_corpus(tmp_path / "c", None, None)
+
+
+def test_onboarding_merges_into_the_shared_requests_manifest(tmp_path):
+    from tools.dspm.build_requests import write_manifest
+
+    path = tmp_path / "manifest.json"
+    shipped = {"pool_sizes": {"artifacts/dspm/v1/requests/d2-roblox-pii-v2/W3.jsonl": 1600},
+               "pools": {"artifacts/dspm/v1/requests/d2-roblox-pii-v2/W3.jsonl": {"n": 1600}}, "policy": {"version": 1}, "seed": 1}
+    write_manifest(path, shipped, merge=False)
+    added = {"pool_sizes": {"artifacts/dspm/v1/requests/u-x/W3.jsonl": 1600}, "pools": {"artifacts/dspm/v1/requests/u-x/W3.jsonl": {"n": 1600}},
+             "policy": {"version": 1}, "seed": 1, "dataset_manifest_sha256": "abc"}
+    out = write_manifest(path, added, merge=True)                      # the Setup page's add
+    assert set(out["pool_sizes"]) == {"artifacts/dspm/v1/requests/d2-roblox-pii-v2/W3.jsonl", "artifacts/dspm/v1/requests/u-x/W3.jsonl"}
+    assert set(json.loads(path.read_text())["pools"]) == set(out["pool_sizes"]) and out["dataset_manifest_sha256"] == "abc"
+    assert set(write_manifest(path, added, merge=False)["pool_sizes"]) == {"artifacts/dspm/v1/requests/u-x/W3.jsonl"}   # the CLI rebuild
