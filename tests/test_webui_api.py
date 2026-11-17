@@ -546,3 +546,23 @@ def test_sample_never_reads_outside_the_prompt_directory():
     # The real catalog still answers (when the prompt sets are built locally).
     ok = C.sample("standard", model="m1-qwen2.5-3b", prompt_set="short", n=1)
     assert isinstance(ok, list)
+
+
+def test_classifier_runs_are_judged_on_the_whole_decision_only():
+    """RoBERTa generates no tokens: first-word and per-word targets are dropped from its run config
+    with a warning, and a classifier row never fails on 'p99_ttft_ms not measured'."""
+    from bench import report
+    w = {"use_case": "standard", "models": ["m3-roberta-large-mnli"], "gpu": GPU, "cpus": [CPU], "request_mode": "concurrent",
+         "concurrency": [1, 4], "depth": "quick", "sla": {"p99_ttft_ms": 2000, "p50_tpot_ms": 150}}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"] and pl["run"]["sla"] == {"max_error_pct": 1.0}
+    assert any("do not apply and were dropped" in x for x in pl["warnings"])
+    w2 = {**w, "sla": {"p99_e2e_ms": 1000}}
+    assert c.post("/api/plan", json=w2).json()["run"]["sla"] == {"p99_e2e_ms": 1000.0, "max_error_pct": 1.0}
+    chat = {**w, "models": ["m1-qwen2.5-3b"]}
+    assert c.post("/api/plan", json=chat).json()["run"]["sla"] == {"p99_ttft_ms": 2000.0, "p50_tpot_ms": 150.0, "max_error_pct": 1.0}
+    cls_row = {"kind": "classifier", "accelerator": "gpu", "ttft_p99": None, "tpot_p50": None, "e2e_p99": 40.0, "error_pct": 0}
+    assert report.meets_sla(cls_row, {"p99_ttft_ms": 2000, "p50_tpot_ms": 150, "max_error_pct": 1.0}) == (True, "meets SLA")
+    assert report.meets_sla(cls_row, {"p99_e2e_ms": 30, "max_error_pct": 1.0}) == (False, "p99_e2e_ms 40 > 30")
+    gen_row = {**cls_row, "kind": "generation"}
+    assert report.meets_sla(gen_row, {"p99_ttft_ms": 2000, "max_error_pct": 1.0}) == (False, "p99_ttft_ms not measured")

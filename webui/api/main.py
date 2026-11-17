@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 from bench import catalog_store, pairing, report  # noqa: E402
 from bench.config import RunConfig, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.estimate_run import estimate  # noqa: E402
-from bench.plan import levels_for_cell  # noqa: E402
+from bench.plan import GENERATIVE, levels_for_cell  # noqa: E402
 from bench.pools import local_pool_sizes  # noqa: E402
 from webui.api import auth, aws, compare, headers  # noqa: E402
 from webui.api import catalog as C  # noqa: E402
@@ -153,6 +153,16 @@ def _unavailable_reason(mid: str, precision: str, hardware: str, cat: dict) -> s
     return None
 
 
+def _sla_for_models(w: Wizard, cat: dict) -> dict:
+    """The wizard's targets, minus the first-word and per-word limits when no chosen model generates
+    tokens (a classifier is judged on the whole decision only; the limits would read 'not measured')."""
+    sla = {k: v for k, v in (w.sla or {}).items() if v and k != "max_error_pct"}
+    types = {m["id"]: m["type"] for m in cat["models"]}
+    if not any(types.get(m) in GENERATIVE for m in w.models):
+        sla = {k: v for k, v in sla.items() if k not in report.GENERATION_ONLY_TARGETS}
+    return sla
+
+
 def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
     """The run config for the wizard state. A number format the hardware option cannot serve for
     the model is dropped with a note (never a hard failure): ticking the OpenVINO option with a
@@ -201,7 +211,7 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
                      "ignore_eos": w.use_case == "standard", "seed": 0},
         "concurrency": conc, "per_level": {"requests": int(requests)}, "repeats": int(passes), "warmup_requests": 20,
         "quality": {"enabled": w.use_case == "standard"},
-        "sla": {k: v for k, v in (w.sla or {}).items() if v} | {"max_error_pct": float((w.sla or {}).get("max_error_pct") or 1.0)},
+        "sla": _sla_for_models(w, cat) | {"max_error_pct": float((w.sla or {}).get("max_error_pct") or 1.0)},
         "purchase": {"type": w.purchase, "spot_fallback_on_demand": bool(w.spot_fallback),
                      "spot_capacity_window_s": max(1, int(w.spot_wait_minutes)) * 60},
         "execution": {"parallel_targets": bool(w.parallel_targets)},
@@ -373,6 +383,9 @@ def post_plan(w: Wizard):
         warnings.append("Quick check: every number will be labelled SMOKE. Use it to see the shape of the results, not to decide.")
     if not any(a == "gpu" for a in acc.values()) or not any(a == "cpu" for a in acc.values()):
         warnings.append("Only one side (GPU or CPU) is in this run; you will get measurements but no GPU-versus-CPU verdict.")
+    if any((w.sla or {}).get(k) for k in report.GENERATION_ONLY_TARGETS) and not any(k in run["sla"] for k in report.GENERATION_ONLY_TARGETS):
+        warnings.append("A classifier generates no words, so the first-word and per-word targets do not apply and were dropped; "
+                        "only the whole-decision limit is checked.")
     for m in w.models:
         ms = models.get(m)
         if ms.license == "qwen-research":

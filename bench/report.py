@@ -167,9 +167,14 @@ def sla_for(row: dict, run: RunConfig) -> tuple[dict, str]:
             "max_error_pct": s.max_error_pct}, "run"
 
 
+GENERATION_ONLY_TARGETS = ("p99_ttft_ms", "p50_tpot_ms")   # a classifier generates no tokens: first-word and per-word limits do not apply
+
+
 def meets_sla(row: dict, sla: dict) -> tuple[bool, str]:
     checks = [("p99_ttft_ms", row.get("ttft_p99")), ("p50_tpot_ms", row.get("tpot_p50")),
               ("p99_e2e_ms", row.get("e2e_p99"))]
+    if row.get("kind") != "generation":
+        checks = [(k, v) for k, v in checks if k not in GENERATION_ONLY_TARGETS]
     for key, val in checks:
         lim = sla.get(key)
         if lim is None:

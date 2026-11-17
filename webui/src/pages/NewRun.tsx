@@ -155,7 +155,13 @@ function StepModels({ w, set }: SP) {
   const models = cat.models.filter((m) => m.use_cases.includes(w.use_case));
   // One model per benchmark: the hardware step sizes both sides for it (a 0.4B classifier and a
   // 4B chat model need different machines), and the results stay one question, one answer.
-  const pick = (id: string) => set({ models: [id] });
+  // Targets follow the kind of model: a chat model is judged on the first word and each generated word,
+  // a classifier (no words generated) on the whole decision only.
+  const pick = (id: string) => {
+    const m = cat.models.find((x) => x.id === id);
+    const generative = !m || m.type === "decoder" || m.type === "encoder-decoder";
+    set({ models: [id], ...(w.use_case === "standard" ? { sla: generative ? { p99_ttft_ms: 2000, p50_tpot_ms: 150 } : { p99_e2e_ms: 1000 } } : {}) });
+  };
   return (
     <div>
       <h2>4 · Which model?</h2>
@@ -401,6 +407,7 @@ function StepLoad({ w, set }: SP) {
   const cat = useCatalog()!;
   const chosen = cat.models.filter((m) => w.models.includes(m.id));
   const batchOk = chosen.length > 0 && chosen.every((m) => m.batch_capable);
+  const generative = chosen.length === 0 || chosen.some((m) => m.type === "decoder" || m.type === "encoder-decoder");
   const levels = [1, 2, 4, 8, 10, 16, 20, 32, 50, 64];
   return (
     <div>
@@ -425,7 +432,13 @@ function StepLoad({ w, set }: SP) {
       )}
       <div className="hr" />
       <h3>What counts as acceptable? <Help text="The limits a hardware option must meet to count. The report marks every measurement that meets them, then picks the fastest GPU and the fastest CPU among those. Capacity (can the CPU side match the GPU's throughput with a reasonable number of machines) decides the verdict; cost is shown alongside." /></h3>
-      {w.use_case === "standard" ? (
+      {w.use_case === "standard" && !generative ? (
+        <div className="grid c3">
+          <div><Label help="A classifier gives its whole answer at once, so this is the one time limit that applies: 99 of 100 decisions within this many milliseconds. 1,000 ms suits a real-time check; empty = no limit.">Whole decision within (ms)</Label>
+            <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>{chosen[0]?.name ?? "This model"} generates no words, so there is no "first word" or "per word" target to set.</div>
+        </div>
+      ) : w.use_case === "standard" ? (
         <div className="grid c3">
           <div><Label help="The longest acceptable wait before the answer starts appearing, for 99 of 100 requests. 2,000 ms is a common chat target. Empty = no limit.">First word within (ms)</Label>
             <input type="number" value={w.sla.p99_ttft_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
@@ -498,7 +511,7 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
             <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}{w.purchase === "spot" && w.spot_fallback ? `, On-Demand after ${w.spot_wait_minutes} min without Spot` : ""} · gives up on a hardware option after {w.launch_attempts} failed launch attempts</li>
             <li>Load: {loadSentence(w)}</li>
             <li>{depthSentence(w, cat)}</li>
-            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: "whole answer within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
+            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: cat.models.find((m) => w.models.includes(m.id) && (m.type === "decoder" || m.type === "encoder-decoder")) ? "whole answer within" : "whole decision within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
           </ul>
         </div>
         <div className="card soft">

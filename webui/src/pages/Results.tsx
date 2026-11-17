@@ -104,6 +104,11 @@ export default function Results() {
                       <button key={k} className={"chip " + (sla?.preset === k ? "on" : "")} onClick={() => setSla({ p99_e2e_ms: p.p99_e2e_ms, max_error_pct: 1, preset: k })}>{p.label} · ≤ {fmt.n(p.p99_e2e_ms)} ms</button>
                     ))}
                   </div>
+                ) : out.analysis && out.analysis.groups.length > 0 && out.analysis.groups.every((g) => g.units.lat_sla === "p99_e2e_ms") ? (
+                  <div className="grid c3 mt">
+                    <div><Label help="A classifier gives its whole answer at once, so this is the one time limit that applies: 99 of 100 decisions within this many milliseconds. Empty = no limit.">Whole decision within (ms)</Label><input type="number" value={(sla?.p99_e2e_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: null, p50_tpot_ms: null, p99_e2e_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>These models generate no words, so the first-word and per-word targets do not apply.</div>
+                  </div>
                 ) : (
                   <div className="grid c3 mt">
                     <div><Label help="Longest acceptable wait before the answer starts, 99 of 100 requests. Empty = no limit.">First word within (ms)</Label><input type="number" value={(sla?.p99_ttft_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : null })} /></div>
