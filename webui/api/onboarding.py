@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]{0,95}/[A-Za-z0-9][\w.-]{0,95}$")
 PROMPTS_DIR = ROOT / "prompts" / "generated"
 DSPM_DIR = ROOT / "data" / "dspm" / "v1"
+TRANSLATION_DIR = ROOT / "data" / "translation" / "v1"
 CACHE_DIR = ROOT / "data" / "cache"
 
 # What the architecture name says about the model, and which serving software usually runs that
@@ -154,7 +155,7 @@ def derive_spec(found: dict, config: dict, tokenizer_cfg: dict | None, existing:
                                  "weights": "int4-g128", "activations": "bf16-or-int8-dynamic"}
         max_input, max_len = min(4096, max(512, ctx - 512)), min(16384, ctx)
         prompt_format = {"kind": "chat_template"} if has_chat else {"kind": "plain"}
-        suites = ["standard", "dspm"]
+        suites = ["standard", "dspm", "translation"]
         if not has_chat:
             notes.append("This model has no chat template, so prompts are sent as plain text; a base (non-instruct) model "
                          "may ramble instead of answering.")
@@ -163,7 +164,7 @@ def derive_spec(found: dict, config: dict, tokenizer_cfg: dict | None, existing:
         precisions["int8-ov"] = {"engines": ["thin-openvino"], "export": {"weight_format": "int8", "task": "text2text-generation-with-past"},
                                  "weights": "int8", "activations": "bf16-or-int8-dynamic"}
         max_input, max_len = min(1024, ctx), None
-        prompt_format, suites = {"kind": "plain"}, ["standard", "dspm"]
+        prompt_format, suites = {"kind": "plain"}, ["standard", "dspm", "translation"]
     else:
         precisions["bf16"] = {"engines": ["thin-torch"] + (["thin-openvino"] if kind == "encoder-classifier" else []),
                               "weights": "bf16", "activations": "bf16"}
@@ -222,6 +223,12 @@ def build_pools(model: ModelSpec, token: str | None, bucket: str, progress) -> d
     manifest_sets = bp.build_length_sets([model], sentences, out, 100, 0, ["short", "medium", "long"], token)
     progress("Building the 50-item quality set")
     manifest_sets.update(bp.build_quality_sets([model], out, CACHE_DIR / "hf", 0, token))
+    if "translation" in model.suites and (TRANSLATION_DIR / "items.jsonl.gz").exists():
+        progress("Rendering the translation corpus through the model's prompt format")
+        from tools.translation import build_requests as tr
+
+        items, tman = tr.read_items(TRANSLATION_DIR)
+        manifest_sets.update(tr.build_for_models(items, tman, out, [model], {model.id: tok}))
     # upload only this model's files; merge its sets into the shared manifest
     uploaded = 0
     for f in sorted((out / model.id).glob("*.jsonl")):

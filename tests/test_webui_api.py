@@ -597,3 +597,90 @@ def test_technical_details_describe_this_build():
     assert t["files"]["servers/export/Dockerfile"]["present"] and t["thin_tasks"]["encoder-decoder"] == "seq2seq"
     assert t["export_presets"]["x-ov-int4"]["group_size"] == 128 and t["diagram"]["svg"] == "/api/technical/architecture.svg"
     assert c.get("/api/technical/architecture.svg").status_code == 200 and c.get("/api/technical/architecture.exe").status_code == 404
+
+
+# ----------------------------------------------------------------------------- translation use case
+def test_catalog_offers_the_translation_use_case_and_gemma_4():
+    cat = c.get("/api/catalog").json()
+    assert set(cat["use_cases"]) == {"standard", "dspm", "translation"}
+    assert set(cat["directions"]) == {"en-de", "de-en", "en-es", "es-en"} and set(cat["text_sizes"]) == {"sentence", "paragraph"}
+    assert cat["text_sizes"]["sentence"]["answer_tokens"] == 192 and cat["text_sizes"]["paragraph"]["answer_tokens"] == 448
+    trans = {m["id"] for m in cat["models"] if "translation" in m["use_cases"]}
+    assert trans == {"m1-qwen2.5-3b", "m2-qwen3-4b-2507", "m4-gemma-2-2b", "m5-flan-t5-xl", "m6-gemma-4-e4b"}
+    g = next(m for m in cat["models"] if m["id"] == "m6-gemma-4-e4b")
+    assert g["name"] == "Gemma 4 E4B Instruct" and g["params_b"] == 8.0 and g["commercial_ok"] and g["license"] == "apache-2.0"
+    assert set(g["precisions"]) == {"bf16"} and set(g["precisions"]["bf16"]["engines"]) == {"vllm", "thin-torch"}
+
+
+@pytest.mark.skipif(not (ROOT / "data/translation/v1/items.jsonl.gz").exists(), reason="corpus not built")
+def test_translation_data_preview_shows_source_and_reference():
+    d = c.get("/api/data/translation").json()
+    assert d["available"] and d["kind"] == "parallel" and d["items"] == 400 and set(d["sizes"]) == {"sentence", "paragraph"}
+    assert d["sizes"]["sentence"]["items"] == 200 and "Translate the following text" in d["instruction"]
+    s = c.get("/api/data/translation/sample", params={"prompt_set": "paragraph", "direction": "es-en", "n": 2, "seed": 1}).json()
+    assert len(s) == 2 and all(x["direction"] == "es-en" and x["size"] == "paragraph" for x in s)
+    assert all("from Spanish to English" in x["text"] and x["source"] in x["text"] and x["reference"] for x in s)
+    assert all(x["chars"] == len(x["source"]) for x in s)
+    # unknown direction / size fall back instead of erroring
+    s2 = c.get("/api/data/translation/sample", params={"prompt_set": "../etc", "direction": "xx-yy", "n": 1}).json()
+    assert len(s2) == 1 and s2[0]["direction"] == "en-de" and s2[0]["size"] == "sentence"
+
+
+def test_translation_plan_builds_a_translation_run_and_round_trips():
+    w = {"use_case": "translation", "models": ["m6-gemma-4-e4b"], "gpu": GPU, "cpus": [CPU], "request_mode": "concurrent",
+         "concurrency": [1, 4], "depth": "quick", "directions": ["en-de", "es-en"], "text_size": "paragraph",
+         "translation_items": 50, "sla": {"p99_e2e_ms": 10000, "p99_ttft_ms": 2000}}
+    pl = c.post("/api/plan", json=w).json()
+    assert pl["ok"], pl["problems"]
+    run = pl["run"]
+    assert run["suite"] == "translation" and run["prompt_set"] == "paragraph"
+    assert run["translation"] == {"directions": ["en-de", "es-en"], "test_items": 50}
+    assert run["sampling"] == {"temperature": 0.0, "max_new_tokens": 448, "ignore_eos": False, "seed": 0}
+    assert run["quality"] == {"enabled": False} and run["sla"]["p99_e2e_ms"] == 10000 and run["sla"]["p99_ttft_ms"] == 2000
+    assert {(x["target"], x["precision"]) for x in run["cells"]} == {("t1-g6", "bf16"), ("t2-m8i-4xl", "bf16")}
+    from bench import catalog_store
+    from bench.config import RunConfig, load_targets, resolve_cells
+    rc = RunConfig.model_validate(run)
+    cells = resolve_cells(rc, catalog_store.load_catalog(), load_targets(ROOT / "config/targets.yaml"))
+    assert {cl.engine for cl in cells} == {"vllm"}
+    from webui.api import main
+    w2 = main.wizard_from_run(run)
+    assert w2["use_case"] == "translation" and w2["text_size"] == "paragraph" and w2["directions"] == ["en-de", "es-en"]
+    assert w2["translation_items"] == 50 and w2["sla"] == {"p99_e2e_ms": 10000, "p99_ttft_ms": 2000}
+    assert c.post("/api/plan", json=w2).json()["ok"]
+    none = c.post("/api/plan", json={**w, "directions": []}).json()
+    assert not none["ok"] and any("direction" in p for p in none["problems"])
+    review = c.post("/api/plan", json=w).json()
+    assert review["ok"]
+
+
+def test_translation_runs_compare_on_text_size_and_directions():
+    from webui.api import compare
+    base = {"suite": "translation", "prompt_set": "sentence", "concurrency": [1, 4], "batch_sizes": [1],
+            "per_level": {"requests": 50}, "repeats": 1, "sampling": {"max_new_tokens": 192},
+            "translation": {"directions": ["en-de", "de-en"], "test_items": 100}}
+    a = {"run_id": "a", "run": base, "smoke": True, "dspm_hashes": {"dataset_sha256": "00e1953d272fabc"}}
+    b = {"run_id": "b", "run": {**base, "translation": {"directions": ["en-de"], "test_items": 100}}, "smoke": True,
+         "dspm_hashes": {"dataset_sha256": "00e1953d272fabc"}}
+    out = compare.comparability([a, b])
+    assert out["ok"] and any("Only the directions all runs share" in w for w in out["warnings"])
+    assert out["shapes"][0]["directions"] == ["de-en", "en-de"] and out["shapes"][0]["dataset"] == "00e1953d272f"
+    c2 = {"run_id": "c", "run": {**base, "prompt_set": "paragraph"}, "smoke": True, "dspm_hashes": {"dataset_sha256": "00e1953d272fabc"}}
+    out2 = compare.comparability([a, c2])
+    assert not out2["ok"] and any("text sizes" in bl for bl in out2["blockers"])
+    d = {"run_id": "d", "run": base, "smoke": True, "dspm_hashes": {"dataset_sha256": "ffff"}}
+    assert any("corpus versions" in bl for bl in compare.comparability([a, d])["blockers"])
+    row = {"model": "m6-gemma-4-e4b", "direction": "en-de", "text_size": "sentence", "workload": None, "kind": "generation", "batch": 1}
+    key, label = compare._group_key(row)
+    assert key == "m6-gemma-4-e4b|en-de|sentence" and "English → German" in label and "Short messages" in label
+    u = compare._unit(row)
+    assert u["thr"] == "chars_s" and u["cost"] == "usd_per_1m_chars" and u["lat_sla"] == "p99_e2e_ms"
+
+
+def test_technical_details_list_gemma_4_serving_flags():
+    t = c.get("/api/technical").json()
+    flags = {m["model"]: m for m in t["model_flags"]}
+    assert set(flags) == {"m6-gemma-4-e4b"}
+    g = flags["m6-gemma-4-e4b"]
+    assert g["engine"] == "vllm" and "--reasoning-parser" in g["args"] and "gemma4" in g["args"]
+    assert g["hf_repo"] == "google/gemma-4-E4B-it" and g["name"] == "Gemma 4 E4B Instruct"

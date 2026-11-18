@@ -57,7 +57,7 @@ def test_unpinned_revision_rejected():
 def test_size_cap_enforced():
     raw = _strip_anchors(load_yaml("config/models.yaml"))
     bad = copy.deepcopy(raw)
-    bad["models"][0]["nominal_size_b"] = 7.6
+    bad["models"][0]["nominal_size_b"] = 9.0          # the cap is 8B since Gemma 4 E4B (M6)
     with pytest.raises(ValidationError, match="exceeds cap"):
         ModelCatalog.model_validate(bad)
 

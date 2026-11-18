@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # S3 prefix -> local directory (relative to ROOT). The same keys the pre-check Lambda reads.
 SYNC = {"artifacts/prompts/": "prompts/generated", "datasets/dspm/v1/": "data/dspm/v1",
-        "artifacts/dspm/v1/requests/": "data/dspm/v1/requests"}
+        "artifacts/dspm/v1/requests/": "data/dspm/v1/requests", "datasets/translation/v1/": "data/translation/v1"}
 MAX_OBJECT_BYTES = 64 * 2**20
 BUDGET_S = 90
 

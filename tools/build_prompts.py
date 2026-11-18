@@ -263,8 +263,21 @@ def main(argv=None) -> int:
                 "dolly": {"repo": DOLLY[0], "revision": DOLLY[1], "license": "CC BY-SA 3.0"},
                 "snli": {"repo": SNLI[0], "revision": SNLI[1], "license": "CC BY-SA 4.0"},
                 "sets": {}}
+    if args.models and (out / "manifest.json").exists():
+        # A subset build (one added model) keeps the other models' entries; a full build starts clean.
+        prev = json.loads((out / "manifest.json").read_text())
+        manifest["sets"] = {k: v for k, v in prev.get("sets", {}).items() if k.split("/")[0] not in wanted}
+        manifest.update({k: v for k, v in prev.items() if k not in manifest})
     manifest["sets"].update(build_length_sets(models, sentences, out, args.n, args.seed, args.sets, token))
     manifest["sets"].update(build_quality_sets(models, out, cache / "hf", args.seed, token))
+    translation_dir = ROOT / "data" / "translation" / "v1"
+    if (translation_dir / "items.jsonl.gz").exists():
+        from tools.translation import build_requests as tr
+
+        items, tman = tr.read_items(translation_dir)
+        tmodels = [m for m in models if "translation" in m.suites]
+        manifest["sets"].update(tr.build_for_models(items, tman, out, tmodels, {m.id: tokenizer_for(m, token) for m in tmodels}))
+        manifest["translation"] = {"dataset_version": tman["version"], "dataset_sha256": tman["dataset_sha256"], "seed": tr.SEED}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote {out / 'manifest.json'}")
     _ = io  # keep import for type checkers

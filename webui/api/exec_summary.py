@@ -17,7 +17,11 @@ Rules:
 - When a finding is a quick check (smoke), say clearly that it is indicative and not decision-grade.
 - Capacity (how many CPU machines replace one GPU, and whether that is within the stated limit) is the
   decision criterion; cost is context.
-- Mention accuracy and answer-quality findings where present; speed alone is not a recommendation.
+- Mention accuracy and answer-quality findings where present; speed alone is not a recommendation. For
+  translation findings, "translation_quality.chrf" is the character-level similarity (0-100) of the option's
+  translations to the reference text and "chrf_vs_gpu" the similarity to the GPU's own translations; read
+  them relative to each other (the same model on two machines should score alike), never as an absolute
+  grade, and name a flagged option as having lost quality.
 - Say whether each machine was the right size, from "hardware_sizing": it gives, per hardware option, how
   busy the GPU or CPU was at the heaviest load setting and a verdict (over = mostly idle, bigger than this
   load needs; good = working hard with headroom; limit = fully used and still meeting the targets; under =
@@ -51,6 +55,10 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
             if c.get("accuracy"):
                 a = c["accuracy"]
                 out["accuracy"] = {k: a.get(k) for k in ("recall", "fpr", "f1", "agreement_with_gpu", "fit")}
+            if c.get("translation"):
+                t = c["translation"]
+                out["translation_quality"] = {k: t.get(k) for k in ("chrf", "chrf_vs_gpu", "exact_match_vs_gpu",
+                                                                     "length_ratio", "truncated_pct", "flag")}
             return out
         groups.append({"question": g["label"], "units": {k: g["units"][k] for k in ("thr_label", "lat_label", "cost_label")},
                        "verdict": g["verdict"], "best_gpu": card(g["best_gpu"]), "best_cpu": card(g["best_cpu"]),

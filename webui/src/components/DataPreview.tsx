@@ -4,8 +4,8 @@ import { useCatalog } from "../App";
 import { Badge, Help, Spinner } from "./ui";
 
 /** What the models are asked: counts per set or scenario, then real examples with expected answers. */
-export default function DataPreview({ useCase, promptSet, workloads, compact, model }: {
-  useCase: UseCase; promptSet?: string; workloads?: string[]; compact?: boolean; model?: string;
+export default function DataPreview({ useCase, promptSet, workloads, directions, compact, model }: {
+  useCase: UseCase; promptSet?: string; workloads?: string[]; directions?: string[]; compact?: boolean; model?: string;
 }) {
   const cat = useCatalog();
   const [info, setInfo] = useState<any>(null);
@@ -15,23 +15,28 @@ export default function DataPreview({ useCase, promptSet, workloads, compact, mo
   const [label, setLabel] = useState("");
   const [hard, setHard] = useState("");
   const [mid, setMid] = useState(model ?? "m1-qwen2.5-3b");
-  const [ps, setPs] = useState(promptSet ?? "short");
+  const [ps, setPs] = useState(promptSet ?? (useCase === "translation" ? "sentence" : "short"));
+  const [dir, setDir] = useState<string>(directions?.[0] ?? "en-de");
 
   // Clear the previous use case's description before loading the next one: rendering the
   // detection view with the chat description (or the reverse) crashed on a missing field.
   useEffect(() => { setInfo(null); setItems(null); api.data(useCase).then(setInfo).catch(() => setInfo({ available: false, reason: "the API is not reachable" })); }, [useCase]);
   useEffect(() => { if (promptSet) setPs(promptSet); }, [promptSet]);
   useEffect(() => { if (workloads && !workloads.includes(wl)) setWl(workloads[0] ?? "W1"); }, [workloads, wl]);
+  useEffect(() => { if (directions && !directions.includes(dir)) setDir(directions[0] ?? "en-de"); }, [directions, dir]);
+  useEffect(() => { if (!promptSet) setPs(useCase === "translation" ? "sentence" : "short"); }, [useCase, promptSet]);
   useEffect(() => {
     setItems(null);
     const q = useCase === "standard" ? { prompt_set: ps, model: mid, n: compact ? 3 : 5, seed }
+      : useCase === "translation" ? { prompt_set: ps, direction: dir, n: compact ? 2 : 4, seed }
       : { workload: wl, label: label || undefined, hard_case: hard || undefined, n: compact ? 3 : 5, seed };
     api.sample(useCase, q).then(setItems).catch(() => setItems([]));
-  }, [useCase, ps, mid, wl, label, hard, seed, compact]);
+  }, [useCase, ps, mid, wl, dir, label, hard, seed, compact]);
 
   if (!info) return <Spinner label="Loading the test data…" />;
   if (!info.available) return <div className="note warn">{info.reason}</div>;
-  if ((useCase === "standard") !== (info.kind === "prompts")) return <Spinner label="Loading the test data…" />;
+  const expectedKind = useCase === "standard" ? "prompts" : useCase === "translation" ? "parallel" : "documents";
+  if (info.kind !== expectedKind) return <Spinner label="Loading the test data…" />;
 
   const stdModels = cat?.models.filter((m) => m.use_cases.includes("standard")) ?? [];
   return (
@@ -65,6 +70,33 @@ export default function DataPreview({ useCase, promptSet, workloads, compact, mo
             <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
           </div>
         </>
+      ) : useCase === "translation" ? (
+        <>
+          {!compact && (
+            <table className="tbl mb">
+              <thead><tr><th>Text size</th><th className="num">Items</th><th>Sentences</th><th>Words (English)</th><th>Answer limit</th><th>Used for</th></tr></thead>
+              <tbody>
+                {Object.entries(info.sizes as Record<string, any>).map(([k, z]) => (
+                  <tr key={k}><td><b>{z.label}</b></td><td className="num">{z.items}</td><td>{z.sentences?.[0]}–{z.sentences?.[1]}</td><td>{z.words_en?.[0]}–{z.words_en?.[1]}</td><td>{z.answer_tokens} tokens</td><td className="muted">{z.help}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!compact && (
+            <div className="small muted mb">Corpus {info.version}, fingerprint {info.fingerprint} · {info.items} items · domains: {Object.entries(info.domains as Record<string, number>).map(([d, n]) => `${d} (${n})`).join(", ")} · characters: {Object.entries(info.chars as Record<string, number>).map(([l, n]) => `${l.toUpperCase()} ${n.toLocaleString()}`).join(", ")}</div>
+          )}
+          <div className="row small mb">
+            {!promptSet && (
+              <label className="row">Text size <select value={ps} onChange={(e) => setPs(e.target.value)}>
+                {Object.entries(info.sizes as Record<string, any>).map(([k, z]) => <option key={k} value={k}>{z.label}</option>)}
+              </select></label>
+            )}
+            <label className="row">Direction <select value={dir} onChange={(e) => setDir(e.target.value)}>
+              {Object.entries(info.directions as Record<string, any>).filter(([k]) => !directions || directions.includes(k)).map(([k, d]) => <option key={k} value={k}>{d.label}</option>)}
+            </select></label>
+            <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
+          </div>
+        </>
       ) : (
         <>
           {!compact && (
@@ -92,7 +124,15 @@ export default function DataPreview({ useCase, promptSet, workloads, compact, mo
           </div>
         </>
       )}
-      {items == null ? <Spinner /> : items.length === 0 ? <div className="note">No documents match.</div> : items.map((x) => (
+      {items == null ? <Spinner /> : items.length === 0 ? <div className="note">No documents match.</div> : useCase === "translation" ? items.map((x) => (
+        <details key={x.id} className="doc" open={compact ? undefined : true}>
+          <summary><span className="hd" style={{ display: "inline-flex" }}><Badge>{cat?.directions?.[x.direction]?.label ?? x.direction}</Badge><span className="muted">{x.id} · {x.domain} · {x.sentences} sentence{x.sentences === 1 ? "" : "s"} · {x.words} words · {x.chars} characters</span></span></summary>
+          <div className="grid c2 mt" style={{ gap: 12 }}>
+            <div><div className="tiny muted">What the model receives</div><pre style={{ marginTop: 4 }}>{x.text}</pre></div>
+            <div><div className="tiny muted">Reference translation (scored against)</div><pre style={{ marginTop: 4 }}>{x.reference}</pre></div>
+          </div>
+        </details>
+      )) : items.map((x) => (
         <details key={x.id} className="doc">
           <summary>
             <span className="hd" style={{ display: "inline-flex" }}>

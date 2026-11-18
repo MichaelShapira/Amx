@@ -20,6 +20,7 @@ export default function Technical() {
           <Architecture data={data} />
           <RunFlow />
           <Hardware hardware={data.hardware} />
+          <ModelFlags data={data} />
           <Images data={data} />
           <Preparation data={data} />
           <Files data={data} />
@@ -97,6 +98,22 @@ function Hardware({ hardware }: { hardware: TechHardware[] }) {
   );
 }
 
+function ModelFlags({ data }: { data: TechData }) {
+  if (!data.model_flags?.length) return null;
+  return (
+    <div className="card mb">
+      <h2>Model-specific serving flags <Help text="config/models.yaml vllm_args: flags a model needs on every vLLM option, appended after the harness's own arguments (port, model path, scheduler settings, KV-cache budget stay the harness's). The source is the vendor's published recipe for the model." /></h2>
+      <div className="small muted">Most models run with the engine's defaults. These need extra <code>vllm serve</code> flags, taken from the published recipe; the harness adds them on both the GPU and the CPU vLLM option.</div>
+      {data.model_flags.map((m) => (
+        <div key={m.model} className="mt">
+          <b>{m.name}</b> <span className="tiny muted">({m.hf_repo}, {m.engine})</span>
+          <pre style={{ marginTop: 4 }}>{"vllm serve <model> ... " + m.args.map((a) => (a.includes(" ") || a.includes("{") ? `'${a}'` : a)).join(" ")}</pre>
+          {m.notes && <div className="small muted">{m.notes}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
 function Images({ data }: { data: TechData }) {
   return (
     <div className="card mb">

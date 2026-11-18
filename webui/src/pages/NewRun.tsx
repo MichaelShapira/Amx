@@ -79,13 +79,15 @@ type SP = { w: Wizard; set: (p: Partial<Wizard>) => void };
 function StepUseCase({ w, set }: SP) {
   const cat = useCatalog()!;
   const pick = (uc: UseCase) => {
-    const defaults = uc === "dspm" ? { concurrency: [1, 8, 16], sla: {} } : { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 } };
+    const defaults = uc === "dspm" ? { concurrency: [1, 8, 16], sla: {} }
+      : uc === "translation" ? { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } }
+      : { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 } };
     set({ use_case: uc, models: [], ...defaults });
   };
   return (
     <div>
       <h2>1 · What do you want to size hardware for?</h2>
-      <p className="muted">The two use cases use different test data and different success criteria; a run covers one.</p>
+      <p className="muted">Each use case uses its own test data and success criteria; a run covers one.</p>
       <div className="tiles">
         {(Object.entries(cat.use_cases) as [UseCase, any][]).map(([k, u]) => (
           <Tile key={k} selected={w.use_case === k} onClick={() => pick(k)} title={u.name} desc={<><div>{u.short}</div><div className="tiny" style={{ marginTop: 6 }}>{u.long}</div></>} />
@@ -109,6 +111,22 @@ function StepData({ w, set }: SP) {
           <Label help="How many tokens (roughly words) each answer generates. Every request generates exactly this many so results are comparable; 128 is a short paragraph.">Answer length (tokens)</Label>
           <Chips options={[64, 128, 256, 512]} value={[w.answer_tokens]} onChange={(v) => set({ answer_tokens: v.find((x) => x !== w.answer_tokens) ?? w.answer_tokens })} />
         </>
+      ) : w.use_case === "translation" ? (
+        <>
+          <p className="muted">A synthetic parallel corpus: every item is written in English, German and Spanish from the same template, so the reference translation is known and nothing is real. Pick the directions and the size of the texts; each direction is measured separately.</p>
+          <Label help="Each direction is its own measurement: the source language decides how much the model reads, the target language how much it writes (German and Spanish run about 10-20% longer than English).">Directions (pick one or more)</Label>
+          <div className="tiles mb">
+            {Object.entries(cat.directions).map(([k, p]) => (
+              <Tile key={k} selected={w.directions.includes(k)} onClick={() => set({ directions: w.directions.includes(k) ? w.directions.filter((x) => x !== k) : Object.keys(cat.directions).filter((d) => d === k || w.directions.includes(d)) })} title={p.label} desc={p.help} />
+            ))}
+          </div>
+          <Label help="How long each text is. Answers end where the model ends them (no fixed length), with a token limit set per size so a complete translation always fits.">Text size</Label>
+          <div className="tiles mb">
+            {Object.entries(cat.text_sizes).map(([k, p]) => <Tile key={k} selected={w.text_size === k} onClick={() => set({ text_size: k })} title={p.label} desc={`${p.help} Answer limit ${p.answer_tokens} tokens.`} />)}
+          </div>
+          <Label help="How many of the 200 items per direction each option translates once for the quality figures (chrF against the reference and against the GPU's translations). Every option translates the same items.">Items in the quality pass (per direction)</Label>
+          <Chips options={[50, 100, 200]} value={[w.translation_items]} onChange={(v) => set({ translation_items: v.find((x) => x !== w.translation_items) ?? w.translation_items })} />
+        </>
       ) : (
         <>
           <p className="muted">A synthetic dataset of 3,000 documents with known answers. Pick the detection scenarios to run; each uses its own slice of the dataset.</p>
@@ -123,7 +141,7 @@ function StepData({ w, set }: SP) {
       )}
       <div className="hr" />
       <h3>Preview <span className="muted small">— real examples of what the model will see</span></h3>
-      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} compact model={w.models[0]} />
+      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : w.use_case === "translation" ? w.text_size : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} directions={w.use_case === "translation" ? w.directions : undefined} compact model={w.models[0]} />
     </div>
   );
 }
@@ -162,7 +180,7 @@ function StepModels({ w, set }: SP) {
   const pick = (id: string) => {
     const m = cat.models.find((x) => x.id === id);
     const generative = !m || m.type === "decoder" || m.type === "encoder-decoder";
-    set({ models: [id], ...(w.use_case === "standard" ? { sla: generative ? { p99_ttft_ms: 2000, p50_tpot_ms: 150 } : { p99_e2e_ms: 1000 } } : {}) });
+    set({ models: [id], ...(w.use_case === "standard" ? { sla: generative ? { p99_ttft_ms: 2000, p50_tpot_ms: 150 } : { p99_e2e_ms: 1000 } } : w.use_case === "translation" ? { sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } } : {}) });
   };
   return (
     <div>
@@ -440,6 +458,15 @@ function StepLoad({ w, set }: SP) {
             <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
           <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>{chosen[0]?.name ?? "This model"} generates no words, so there is no "first word" or "per word" target to set.</div>
         </div>
+      ) : w.use_case === "translation" ? (
+        <div className="grid c3">
+          <div><Label help="The longest acceptable time for the whole translation, for 99 of 100 requests. A short message should come back in a few seconds; a paragraph in ten or so. Empty = no limit.">Whole translation within (ms)</Label>
+            <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div><Label help="The longest acceptable wait before the translation starts appearing, for 99 of 100 requests (matters when the translation is streamed to a reader). Empty = no limit.">First word within (ms)</Label>
+            <input type="number" value={w.sla.p99_ttft_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div><Label help="Typical time between two generated tokens (median). Empty = no limit.">Time per generated word (ms)</Label>
+            <input type="number" value={w.sla.p50_tpot_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p50_tpot_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+        </div>
       ) : w.use_case === "standard" ? (
         <div className="grid c3">
           <div><Label help="The longest acceptable wait before the answer starts appearing, for 99 of 100 requests. 2,000 ms is a common chat target. Empty = no limit.">First word within (ms)</Label>
@@ -508,12 +535,12 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
         <div className="card soft">
           <h3>What will run</h3>
           <ul className="muted" style={{ lineHeight: 1.8, paddingLeft: 18 }}>
-            <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
+            <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : w.use_case === "translation" ? ` · ${cat.text_sizes[w.text_size]?.label ?? w.text_size}: ${w.directions.map((d) => cat.directions[d]?.label ?? d).join(", ")} · ${w.translation_items} items per direction in the quality pass` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
             <li>Model: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
             <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}{w.purchase === "spot" && w.spot_fallback ? `, On-Demand after ${w.spot_wait_minutes} min without Spot` : ""} · gives up on a hardware option after {w.launch_attempts} failed launch attempts</li>
             <li>Load: {loadSentence(w)}</li>
             <li>{depthSentence(w, cat)}</li>
-            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: cat.models.find((m) => w.models.includes(m.id) && (m.type === "decoder" || m.type === "encoder-decoder")) ? "whole answer within" : "whole decision within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
+            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: w.use_case === "translation" ? "whole translation within" : cat.models.find((m) => w.models.includes(m.id) && (m.type === "decoder" || m.type === "encoder-decoder")) ? "whole answer within" : "whole decision within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
           </ul>
         </div>
         <div className="card soft">

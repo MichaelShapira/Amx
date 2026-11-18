@@ -173,7 +173,7 @@ def test_decoder_spec_gets_the_dspm_rules_of_the_shipped_chat_model_and_says_wha
     cfg = {"architectures": ["MistralForCausalLM"], "model_type": "mistral", "max_position_embeddings": 32768}
     spec, notes = O.derive_spec(found(), cfg, {"chat_template": "{{ x }}"}, {"m1"}, "U1")
     assert spec.id == "u-mistral-7b-instruct-v0.3" and spec.slot == "U1" and spec.type == "decoder"
-    assert spec.user_added and spec.dspm_profile == "M1" and spec.suites == ["standard", "dspm"]
+    assert spec.user_added and spec.dspm_profile == "M1" and spec.suites == ["standard", "dspm", "translation"]
     assert spec.nominal_size_b == 7.25 and spec.max_input_tokens == 4096 and spec.max_model_len == 16384
     assert spec.prompt_format.kind == "chat_template"
     assert set(spec.precisions) == {"bf16", "bf16-ov", "int8-ov", "int4-ov"}
@@ -224,7 +224,11 @@ def test_shipped_models_keep_their_own_dspm_rules_and_alternates_stand_in_for_th
     seed = load_models(catalog_store.SEED)
     for m in seed.models:
         assert not m.user_added
-        assert m.dspm_profile == m.slot.split("-")[0], (m.id, m.slot)   # M3-alt follows M3's rules
+        base = m.slot.split("-")[0]
+        if base in m.DSPM_SHIPPED:
+            assert m.dspm_profile == base, (m.id, m.slot)   # M3-alt follows M3's rules
+    # M6 (Gemma 4 E4B) shipped after the DSPM rules were written: a chat model, so it follows M1's rules.
+    assert seed.get("m6-gemma-4-e4b").dspm_profile == "M1"
     assert seed.get("alt-modernbert-large-zeroshot").dspm_profile == "M3"
     assert seed.get("alt-qwen2.5-1.5b").dspm_profile == "M4"
 

@@ -4,13 +4,18 @@ A benchmark harness that compares small-model inference (at most 4B parameters) 
 NVIDIA GPU instances (g6/g5) with Intel AMX CPU instances (m8i/c8i, m7i as fallback) in
 account `346399954218`, `us-east-1`. It has three parts:
 
-- **Standard suite.** Five models (M1-M5) on vLLM (GPU and CPU), OpenVINO (OVMS and a thin
+- **Standard suite.** Six models (M1-M6; M6 is Gemma 4 E4B, added 2026-11-19 from Intel's
+  Software Catalog entry for Xeon) on vLLM (GPU and CPU), OpenVINO (OVMS and a thin
   server) and native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50,
   P99 latency, throughput, prefill and decode speed, cost from the Price List API, AMX
   verification and a quality check.
 - **DSPM/DLP suite.** Narrow-label classification (`SENSITIVE`/`NOT_SENSITIVE`,
   `ALLOW`/`BLOCK`, one category) on a synthetic dataset built in this repo, plus two
   purpose-built detectors (D1 openai/privacy-filter, D2 Roblox PII classifier v2).
+- **Translation suite.** English ⇄ German and English ⇄ Spanish on a synthetic parallel
+  corpus built in this repo (`tools/translation`): characters translated per second, cost
+  per million characters, and translation quality (chrF) against the reference and against
+  the GPU's own output. See [Translation suite](#translation-suite).
 - **Migration calculator.** Estimates the engineering effort to move a model from NVIDIA
   to AMX and recommends a target based on capacity.
 
@@ -193,14 +198,19 @@ for 8 hours with no live run, or found stopped. Root volumes are deleted with th
 .venv/bin/python tools/build_prompts.py --hf-token-secret amx-gpu-bench/hf-token           # standard prompt sets
 .venv/bin/python -m tools.dspm.build_dataset --out data/dspm/v1 --hf-token-secret amx-gpu-bench/hf-token
 .venv/bin/python -m tools.dspm.build_requests --dataset data/dspm/v1 --hf-token-secret amx-gpu-bench/hf-token
+.venv/bin/python -m tools.translation.build_dataset --out data/translation/v1 --n 200          # synthetic EN/DE/ES corpus
+.venv/bin/python -m tools.translation.build_requests --hf-token-secret amx-gpu-bench/hf-token  # per-model translation pools
 .venv/bin/bench upload-artifacts
 .venv/bin/python tools/build_prompts.py --publish-corpus amx-gpu-bench-<account>-us-east-1  # once per account
 ```
 
-`bench upload-artifacts` copies the prompt sets, the DSPM request pools, and the DSPM
-dataset (`dev`, `test`, `manifest.json`) to the bucket. Run it again after any rebuild:
-preflight refuses a DSPM run whose request pools were built from a different dataset than
-the uploaded one. `--publish-corpus` copies the five public-domain Gutenberg texts the
+`bench upload-artifacts` copies the prompt sets (the translation pools live next to them),
+the DSPM request pools, the DSPM dataset (`dev`, `test`, `manifest.json`) and the
+translation corpus (`datasets/translation/v1/`) to the bucket. Run it again after any
+rebuild: preflight refuses a DSPM or translation run whose request pools were built from a
+different dataset than the uploaded one. `tools/build_prompts.py` also renders the
+translation pools when the corpus exists locally, and `--models <id>` builds one model's
+pools without dropping the others from the manifest. `--publish-corpus` copies the five public-domain Gutenberg texts the
 prompt pools are cut from to `datasets/gutenberg/` in the bucket, after checking each
 against its pinned SHA-256 (`GUTENBERG_SHA256`): the web app's Setup page cuts an added
 model's pools from these same bytes (gutenberg.org answers the container with HTTP 503,
@@ -416,6 +426,35 @@ SLA presets are `inline_strict` (P99 at most 250 ms), `inline_standard` (P99 at 
   are reported separately and do not change the CPU-vs-GPU verdict.
 - Speed results transfer to fine-tuned models of the same architecture and size;
   accuracy results do not.
+
+## Translation suite
+
+Directions `en-de`, `de-en`, `en-es`, `es-en`; text sizes `sentence` (1-2 sentences, 8-30
+words, answer limit 192 tokens) and `paragraph` (5-7 sentences, 40-90 words, limit 448).
+Chat models (M1, M2, M4, M6) and Flan-T5 (M5) take part; classifiers do not.
+- **Corpus.** `tools/translation/generator.py` fills hand-written trilingual sentence
+  frames (78 frames, six business domains: support, logistics, HR, travel, product notes,
+  invoices) with seeded slot values rendered per language (dates, times, amounts, weekday
+  and month names, localized city names). Every item exists in all three languages from the
+  same template, so each text is the reference translation of the other two. 200 items per
+  size; nothing is real and no third-party text is used. `build_dataset.py` writes
+  `data/translation/v1/{items.jsonl.gz,manifest.json,review_sample.md}` with a
+  `dataset_sha256`; `build_requests.py` renders one pool per model, direction and size
+  (`prompts/generated/<model>/translate-<dir>-<size>.jsonl`), the source wrapped in
+  `bench.translation.INSTRUCTION` and the model's chat format, with the source character
+  count the throughput and cost figures use.
+- **Plan.** Per direction: the run's concurrency levels (answers end where the model ends
+  them, `ignore_eos: false`, greedy) plus one accuracy pass at C=8 over `test_items` items
+  with outputs kept.
+- **Scoring.** `bench/translation.py`: sentence-level chrF (character n-grams 1-6, beta 2)
+  against the reference, mean and P10 per cell and direction; agreement with the model's
+  GPU BF16 cell (chrF and identical-answer rate); length ratio and the share of answers
+  cut at the token limit. A compressed format is flagged when its chrF falls more than 3
+  points below the model's CPU BF16 cell. Read chrF relative to the other cells: a
+  paraphrase lowers it for every cell alike.
+- **Units.** `chars_s` (source characters per second) and `usd_per_1m_chars`, the unit
+  managed translation services bill by (Amazon Translate $15, Google $20 per million
+  characters, list prices); the report prints that context, not as like-for-like.
 
 ## Reading the reports
 

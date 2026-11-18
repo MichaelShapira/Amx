@@ -100,9 +100,10 @@ def get_data(use_case: str):
 
 @app.get("/api/data/{use_case}/sample")
 def get_sample(use_case: str, prompt_set: str | None = None, model: str | None = None, workload: str | None = None,
-               label: str | None = None, hard_case: str | None = None, n: int = 5, seed: int = 0):
+               label: str | None = None, hard_case: str | None = None, n: int = 5, seed: int = 0,
+               direction: str | None = None):
     return C.sample(use_case, prompt_set=prompt_set, model=model, workload=workload, label=label, hard_case=hard_case,
-                    n=min(n, 20), seed=seed)
+                    n=min(n, 20), seed=seed, direction=direction)
 
 
 # ----------------------------------------------------------------------------- wizard -> run config
@@ -115,6 +116,9 @@ class Wizard(BaseModel):
     workloads: list[str] = ["W1", "W3"]
     test_items: int = 300
     preset: str = "inline_standard"
+    directions: list[str] = ["en-de", "de-en", "en-es", "es-en"]     # translation: which language pairs
+    text_size: str = "sentence"                                       # translation: sentence | paragraph
+    translation_items: int = 100                                      # translation: items per direction in the quality pass
     depth: str = "quick"                       # quick | full | custom
     requests: int | None = None
     passes: int | None = None
@@ -211,8 +215,11 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         "name": run_slug(w.name) or f"{w.use_case}-{time.strftime('%m%d-%H%M')}", "suite": w.use_case,
         "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": ACCOUNT, "region": REGION,
         "az_id": "use1-az1", "models": w.models, "cells": cells,
-        "prompt_set": w.prompt_set if w.use_case == "standard" else "dspm",
-        "sampling": {"temperature": 0.0, "max_new_tokens": int(w.answer_tokens) if w.use_case == "standard" else 4,
+        "prompt_set": w.prompt_set if w.use_case == "standard" else w.text_size if w.use_case == "translation" else "dspm",
+        "sampling": {"temperature": 0.0,
+                     "max_new_tokens": (int(w.answer_tokens) if w.use_case == "standard"
+                                        else C.TEXT_SIZES.get(w.text_size, C.TEXT_SIZES["sentence"])[2] if w.use_case == "translation"
+                                        else 4),
                      "ignore_eos": w.use_case == "standard", "seed": 0},
         "concurrency": conc, "per_level": {"requests": int(requests)}, "repeats": int(passes), "warmup_requests": 20,
         "quality": {"enabled": w.use_case == "standard"},
@@ -241,6 +248,9 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         run["dspm"] = {"workloads": w.workloads, "sla_preset": w.preset, "test_items": int(w.test_items), "prefix_caching": True}
         run["sla"] = {"p99_e2e_ms": C.PRESETS[w.preset][2], "max_error_pct": 1.0}
         run["request_timeout_s"] = 120
+    if w.use_case == "translation":
+        run["translation"] = {"directions": [d for d in w.directions if d in C.DIRECTIONS] or list(C.DIRECTIONS),
+                              "test_items": int(w.translation_items) if w.translation_items else None}
     return run
 
 
@@ -327,6 +337,16 @@ def refusal_sentences(errors: list[str]) -> list[str]:
                        "one uploaded, so the answers could not be scored. Rebuild them (`tools.dspm.build_requests`) and run "
                        "`bench upload-artifacts`.")
             continue
+        if e.startswith("Translation suite needs the parallel corpus"):
+            out.append("The translation corpus has not been uploaded to this account's bucket. From the repository run "
+                       "`python -m tools.translation.build_dataset`, `python -m tools.translation.build_requests` and "
+                       "`bench upload-artifacts`, then start the run again.")
+            continue
+        if e.startswith("translation request pools were rendered from a different corpus"):
+            out.append("The translation request pools in the bucket were rendered from a different corpus version than the "
+                       "one uploaded, so the translations could not be scored. Rebuild them (`tools.translation.build_requests`) "
+                       "and run `bench upload-artifacts`.")
+            continue
         out.append(e)
     return out
 
@@ -347,6 +367,8 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one hardware option.")
     if w.use_case == "dspm" and not w.workloads:
         problems.append("Pick at least one detection scenario.")
+    if w.use_case == "translation" and not [d for d in w.directions if d in C.DIRECTIONS]:
+        problems.append("Pick at least one translation direction.")
     if not run["cells"] and w.models and (w.gpu or w.cpus):
         problems.append("No hardware option can serve the chosen model in the chosen number formats.")
     failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
@@ -428,6 +450,10 @@ def _ai_context(w: Wizard) -> dict:
         test["inputs per request"] = ", ".join(map(str, w.batch_sizes))
     if w.use_case == "standard":
         test["prompts"] = f"{C.PROMPT_SETS.get(w.prompt_set, (w.prompt_set,))[0]}, answers of {w.answer_tokens} tokens"
+        test["targets"] = ", ".join(f"{k} <= {v}" for k, v in (w.sla or {}).items() if v) or "none"
+    elif w.use_case == "translation":
+        test["text"] = f"{C.TEXT_SIZES.get(w.text_size, (w.text_size,))[0]}, synthetic EN/DE/ES parallel corpus"
+        test["directions"] = ", ".join(C.DIRECTIONS.get(d, (d,))[0] for d in w.directions)
         test["targets"] = ", ".join(f"{k} <= {v}" for k, v in (w.sla or {}).items() if v) or "none"
     else:
         test["scenarios"] = "; ".join(C.WORKLOADS.get(x, (x,))[0] for x in w.workloads)
@@ -1199,17 +1225,21 @@ def wizard_from_run(run: dict, name: str | None = None, source_run_id: str | Non
     sla = run.get("sla") or {}
     purchase = run.get("purchase") or {}
     dspm = run.get("dspm") or {}
+    trans = run.get("translation") or {}
     models = list(run.get("models") or [])
     base_name = (name or run.get("name") or "run").strip()
     w = {"use_case": suite, "prompt_set": run.get("prompt_set") if suite == "standard" else "short",
          "answer_tokens": int((run.get("sampling") or {}).get("max_new_tokens") or 128) if suite == "standard" else 128,
          "workloads": list(dspm.get("workloads") or ["W1", "W3"]), "test_items": int(dspm.get("test_items") or 300),
          "preset": dspm.get("sla_preset") or "inline_standard",
+         "directions": list(trans.get("directions") or list(C.DIRECTIONS)),
+         "text_size": run.get("prompt_set") if suite == "translation" and run.get("prompt_set") in C.TEXT_SIZES else "sentence",
+         "translation_items": int(trans.get("test_items") or 100),
          "depth": depth, "requests": per if depth == "custom" else None, "passes": reps if depth == "custom" else None,
          "models": models, "precision": "bf16", "gpu": gpu, "cpus": cpus,
          "parallel_targets": bool((run.get("execution") or {}).get("parallel_targets", True)),
          "request_mode": request_mode, "concurrency": conc, "batch_sizes": [int(b) for b in batches] if request_mode == "batch" else [8],
-         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite == "standard" else {},
+         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite in ("standard", "translation") else {},
          "purchase": purchase.get("type", "spot"), "spot_fallback": bool(purchase.get("spot_fallback_on_demand", True)),
          "spot_wait_minutes": max(1, int(purchase.get("spot_capacity_window_s", 600)) // 60),
          "launch_attempts": int(purchase.get("max_launch_attempts", 30)),
@@ -1751,8 +1781,13 @@ def technical():
         path = ROOT / rel
         files[rel] = {"title": title, "text": path.read_text() if path.exists() else None, "present": path.exists()}
     ov = {k: v for k, v in yaml.safe_load((ROOT / "config/models.yaml").read_text()).items() if k.startswith("x-ov-")}
+    # Models that need serve flags of their own on vLLM (config/models.yaml vllm_args), with the reason.
+    model_flags = [{"model": m.id, "name": C.model_name(m.id), "hf_repo": m.hf_repo, "engine": "vllm",
+                    "args": list(m.vllm_args), "notes": m.notes}
+                   for m in catalog_store.load_catalog().models if m.enabled and m.vllm_args]
     out = {
         "hardware": hardware,
+        "model_flags": model_flags,
         "images": [{"name": n, **spec} for n, spec in images.items()],
         "files": files,
         "thin_tasks": dict(cellspec.THIN_TASK),

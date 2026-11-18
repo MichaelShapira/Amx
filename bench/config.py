@@ -21,7 +21,9 @@ IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 BUILT_IMAGE = re.compile(r"^built:[a-z0-9-]+$")
 
 ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder"]
-Suite = Literal["standard", "dspm"]
+Suite = Literal["standard", "dspm", "translation"]
+TranslationDirection = Literal["en-de", "de-en", "en-es", "es-en"]
+TranslationSize = Literal["sentence", "paragraph"]
 EngineName = Literal["vllm", "ovms", "thin-torch", "thin-openvino"]
 
 # Methodology defaults (Requirement 7.4).
@@ -91,8 +93,22 @@ class ModelSpec(Strict):
     quality_reference: QualityReference | None = None
     classifier: ClassifierSpec | None = None
     precisions: dict[str, PrecisionSpec]
+    # Extra `vllm serve` arguments this model needs on every vLLM target (a chat template, a
+    # tool-call or reasoning parser, multimodal limits), appended verbatim after the harness's own
+    # arguments. Flags only: the harness decides the port, model path and scheduler settings.
+    vllm_args: list[str] = Field(default_factory=list)
     enabled: bool = True
     notes: str | None = None
+
+    @field_validator("vllm_args")
+    @classmethod
+    def _flags_only(cls, v: list[str]) -> list[str]:
+        reserved = {"--host", "--port", "--served-model-name", "--max-model-len", "--max-num-seqs",
+                    "--max-num-batched-tokens", "--dtype", "--seed", "--kv-cache-memory-bytes", "--gpu-memory-utilization"}
+        for a in v:
+            if a.split("=", 1)[0] in reserved:
+                raise ValueError(f"vllm_args may not set {a.split('=', 1)[0]}; the harness owns it")
+        return v
 
     @field_validator("revision")
     @classmethod
@@ -289,6 +305,22 @@ class DspmCfg(Strict):
     fitness_fpr_max: float = 0.05
 
 
+class TranslationCfg(Strict):
+    """Translation suite (synthetic EN/DE/ES parallel corpus, tools/translation). One request pool
+    per direction and text size; every direction gets an accuracy pass (each item once, outputs
+    kept) scored with chrF against the reference and against the GPU BF16 cell."""
+    directions: list[TranslationDirection] = Field(default_factory=lambda: ["en-de", "de-en", "en-es", "es-en"])
+    test_items: int | None = None          # items per direction in the accuracy pass; None = the whole pool
+
+    @model_validator(mode="after")
+    def _some(self) -> TranslationCfg:
+        if not self.directions:
+            raise ValueError("translation needs at least one direction")
+        if len(set(self.directions)) != len(self.directions):
+            raise ValueError("duplicate translation directions")
+        return self
+
+
 class ExecutionCfg(Strict):
     """parallel_targets: run every hardware option at the same time (default) or one after
     another (fewer instances up at once; the run takes longer)."""
@@ -326,6 +358,7 @@ class RunConfig(Strict):
     batch_sizes: list[int] | None = None
     execution: ExecutionCfg = Field(default_factory=ExecutionCfg)
     dspm: DspmCfg | None = None
+    translation: TranslationCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20
 
@@ -346,6 +379,13 @@ class RunConfig(Strict):
                 raise ValueError(f"full mode needs >= {FULL_MIN_REPEATS} repeats")
         if self.suite == "dspm" and self.dspm is None:
             self.dspm = DspmCfg()
+        if self.suite == "translation":
+            if self.translation is None:
+                self.translation = TranslationCfg()
+            if self.prompt_set not in ("sentence", "paragraph"):
+                raise ValueError("the translation suite's prompt_set is the text size: sentence or paragraph")
+            if self.sampling.ignore_eos:
+                raise ValueError("translation answers must end where the model ends them (sampling.ignore_eos: false)")
         if self.custom_prompt and self.prompt_set != "custom":
             raise ValueError("custom_prompt requires prompt_set: custom")
         return self

@@ -22,6 +22,10 @@ API_TASK = {"decoder": "generate", "encoder-decoder": "generate", "encoder-class
             "token-classifier": "detect"}
 OV_TASK = {"decoder": "text-generation-with-past", "encoder-decoder": "text2text-generation-with-past",
            "encoder-classifier": "text-classification"}
+# Bytes per stored weight by the catalog's `weights` label, for the host-memory check below.
+BYTES_PER_WEIGHT = {"bf16": 2, "fp16": 2, "fp32": 4, "int8": 1}
+HOST_HEADROOM_GIB = 6          # OS, the engine process, activations and the page cache on a vLLM CPU host
+MIN_KV_GIB = 4
 
 
 def cell_key(cell_id: str) -> str:
@@ -65,12 +69,32 @@ def _env_flags(env: dict[str, str]) -> list[str]:
     return out
 
 
+def weights_gib(model: ModelSpec, precision: str) -> float:
+    label = (model.precisions[precision].weights or "bf16").lower()
+    per = next((b for k, b in BYTES_PER_WEIGHT.items() if label.startswith(k)), 0.5 if "int4" in label else 2)
+    return model.params * per / 2**30
+
+
+def cpu_kv_cache_gib(default_kv: int, target: TargetSpec, instance_type: str | None, model: ModelSpec,
+                     precision: str) -> int:
+    """The vLLM CPU KV-cache budget: the target's figure scaled to the instance size, then capped so
+    that weights, KV cache and HOST_HEADROOM_GIB fit the host's memory. The 4B models never hit the
+    cap (c8i.4xlarge: 32 GiB host, 8 GiB weights, 16 GiB KV); an 8B checkpoint on the same host
+    does (15 GiB weights leave 9 GiB), where the target's 16 GiB would be refused by vLLM at start."""
+    from bench.pairing import scale_kv_cache, spec
+
+    kv = scale_kv_cache(default_kv, target.instance_type, instance_type)
+    host = spec(instance_type or target.instance_type or "") or {}
+    if host.get("memory_gib"):
+        room = int(host["memory_gib"] - weights_gib(model, precision) * 1.1 - HOST_HEADROOM_GIB)
+        kv = min(kv, room)
+    return max(MIN_KV_GIB, kv)
+
+
 def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConfig, image: str,
                 instance_type: str | None = None) -> dict:
     """Return {"run_opts": [...], "image": str, "cmd": [...]} for the detached container start.
     instance_type: the type this run launches; memory-sized arguments scale from the target's default."""
-    from bench.pairing import scale_kv_cache
-
     eng = target.engines[cell.engine]
     gpu = target.accelerator == "gpu"
     opts = ["--name", CONTAINER, "--restart", "no", "-p", f"{{PRIVATE_IP}}:{PORT}:{PORT}",
@@ -96,11 +120,12 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         if gpu:
             cmd += ["--gpu-memory-utilization", str(a.get("gpu_memory_utilization", 0.9))]
         else:
-            kv = scale_kv_cache(int(a.get("kv_cache_gib", 16)), target.instance_type, instance_type)
+            kv = cpu_kv_cache_gib(int(a.get("kv_cache_gib", 16)), target, instance_type, model, cell.precision)
             cmd += ["--kv-cache-memory-bytes", str(kv * 2**30),
                     "--block-size", str(a.get("block_size", 128))]
         if model.type in ("encoder-classifier", "token-classifier"):
             cmd += ["--runner", "pooling"]
+        cmd += list(model.vllm_args)          # the model's own serve flags (chat template, parsers, modality limits)
     elif cell.engine == "ovms":
         opts += _env_flags(eng.env)
         cmd = ["--rest_port", str(PORT), "--rest_bind_address", "0.0.0.0", "--model_name", model.id,  # noqa: S104 - in-container bind

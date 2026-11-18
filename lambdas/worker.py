@@ -71,6 +71,7 @@ def send(cl: httpx.Client, ev: dict, lines: list[dict]) -> dict:
         rec["item_ids"] = item_ids
     rec["batch_size"] = len(lines) if ev["api_task"] != "generate" else 1
     rec["content_bytes"] = sum(int(x.get("bytes") or 0) for x in lines) or None
+    rec["content_chars"] = sum(int(x.get("chars") or 0) for x in lines) or None    # translation: source characters
     return rec
 
 

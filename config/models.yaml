@@ -1,6 +1,9 @@
 # Model catalog (Requirement 1). Revisions are the Hugging Face commits pinned on
-# 2026-11-09 (research.md section 2). Nominal size is capped at 4B (Requirement 1.6).
-size_cap_b: 4.0
+# 2026-11-09 (research.md section 2). Nominal size was capped at 4B (Requirement 1.6) for M1-M5;
+# the cap is 8B since M6 (Gemma 4 E4B, 2026-11-19): Google calls it a 4B-class model ("E4B" =
+# 4.5B effective parameters, the per-layer embedding tables excluded), but the checkpoint stores
+# 8.0B parameters and every engine here loads all of them (14.9 GiB in BF16), so that is its size.
+size_cap_b: 8.0
 
 # bf16-ov: the uncompressed OpenVINO cell. optimum-cli has no bf16 weight format, so the IR is
 # written in FP16 and OpenVINO's CPU plugin runs it in BF16 on AMX (its default inference precision
@@ -19,7 +22,7 @@ models:
     license: qwen-research          # non-commercial: research or evaluation only
     params: 3085938688
     nominal_size_b: 3
-    suites: [standard, dspm]
+    suites: [standard, dspm, translation]
     max_input_tokens: 4096
     max_model_len: 16384
     prompt_format: {kind: chat_template}
@@ -51,7 +54,7 @@ models:
     license: apache-2.0
     params: 4022468096
     nominal_size_b: 4
-    suites: [standard, dspm]
+    suites: [standard, dspm, translation]
     max_input_tokens: 4096
     max_model_len: 16384
     prompt_format: {kind: chat_template}
@@ -108,7 +111,7 @@ models:
     gated: true
     params: 2614341888
     nominal_size_b: 2.6
-    suites: [standard, dspm]
+    suites: [standard, dspm, translation]
     max_input_tokens: 4096
     max_model_len: 8192
     prompt_format: {kind: chat_template}   # Gemma 2 has no system role; policy goes into the user turn
@@ -133,7 +136,7 @@ models:
     license: apache-2.0
     params: 2849757184
     nominal_size_b: 2.85
-    suites: [standard, dspm]
+    suites: [standard, dspm, translation]
     max_input_tokens: 1024             # the 4K prompt set is skipped; DSPM inputs stay <= 512
     prompt_format: {kind: plain}
     quality_reference: {target: t1-g6, precision: bf16}
@@ -161,6 +164,47 @@ models:
         export: {weight_format: int4, group_size: 128, ratio: 1.0, sym: false, task: text2text-generation-with-past}
         weights: int4-g128
         activations: bf16-or-int8-dynamic
+
+  # Gemma 4 E4B Instruct (2026-11-19), from the Intel Software Catalog entry
+  # https://swcatalog.intel.com/models/google-gemma-4-e4b-it (validated on Xeon with vLLM's CPU
+  # backend) and the vLLM recipe https://recipes.vllm.ai/Google/gemma-4-E4B-it?hardware=xeon6.
+  # Multimodal (text, image, audio) upstream; served text-only here. vllm_args are the recipe's
+  # serve flags: the tool-call template and the gemma4 tool-call and reasoning parsers configure
+  # the chat endpoint (the benchmark measures /v1/completions with the client-rendered chat
+  # template, so they do not change the measured path); the modality limits skip the image and
+  # audio profiling at start, which is what frees the GPU memory an 8B checkpoint needs on an L4.
+  # Thinking stays off: the chat template adds <|think|> only when enable_thinking is set.
+  # No INT8 checkpoint exists for vLLM (RedHatAI publishes an FP8 one, GPU-only); OpenVINO/gemma-4-
+  # E4B-it-int8-ov is a ready IR, but this harness exports IRs itself, so no OpenVINO cell yet.
+  - id: m6-gemma-4-e4b
+    slot: M6
+    hf_repo: google/gemma-4-E4B-it
+    revision: 4ecc2ba63bcac23ba4a767fc87025b1450f84c9c
+    type: decoder
+    license: apache-2.0
+    params: 7996156490
+    nominal_size_b: 8.0
+    suites: [standard, dspm, translation]
+    max_input_tokens: 4096
+    max_model_len: 16384
+    prompt_format: {kind: chat_template}
+    quality_reference: {target: t1-g6, precision: bf16}
+    vllm_args:
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --chat-template
+      - examples/tool_chat_template_gemma4.jinja
+      - --reasoning-parser
+      - gemma4
+      - --limit-mm-per-prompt
+      - '{"image": 0, "audio": 0}'
+    notes: >-
+      Google's Gemma 4 E4B: 8.0 billion stored parameters (4.5 billion effective), text, image and
+      audio upstream, text only here. Apache-2.0. Served with the vLLM flags Intel's Xeon recipe
+      lists; PyTorch through the thin server loads the same checkpoint. Not yet measured live.
+    precisions:
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
 
   # --- DSPM/DLP detector models (design section 24) ---------------------------------
   - id: d1-privacy-filter

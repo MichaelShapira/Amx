@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bench import catalog_store, pairing
+from bench import catalog_store, pairing, translation
 from bench.config import load_targets
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +31,29 @@ USE_CASES = {
                  "prevention gates."),
         "icon": "shield",
     },
+    "translation": {
+        "name": "Translation (EN ⇄ DE, EN ⇄ ES)",
+        "short": "How fast each hardware option translates business text between English, German and Spanish, and what it costs per million characters.",
+        "long": ("Translates short messages or paragraphs from a synthetic parallel corpus (the same text written in all "
+                 "three languages, so the reference translation is known). Reports characters translated per second, cost "
+                 "per million characters (the unit managed translation services bill by), time to the first word and to "
+                 "the whole translation, and translation quality (chrF) against the reference and against the GPU's output. "
+                 "Use it for document, support-ticket and product-content translation."),
+        "icon": "translate",
+    },
+}
+# Translation use case: directions and text sizes (bench.plan.TRANSLATION_DIRECTIONS / _SIZES).
+DIRECTIONS = {
+    "en-de": ("English → German", "Source text in English, translated into German."),
+    "de-en": ("German → English", "Source text in German, translated into English."),
+    "en-es": ("English → Spanish", "Source text in English, translated into Spanish."),
+    "es-en": ("Spanish → English", "Source text in Spanish, translated into English."),
+}
+TEXT_SIZES = {
+    "sentence": ("Short messages", "One or two sentences (about 8-30 words): chat replies, subject lines, UI strings. "
+                                   "Dominated by the time to the first word.", 192),
+    "paragraph": ("Paragraphs", "Five to seven sentences (about 40-90 words): a support e-mail, a shipping notice, "
+                                "release notes. Dominated by generation speed.", 448),
 }
 
 MODELS = {
@@ -43,6 +66,9 @@ MODELS = {
     "m4-gemma-2-2b": ("Gemma 2 2B Instruct", "Google chat model, 2.6 billion parameters, Gemma license."),
     "m5-flan-t5-xl": ("Flan-T5 XL", "Instruction-following model of the older encoder-decoder type, 2.85 billion "
                                     "parameters. Many production classifiers still use this family."),
+    "m6-gemma-4-e4b": ("Gemma 4 E4B Instruct", "Google's newest small chat model: 8.0 billion stored parameters (Google "
+                                                 "counts 4.5 billion effective), understands text, images and audio; text "
+                                                 "only here. Apache-2.0. Served with the vLLM settings from Intel's Xeon recipe."),
     "d1-privacy-filter": ("OpenAI privacy-filter (PII detector)", "Purpose-built detector, 1.4 billion parameters: marks "
                                                                   "the exact words that are personal data. Sensitive-data use case only."),
     "d2-roblox-pii-v2": ("Roblox PII classifier v2", "Purpose-built classifier, 0.56 billion parameters: flags chat "
@@ -184,6 +210,8 @@ def catalog() -> dict:
         "instances": insts, "price_snapshot": cat["price_snapshot"],
         "prompt_sets": {k: {"label": v[0], "help": v[1]} for k, v in PROMPT_SETS.items()},
         "workloads": {k: {"label": v[0], "help": v[1]} for k, v in WORKLOADS.items()},
+        "directions": {k: {"label": v[0], "help": v[1]} for k, v in DIRECTIONS.items()},
+        "text_sizes": {k: {"label": v[0], "help": v[1], "answer_tokens": v[2]} for k, v in TEXT_SIZES.items()},
         "presets": {k: {"label": v[0], "help": v[1], "p99_e2e_ms": v[2]} for k, v in PRESETS.items()},
         "depths": {k: {"label": v[0], "help": v[1], "requests": v[2], "passes": v[3]} for k, v in DEPTHS.items()},
         "request_modes": {k: {"label": v[0], "help": v[1]} for k, v in REQUEST_MODES.items()},
@@ -245,6 +273,8 @@ def dataset_info(use_case: str) -> dict:
                 "summary": ("Fixed prompts cut from public-domain books to a target length and wrapped in each model's own "
                             "chat format, so every model reads the same text. Answers are generated to a fixed length so "
                             "timings are comparable.")}
+    if use_case == "translation":
+        return _translation_info()
     man_p = ROOT / "data/dspm/v1/manifest.json"
     if not man_p.exists():
         return {"available": False, "reason": "the dataset is not built locally (tools/dspm/build_dataset.py)"}
@@ -271,6 +301,43 @@ def dataset_info(use_case: str) -> dict:
             "policy": (ROOT / "config/dspm/policy_v1.md").read_text() if (ROOT / "config/dspm/policy_v1.md").exists() else None}
 
 
+def _translation_info() -> dict:
+    man_p = ROOT / "data/translation/v1/manifest.json"
+    if not man_p.exists():
+        return {"available": False, "reason": "the translation corpus is not built locally (tools/translation/build_dataset.py)"}
+    man = json.loads(man_p.read_text())
+    sizes = {}
+    for k, (label, help_, tokens) in TEXT_SIZES.items():
+        st = (man.get("sizes") or {}).get(k) or {}
+        sizes[k] = {"label": label, "help": help_, "answer_tokens": tokens, "items": st.get("items"),
+                    "sentences": st.get("sentences"), "words_en": st.get("words_en"), "chars_en": st.get("chars_en")}
+    return {"available": True, "kind": "parallel", "version": man.get("version"),
+            "fingerprint": str(man.get("dataset_sha256"))[:12], "items": man.get("items"), "sizes": sizes,
+            "directions": {k: {"label": v[0], "help": v[1]} for k, v in DIRECTIONS.items()},
+            "domains": man.get("domains") or {}, "chars": man.get("chars") or {}, "words": man.get("words") or {},
+            "sources": [{"name": "seeded template generator (this repository, tools/translation)",
+                         "role": "every item written in English, German and Spanish from one template", "license": "-"}],
+            "summary": (f"{man.get('items')} synthetic items, each written in English, German and Spanish from the same template "
+                        "with the same names, dates, amounts and places, so each text is the reference translation of the other "
+                        "two. Six business domains: customer support, logistics, HR notices, travel confirmations, product "
+                        "release notes, invoices. Nothing is real; no third-party text is used. The model is asked to translate "
+                        "the source text and reply with the translation only."),
+            "instruction": translation.INSTRUCTION}
+
+
+_TRANSLATION_CACHE: list[dict] | None = None
+
+
+def _translation_items() -> list[dict]:
+    global _TRANSLATION_CACHE
+    if _TRANSLATION_CACHE is None:
+        import gzip
+
+        p = ROOT / "data/translation/v1/items.jsonl.gz"
+        _TRANSLATION_CACHE = [json.loads(line) for line in gzip.open(p, "rt", encoding="utf-8")] if p.exists() else []
+    return _TRANSLATION_CACHE
+
+
 _DSPM_CACHE: list[dict] | None = None
 
 
@@ -285,10 +352,20 @@ def _dspm_items() -> list[dict]:
 
 
 def sample(use_case: str, *, prompt_set: str | None = None, model: str | None = None, workload: str | None = None,
-           label: str | None = None, hard_case: str | None = None, n: int = 5, seed: int = 0) -> list[dict]:
+           label: str | None = None, hard_case: str | None = None, n: int = 5, seed: int = 0,
+           direction: str | None = None) -> list[dict]:
     import random
 
     rnd = random.Random(seed)  # noqa: S311 - display sampling
+    if use_case == "translation":
+        direction = direction if direction in DIRECTIONS else "en-de"
+        size = prompt_set if prompt_set in TEXT_SIZES else "sentence"
+        src, tgt = translation.split_direction(direction)
+        pool = [x for x in _translation_items() if x["size"] == size]
+        return [{"id": x["id"], "domain": x["domain"], "direction": direction, "size": size,
+                 "text": translation.prompt_text(direction, x["text"][src]), "source": x["text"][src], "reference": x["text"][tgt],
+                 "chars": x["chars"][src], "words": x["words"][src], "sentences": x["sentences"]}
+                for x in rnd.sample(pool, min(n, len(pool)))]
     if use_case == "standard":
         # Both values come from the request. Only catalog model ids and known prompt-set names name
         # a file; anything else (a path, "..", an unknown name) is an empty sample, never a read.

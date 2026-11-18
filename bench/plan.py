@@ -22,6 +22,11 @@ WORKLOAD_LEVELS = {"W1": (8, 16, 32, 64), "W2": (16, 32), "W3": (1, 4, 8, 16), "
 WORKLOAD_BUCKETS = {"W1": ("short", "long"), "W2": ("short",), "W3": (None,), "W4": (None,), "W5": (None,)}
 SHORT_ONLY_SLOTS = {"M5", "M3"}       # 512-token models skip the ~2,048-token W1 chunks
 ACCURACY_CONC = 16
+# Translation suite (tools/translation): one pool per direction and text size; the accuracy pass
+# (every item once, outputs kept) runs at a moderate concurrency so it finishes inside one wave.
+TRANSLATION_DIRECTIONS = ("en-de", "de-en", "en-es", "es-en")
+TRANSLATION_SIZES = ("sentence", "paragraph")
+TRANSLATION_ACCURACY_CONC = 8
 DEV_THRESHOLD_SLOTS = {"M3"}
 CATEGORY_WORKLOADS = ("W2", "W4")
 LABELS = {"W1": ["SENSITIVE", "NOT_SENSITIVE"], "W3": ["BLOCK", "ALLOW"],
@@ -46,6 +51,13 @@ def standard_pool(model: ModelSpec, run: RunConfig) -> str | None:
             return None
         return run.prompt_set
     return CLASSIFIER_SETS.get(run.prompt_set, "short")
+
+
+def translation_pool(model: ModelSpec, direction: str, size: str) -> str:
+    """Request pool rendered by tools/translation/build_requests.py: the source text of every item
+    wrapped in the translation instruction and the model's chat format, plus the item id the
+    report uses to look up the reference."""
+    return f"artifacts/prompts/{model.id}/translate-{direction}-{size}.jsonl"
 
 
 def dspm_pool(model: ModelSpec, workload: str, bucket: str | None) -> str:
@@ -91,8 +103,10 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             raise ValueError(f"request pool {pool_key} is missing from the manifest")
         key = f"{ck}__{name}__c{conc}" + (f"__b{batch}" if batch > 1 else "") + ("" if accuracy else f"__r{rep}")
         size = pool_sizes[pool_key]
-        if accuracy and run.dspm and run.dspm.test_items:
+        if accuracy and run.suite == "dspm" and run.dspm and run.dspm.test_items:
             size = min(size, run.dspm.test_items)    # request pools are shuffled, so a prefix is a fair sample
+        if accuracy and run.suite == "translation" and run.translation and run.translation.test_items:
+            size = min(size, run.translation.test_items)
         lvl = {**base, "level_key": key, "name": name, "conc": conc, "repeat": rep, "batch": batch, "payload": payload,
                "pool": {"bucket": bucket, "key": pool_key, "size": size},
                "accuracy": accuracy, "keep_output": accuracy, "workload": workload, **(extra or {})}
@@ -117,6 +131,20 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             for b in batches:
                 for rep in range(run.repeats):
                     add(name, key, payload, conc, rep, batch=b)
+        return out
+
+    if run.suite == "translation":
+        assert run.translation is not None
+        if model.type not in GENERATIVE:
+            return []
+        payload = _gen_payload(model, run)           # ignore_eos is false: the answer ends where the model ends it
+        for d in run.translation.directions:
+            key = translation_pool(model, d, run.prompt_set)
+            name = f"{d}-{run.prompt_set}"
+            add(f"{name}-accuracy", key, payload, TRANSLATION_ACCURACY_CONC, 0, accuracy=True, extra={"direction": d})
+            for conc in run.concurrency:
+                for rep in range(run.repeats):
+                    add(name, key, payload, conc, rep, extra={"direction": d})
         return out
 
     # DSPM/DLP suite

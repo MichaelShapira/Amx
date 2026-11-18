@@ -75,6 +75,8 @@ def _latest_host_facts(target_id: str, instance_type: str | None = None) -> dict
 
 DSPM_REQUESTS_MANIFEST = "artifacts/dspm/v1/requests/manifest.json"
 DSPM_DATASET_MANIFEST = "datasets/dspm/v1/manifest.json"
+TRANSLATION_DATASET_MANIFEST = "datasets/translation/v1/manifest.json"
+PROMPTS_MANIFEST = "artifacts/prompts/manifest.json"
 
 
 def _pool_sizes() -> dict[str, int]:
@@ -102,6 +104,22 @@ def dspm_hashes(requests_manifest: dict | None, dataset_manifest_bytes: bytes | 
     return out, errors
 
 
+def translation_hashes(prompts_manifest: dict | None, dataset_manifest_bytes: bytes | None) -> tuple[dict, list[str]]:
+    """The translation corpus fingerprint for the report, plus an error when the uploaded request
+    pools were rendered from a different corpus than the one the report would score against."""
+    if dataset_manifest_bytes is None:
+        return {}, ["Translation suite needs the parallel corpus in S3 (datasets/translation/v1); run `bench upload-artifacts`"]
+    ds = json.loads(dataset_manifest_bytes)
+    out = {"dataset_version": ds.get("version"), "dataset_sha256": ds.get("dataset_sha256"), "dataset_seed": ds.get("seed"),
+           "items": ds.get("items")}
+    rendered = ((prompts_manifest or {}).get("translation") or {}).get("dataset_sha256")
+    errors = []
+    if rendered and rendered != out["dataset_sha256"]:
+        errors.append("translation request pools were rendered from a different corpus than datasets/translation/v1/manifest.json; "
+                      "rerun tools.translation.build_requests and `bench upload-artifacts`")
+    return out, errors
+
+
 def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrency: int | None,
               offerings: set[str] | None, host_flags: dict[str, set[str] | None]) -> list[str]:
     """Pure checks (unit-tested); AWS lookups happen in the handler."""
@@ -109,6 +127,8 @@ def check_run(run: RunConfig, cells, models, tmap, *, reserved_worker_concurrenc
     max_c = max(run.concurrency)
     if run.suite == "dspm":
         max_c = max(max_c, plan.ACCURACY_CONC)
+    if run.suite == "translation":
+        max_c = max(max_c, plan.TRANSLATION_ACCURACY_CONC)
     if reserved_worker_concurrency is not None and reserved_worker_concurrency < max_c:
         errors.append(f"worker reserved concurrency {reserved_worker_concurrency} < highest level {max_c}")
     types = set(run_instance_types(run, cells, tmap).values())
@@ -208,6 +228,11 @@ def handler(event: dict, context: Any = None) -> dict:
         req = common.get_json(DSPM_REQUESTS_MANIFEST) if common.exists(DSPM_REQUESTS_MANIFEST) else None
         dsb = common.get_bytes(DSPM_DATASET_MANIFEST) if common.exists(DSPM_DATASET_MANIFEST) else None
         hashes, errs = dspm_hashes(req, dsb)
+        errors += errs
+    if run.suite == "translation":
+        pm = common.get_json(PROMPTS_MANIFEST) if common.exists(PROMPTS_MANIFEST) else None
+        tb = common.get_bytes(TRANSLATION_DATASET_MANIFEST) if common.exists(TRANSLATION_DATASET_MANIFEST) else None
+        hashes, errs = translation_hashes(pm, tb)
         errors += errs
 
     pools = _pool_sizes()

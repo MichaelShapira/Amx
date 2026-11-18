@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 from bench import pairing, report, utilization
-from webui.api.catalog import MODELS, PRESETS, PROMPT_SETS, WORKLOADS
+from webui.api.catalog import DIRECTIONS, MODELS, PRESETS, PROMPT_SETS, TEXT_SIZES, WORKLOADS
 
 # ----------------------------------------------------------------------------- run shape
 
@@ -32,6 +32,11 @@ def shape(summary: dict) -> dict:
     if run.get("suite") == "standard":
         s.update(prompt_set=run.get("prompt_set"), answer_tokens=(run.get("sampling") or {}).get("max_new_tokens"),
                  temperature=(run.get("sampling") or {}).get("temperature"))
+    elif run.get("suite") == "translation":
+        h = summary.get("dspm_hashes") or {}          # the pre-check stores the corpus fingerprint under the same key
+        s.update(prompt_set=run.get("prompt_set"), answer_tokens=(run.get("sampling") or {}).get("max_new_tokens"),
+                 directions=sorted((run.get("translation") or {}).get("directions") or []),
+                 dataset=str(h.get("dataset_sha256"))[:12], test_items=(run.get("translation") or {}).get("test_items"))
     else:
         h = summary.get("dspm_hashes") or {}
         s.update(workloads=sorted((run.get("dspm") or {}).get("workloads") or []),
@@ -74,6 +79,21 @@ def comparability(summaries: list[dict]) -> dict:
         d, v = differ("temperature")
         if d:
             warnings.append(f"Different sampling temperatures ({', '.join(v)}); timings are unaffected, answer quality is.")
+    elif shapes[0]["use_case"] == "translation":
+        d, v = differ("prompt_set")
+        if d:
+            blockers.append("Different text sizes (" + ", ".join(TEXT_SIZES.get(x, (x,))[0] for x in v) + "): translating a "
+                            "sentence and a paragraph load the hardware differently.")
+        d, v = differ("dataset")
+        if d:
+            blockers.append(f"Different corpus versions (fingerprints {', '.join(v)}): the texts differ, so characters per "
+                            "second and translation quality are not comparable.")
+        sets = [set(sh.get("directions") or []) for sh in shapes]
+        common = set.intersection(*sets) if sets else set()
+        if not common:
+            blockers.append("No translation direction in common between the runs.")
+        elif any(s_ != common for s_ in sets):
+            warnings.append("Only the directions all runs share are compared: " + ", ".join(DIRECTIONS[w][0] for w in sorted(common)) + ".")
     else:
         d, v = differ("dataset")
         if d:
@@ -115,6 +135,11 @@ def _model_name(mid: str) -> str:
 def _group_key(r: dict) -> tuple[str, str]:
     key = r["model"]
     label = _model_name(r["model"])
+    if r.get("direction"):
+        key += "|" + r["direction"] + "|" + str(r.get("text_size"))
+        label += " · " + DIRECTIONS.get(r["direction"], (r["direction"],))[0]
+        label += f" ({TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]})"
+        return key, label
     if r.get("workload"):
         key += "|" + r["workload"] + ("|" + r["bucket"] if r.get("bucket") else "")
         label += " · " + WORKLOADS.get(r["workload"], (r["workload"],))[0]
@@ -127,6 +152,9 @@ def _group_key(r: dict) -> tuple[str, str]:
 
 
 def _unit(r: dict) -> dict:
+    if r.get("direction"):
+        return {"thr": "chars_s", "thr_label": "characters/s", "cost": "usd_per_1m_chars", "cost_label": "$ per 1M characters",
+                "lat": "e2e_p99", "lat_label": "whole translation, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("workload"):
         return {"thr": "docs_s", "thr_label": "documents/s", "cost": "usd_per_gb", "cost_label": "$ per GB scanned",
                 "lat": "e2e_p99", "lat_label": "whole decision, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
@@ -175,6 +203,20 @@ def _acc(summary: dict, r: dict) -> dict | None:
             "precision": a["precision"]["value"], "f1": a["f1"], "format_adherence": a["format_adherence"]["value"],
             "agreement_with_gpu": (a.get("vs_gpu") or {}).get("agreement", {}).get("value"),
             "qualifies_vs_gpu": (a.get("vs_gpu") or {}).get("qualifies"), "fit": bool(a["fitness"]["fit"])}
+
+
+def _tq(summary: dict, r: dict) -> dict | None:
+    """Translation quality of this row's cell on its direction (report.translation_quality)."""
+    tq = summary.get("translation_quality") or {}
+    if not r.get("direction"):
+        return None
+    a = (tq.get(r.get("cell_key") or "") or {}).get(f"{r['direction']}-{r.get('text_size')}")
+    if not a:
+        return None
+    vs = a.get("vs_reference_cell") or {}
+    return {"chrf": a.get("chrf"), "chrf_p10": a.get("chrf_p10"), "length_ratio": a.get("length_ratio"),
+            "truncated_pct": a.get("truncated_pct"), "n": a.get("n"), "chrf_vs_gpu": vs.get("chrf"),
+            "exact_match_vs_gpu": vs.get("exact_match_rate"), "flag": a.get("flag")}
 
 
 _TARGETS: dict = {}
@@ -228,6 +270,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             r["run_id"] = s["run_id"]
             r["meets_user_sla"], r["user_sla_reason"] = report.meets_sla(r, sla)
             r["accuracy"] = _acc(s, r)
+            r["translation"] = _tq(s, r)
             rows.append(r)
     missing = [nr for s in summaries for nr in not_run(s)]
     # A side counts as missing only when NO selected run measured it.
@@ -253,6 +296,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                     "precision": r["precision"], "conc": r["conc"], "batch": r.get("batch", 1), "usd_per_hour": r["usd_per_hour"],
                     "throughput": r.get(u["thr"]), "latency": r.get(u["lat"]), "cost": r.get(u["cost"]),
                     "quality_delta": r.get("quality_delta"), "amx": r.get("amx"), "accuracy": r.get("accuracy"),
+                    "translation": r.get("translation"),
                     "run_id": r["run_id"], "ttft_p50": r.get("ttft_p50"), "tpot_p50": r.get("tpot_p50"),
                     "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99")}
 
@@ -295,7 +339,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                    "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99"), "ttft_p99": r.get("ttft_p99"),
                    "tpot_p50": r.get("tpot_p50"), "req_s": r.get("req_s"), "error_pct": r.get("error_pct"),
                    "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy"),
-                   "util": _util_point(r)}
+                   "translation": r.get("translation"), "util": _util_point(r)}
                   for r in grows]
         sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t), pairing.load_catalog()["instances"])
         for z in sizing:

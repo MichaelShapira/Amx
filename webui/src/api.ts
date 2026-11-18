@@ -2,7 +2,7 @@
 // signed-in user's Cognito access token (auth.ts); locally there is no sign-in.
 import { accessToken, authEnabled, signIn } from "./auth";
 
-export type UseCase = "standard" | "dspm";
+export type UseCase = "standard" | "dspm" | "translation";
 
 export interface ModelInfo {
   id: string; name: string; description: string; kind: string; type: string; params_b: number; license: string;
@@ -23,6 +23,8 @@ export interface Catalog {
   models: ModelInfo[]; hardware: Hardware[]; instances: Record<string, InstanceSpec>; price_snapshot: string;
   prompt_sets: Record<string, { label: string; help: string }>;
   workloads: Record<string, { label: string; help: string }>;
+  directions: Record<string, { label: string; help: string }>;
+  text_sizes: Record<string, { label: string; help: string; answer_tokens: number }>;
   presets: Record<string, { label: string; help: string; p99_e2e_ms: number }>;
   depths: Record<string, { label: string; help: string; requests: number; passes: number }>;
   request_modes: Record<string, { label: string; help: string }>;
@@ -37,6 +39,7 @@ export interface Catalog {
 export interface Side { hardware: string; instance_type: string; precisions: string[]; alternates?: string[] }
 export interface Wizard {
   use_case: UseCase; prompt_set: string; answer_tokens: number; workloads: string[]; test_items: number; preset: string;
+  directions: string[]; text_size: string; translation_items: number;
   depth: "quick" | "full" | "custom"; requests: number | null; passes: number | null; models: string[]; precision: string;
   gpu: Side | null; cpus: Side[]; parallel_targets: boolean; request_mode: "single" | "concurrent" | "batch";
   concurrency: number[]; batch_sizes: number[]; sla: Record<string, number | undefined>; purchase: "spot" | "on-demand";
@@ -47,7 +50,8 @@ export interface Wizard {
 }
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
-  preset: "inline_standard", depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
+  preset: "inline_standard", directions: ["en-de", "de-en", "en-es", "es-en"], text_size: "sentence", translation_items: 100,
+  depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
   gpu: null, cpus: [], parallel_targets: true, request_mode: "concurrent", concurrency: [1, 4, 16], batch_sizes: [8],
   sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, spot_wait_minutes: 10, launch_attempts: 30,
   name: "", allow_unfair: false, sized_for: null, copied_from: null,
@@ -95,14 +99,15 @@ export interface RunDetail {
   cells: { model: string; hardware: string; hardware_label: string; precision: string; engine: string; status: string; status_label: string; measurements: number; error: string }[];
   levels: { model: string; hardware: string; hardware_label: string; what: string; conc: number | null; batch: number; pass: number | null; status: string; status_label: string; completed: number; errors: number; detail: string }[];
 }
-export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; dataset?: string; policy?: string; requests_per_measurement?: number; repeats?: number; test_items?: number }
+export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; directions?: string[]; dataset?: string; policy?: string; requests_per_measurement?: number; repeats?: number; test_items?: number }
 export interface SummaryInfo { run_id: string; shape: Shape; default_sla: Record<string, number | string>; models: string[]; hardware: string[]; instance_types: string[]; smoke: boolean; warnings: string[] }
 
 export interface Accuracy { recall: number; recall_ci: [number, number]; fpr: number; fpr_ci: [number, number]; precision: number; f1: number; format_adherence: number; agreement_with_gpu: number | null; qualifies_vs_gpu: boolean | null; fit: boolean }
-export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; amx: string | null; accuracy: Accuracy | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
+export interface TranslationQuality { chrf: number | null; chrf_p10: number | null; length_ratio: number | null; truncated_pct: number | null; n: number | null; chrf_vs_gpu: number | null; exact_match_vs_gpu: number | null; flag: string | null }
+export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; amx: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
 /** How busy the hardware was during one measurement (host-level means of 10-second samples). */
 export interface PointUtil { busy_mean: number | null; busy_p95: number | null; busy_max: number | null; mem_max: number | null; gpu_mem_pct: number | null; cpu_mean: number | null; gpu_mean: number | null; cpu_scale?: number }
-export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; accuracy: Accuracy | null; util: PointUtil | null }
+export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; accuracy: Accuracy | null; translation: TranslationQuality | null; util: PointUtil | null }
 /** Was the instance the right size for this load? One verdict per hardware option (bench/utilization.py). */
 export interface Suggestion {
   instance_type: string | null; kind: "keep" | "smaller" | "bigger" | "stronger" | "growth" | "none"; why: string;
@@ -125,8 +130,9 @@ export interface UtilTarget {
 export interface TechEngine { engine: string; label: string; help: string; image: string; built: boolean; dockerfile: string | null; port: number; env: Record<string, string>; args: Record<string, unknown> }
 export interface TechHardware { id: string; label: string; accelerator: "gpu" | "cpu"; instance_type: string; alternates: string[]; cpu_features: string[]; engines: TechEngine[] }
 export interface TechImage { name: string; dockerfile: string; base_image: string; runs_on: string; purpose: string }
+export interface TechModelFlags { model: string; name: string; hf_repo: string; engine: string; args: string[]; notes: string | null }
 export interface Technical {
-  hardware: TechHardware[]; images: TechImage[]; files: Record<string, { title: string; text: string | null; present: boolean }>;
+  hardware: TechHardware[]; images: TechImage[]; model_flags: TechModelFlags[]; files: Record<string, { title: string; text: string | null; present: boolean }>;
   thin_tasks: Record<string, string>; export_presets: Record<string, Record<string, unknown>>; precisions: Record<string, { label: string; help: string }>;
   diagram: { svg: string; drawio: string; present: boolean }; harness_commit: string | null;
 }

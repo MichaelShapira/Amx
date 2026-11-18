@@ -97,13 +97,14 @@ def wave_aggregate(records: Sequence[dict], kind: str = "generation") -> dict:
     win = wave_window(records)
     if win is None:
         return {"window_s": 0.0, "out_tokens": 0.0, "in_tokens": 0.0, "requests": 0,
-                "items": 0, "bytes": 0, "conc_integral_s": 0.0}
+                "items": 0, "bytes": 0, "chars": 0, "conc_integral_s": 0.0}
     w0, w1 = win
     out_tokens = 0.0
     in_tokens = 0.0
     requests = 0
     items = 0
     nbytes = 0
+    nchars = 0
     conc = 0.0
     for r in records:
         s, f, last, e = times(r)
@@ -114,6 +115,7 @@ def wave_aggregate(records: Sequence[dict], kind: str = "generation") -> dict:
             requests += 1
             items += int(r.get("batch_size") or 1)
             nbytes += int(r.get("content_bytes") or 0)
+            nchars += int(r.get("content_chars") or 0)
         if kind == "generation" and f is not None:
             n = int(r.get("completion_tokens") or 0)
             if w0 <= f <= w1:
@@ -124,7 +126,7 @@ def wave_aggregate(records: Sequence[dict], kind: str = "generation") -> dict:
         elif kind == "classifier" and w0 <= e <= w1:
             in_tokens += int(r.get("prompt_tokens") or 0)
     return {"window_s": (w1 - w0) / NS, "out_tokens": out_tokens, "in_tokens": in_tokens,
-            "requests": requests, "items": items, "bytes": nbytes, "conc_integral_s": conc}
+            "requests": requests, "items": items, "bytes": nbytes, "chars": nchars, "conc_integral_s": conc}
 
 
 def wave_flags(records: Sequence[dict]) -> list[str]:
@@ -175,6 +177,8 @@ def summarize_level(records: Sequence[dict], *, concurrency: int, kind: str = "g
         "effective_concurrency": totals["conc_integral_s"] / win if totals["window_s"] else None,
         "window_s": totals["window_s"],
         "bytes_per_s": totals["bytes"] / win if totals["window_s"] and totals["bytes"] else None,
+        # Source characters translated per second (translation suite; pool lines carry `chars`).
+        "chars_per_s": totals["chars"] / win if totals["window_s"] and totals["chars"] else None,
     }
     if kind == "generation":
         out.update({
@@ -228,7 +232,7 @@ def combine_repeats(per_repeat: Sequence[dict], all_records: Sequence[dict], *,
                              ignore_eos=ignore_eos, max_new_tokens=max_new_tokens)
     # Throughput is averaged over repeats rather than recomputed across waves of different repeats.
     for key in ("agg_out_tok_s", "agg_in_tok_s", "requests_per_s", "classifications_per_s",
-                "documents_per_s", "effective_concurrency", "bytes_per_s"):
+                "documents_per_s", "effective_concurrency", "bytes_per_s", "chars_per_s"):
         vals = [r.get(key) for r in per_repeat if r.get(key) is not None]
         if key in pooled:
             pooled[key] = float(np.mean(vals)) if vals else None

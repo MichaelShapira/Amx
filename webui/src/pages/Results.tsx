@@ -58,7 +58,7 @@ export default function Results() {
             <tbody>
               {selected.map((id) => { const s = infos[id]; if (!s) return <tr key={id}><td colSpan={8}><Spinner /></td></tr>; const sh = s.shape; return (
                 <tr key={id}><td><b>{id}</b></td><td>{cat?.use_cases[sh.use_case]?.name}</td>
-                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
+                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : sh.use_case === "translation" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}: ${(sh.directions ?? []).map((d) => cat?.directions?.[d]?.label ?? d).join(", ")} · corpus ${sh.dataset}` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
                   <td>{sh.request_mode}</td><td>{sh.concurrency.join(", ")}</td>
                   <td><Badge kind={sh.grade === "full" ? "ok" : "warn"}>{sh.grade === "full" ? "decision-grade" : "quick check"}</Badge></td>
                   <td className="small">{s.models.map(name).join(", ")}</td><td className="small">{s.instance_types.join(", ")}</td></tr>); })}
@@ -103,6 +103,12 @@ export default function Results() {
                     {cat && Object.entries(cat.presets).map(([k, p]) => (
                       <button key={k} className={"chip " + (sla?.preset === k ? "on" : "")} onClick={() => setSla({ p99_e2e_ms: p.p99_e2e_ms, max_error_pct: 1, preset: k })}>{p.label} · ≤ {fmt.n(p.p99_e2e_ms)} ms</button>
                     ))}
+                  </div>
+                ) : useCase === "translation" ? (
+                  <div className="grid c3 mt">
+                    <div><Label help="Longest acceptable time for the whole translation, 99 of 100 requests. Empty = no limit.">Whole translation within (ms)</Label><input type="number" value={(sla?.p99_e2e_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_e2e_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div><Label help="Longest acceptable wait before the translation starts appearing, 99 of 100 requests. Empty = no limit.">First word within (ms)</Label><input type="number" value={(sla?.p99_ttft_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div><Label help="Median time between generated tokens. Empty = no limit.">Time per generated word (ms)</Label><input type="number" value={(sla?.p50_tpot_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p50_tpot_ms: e.target.value ? Number(e.target.value) : null })} /></div>
                   </div>
                 ) : out.analysis && out.analysis.groups.length > 0 && out.analysis.groups.every((g) => g.units.lat_sla === "p99_e2e_ms") ? (
                   <div className="grid c3 mt">
@@ -163,7 +169,10 @@ function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_g
       {c.accuracy && (
         <div className="small mt">Detection accuracy: recall <b>{fmt.pct(c.accuracy.recall)}</b> [{fmt.pct(c.accuracy.recall_ci[0])}–{fmt.pct(c.accuracy.recall_ci[1])}], false positives <b>{fmt.pct(c.accuracy.fpr)}</b>, F1 {c.accuracy.f1.toFixed(2)}{c.accuracy.agreement_with_gpu != null ? <> · agreement with GPU <b>{fmt.pct(c.accuracy.agreement_with_gpu)}</b></> : null}{!c.accuracy.fit && <Badge kind="warn">below the accuracy floors</Badge>}</div>
       )}
-      {c.quality_delta != null && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
+      {c.translation && (
+        <div className="small mt">Translation quality: chrF <b>{fmt.n(c.translation.chrf)}</b> vs reference <Help text="chrF: character-level similarity (0-100) of this option's translations to the reference text, averaged over the items of the quality pass. A paraphrase lowers it for every option alike, so read it relative to the other options, not as an absolute grade." />{c.translation.chrf_vs_gpu != null ? <> · <b>{fmt.n(c.translation.chrf_vs_gpu)}</b> vs the GPU's translations{c.translation.exact_match_vs_gpu != null ? ` (${fmt.pct(c.translation.exact_match_vs_gpu)} identical)` : ""}</> : null}{c.translation.length_ratio != null ? <> · length {fmt.x(c.translation.length_ratio, 2)} of reference</> : null}{(c.translation.truncated_pct ?? 0) > 0 ? <> · <Badge kind="warn">{fmt.n(c.translation.truncated_pct)}% cut at the token limit</Badge></> : null}{c.translation.flag && <Badge kind="bad">quality loss: {c.translation.flag}</Badge>}</div>
+      )}
+      {c.quality_delta != null && !c.translation && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
     </div>
   );
 }

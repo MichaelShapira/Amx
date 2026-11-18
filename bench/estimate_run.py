@@ -41,6 +41,11 @@ def request_seconds(lvl: dict, model_type: str, target: TargetSpec, prompt_token
     slow = 1 + lvl["conc"] / p["conc_knee"]
     prefill = prompt_tokens * lvl.get("batch", 1) / p["prefill"] * slow
     out = lvl["payload"].get("max_tokens", 0) if lvl["api_task"] == "generate" else 0
+    if lvl.get("direction") and out:
+        # Translation answers end at the end of the text, not at the limit: the limit per text size is set for
+        # the longest reference (sentence 192 / paragraph 448 tokens) while the references' 95th percentile is
+        # about 40% of it (prompts/generated manifest, ref_tokens_p95).
+        out = int(out * 0.4)
     decode = (out / p["decode"] * slow) if p["decode"] and out else 0.0
     return prefill + decode, "prior"
 

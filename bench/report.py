@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality, utilization
+from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality, translation, utilization
 from bench.cellspec import cell_key
 from bench.config import ModelSpec, ResolvedCell, RunConfig, load_targets
 
@@ -39,6 +39,10 @@ MANAGED_PRICES = ("Context, not like-for-like: Amazon Macie sensitive data disco
                   "50,000 GB per month (then $0.50 and $0.25); Google Sensitive Data Protection storage inspection "
                   "lists $1.00/GiB up to 50 TiB. Both include connectors, file parsing and their own detectors; the "
                   "figures here cover classification of already-extracted text only.")
+MANAGED_MT_PRICES = ("Context, not like-for-like: managed machine translation is priced per character; Amazon Translate "
+                     "lists $15 per million characters and Google Cloud Translation $20 per million characters (list "
+                     "prices, 2026). The $ per 1M characters here is the instance's hourly price spread over the "
+                     "characters it translates at that load, with no request routing or operations included.")
 ATTRIBUTION = ("Dataset sources: NVIDIA Nemotron-PII (CC BY 4.0), Gretel synthetic_pii_finance_multilingual "
                "(Apache-2.0), and a seeded generator in this repository. All values are synthetic.")
 
@@ -149,7 +153,73 @@ def quality_scores(inp: RunInputs, cells: dict[str, ResolvedCell], models) -> di
 
 # ---------------------------------------------------------------------------- rows
 
+def translation_quality(inp: RunInputs, cells: dict[str, ResolvedCell], models, run: RunConfig) -> dict[str, dict]:
+    """Per cell and direction: chrF against the synthetic reference, agreement with the model's GPU
+    BF16 reference cell, and a flag for a compressed format that falls behind the CPU BF16 cell.
+    Predictions come from the accuracy levels (predictions/<cell>/<direction>-<size>-accuracy)."""
+    if run.suite != "translation" or not inp.dataset_items:
+        return {}
+    size = run.prompt_set
+    refs: dict[str, dict[str, str]] = {}                         # direction -> item_id -> reference text
+    for it in inp.dataset_items:
+        if it.get("size") != size:
+            continue
+        for d in translation.DIRECTIONS:
+            _, tgt = translation.split_direction(d)
+            refs.setdefault(d, {})[it["id"]] = it["text"][tgt]
+    max_tokens = run.sampling.max_new_tokens
+    outputs: dict[tuple[str, str], dict[str, str]] = {}
+    tokens: dict[tuple[str, str], dict[str, int]] = {}
+    for key, rows in inp.predictions.items():
+        ck, name = key.split("/", 1)
+        name = name.removesuffix(".jsonl.gz")
+        if not name.endswith("-accuracy"):
+            continue
+        d = name[: -len(f"-{size}-accuracy")]
+        if d not in refs or ck not in cells:
+            continue
+        for r in rows:
+            if r.get("error") or not r.get("output"):
+                continue
+            first = r["output"][0] or {}
+            outputs.setdefault((ck, d), {})[r["item_id"]] = first.get("text") or ""
+            if first.get("completion_tokens") is not None:
+                tokens.setdefault((ck, d), {})[r["item_id"]] = int(first["completion_tokens"])
+    by_model_ref: dict[str, str] = {}
+    for ck, c in cells.items():
+        ref = models.get(c.model).quality_reference
+        if ref and c.target == ref.target and c.precision == ref.precision:
+            by_model_ref[c.model] = ck
+    out: dict[str, dict] = {}
+    for (ck, d), outs in sorted(outputs.items()):
+        sc = translation.score(outs, refs[d], max_tokens=max_tokens, completion_tokens=tokens.get((ck, d)))
+        sc["direction"] = d
+        sc["size"] = size
+        ref_ck = by_model_ref.get(cells[ck].model)
+        if ref_ck and ref_ck != ck and (ref_ck, d) in outputs:
+            sc["vs_reference_cell"] = translation.agreement(outs, outputs[(ref_ck, d)]) | {"cell": ref_ck}
+        out.setdefault(ck, {})[f"{d}-{size}"] = sc
+    # CPU BF16 floor per model and direction (the vLLM/PyTorch BF16 cell, else the OpenVINO one).
+    floors: dict[tuple[str, str], dict] = {}
+    for ck, per in out.items():
+        c = cells[ck]
+        if quality.is_bf16(c.precision):
+            for name, sc in per.items():
+                k = (c.model, name)
+                if c.precision == "bf16" or k not in floors:
+                    floors[k] = sc
+    for ck, per in out.items():
+        c = cells[ck]
+        for name, sc in per.items():
+            sc["flag"] = translation.flag(sc, floors.get((c.model, name)), precision=c.precision)
+            vs = sc.get("vs_reference_cell") or {}
+            sc["quality_delta"] = (1.0 - vs["chrf"] / 100.0) if vs.get("chrf") is not None else None
+    return out
+
+
 def _throughput(row: dict) -> float | None:
+    if row.get("direction"):
+        return row["chars_s"]
     if row["workload"]:
         return row["docs_s"]
     return row["agg_out_tok_s"] if row["kind"] == "generation" else row["cls_s"]
@@ -193,16 +263,22 @@ def meets_sla(row: dict, sla: dict) -> tuple[bool, str]:
 
 
 def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | None, amx_v: dict | None,
-             qual: dict | None, smoke: bool) -> dict:
+             qual: dict | None, smoke: bool, tq: dict | None = None) -> dict:
+    """tq: this cell's translation quality by level name (translation_quality), for translation rows."""
     usd = price["usd_per_hour"] if price else None
     gen = m["kind"] == "generation"
     workload = m.get("workload")
+    direction = m.get("direction")
     name = m.get("name") or m["level_key"][len(m["cell_key"]) + 2:].split("__")[0]
     bucket = name.split("-", 1)[1] if workload and "-" in name else None
+    if direction:
+        qual = (tq or {}).get(name)        # chrF agreement with the GPU reference cell on this direction
     row = {
         "model": model.id, "slot": model.slot, "license": model.license, "target": target.id,
         "target_label": target.label, "instance_type": target.instance_type, "accelerator": target.accelerator,
         "engine": c.engine, "precision": c.precision, "variant": c.variant, "workload": workload, "bucket": bucket,
+        "direction": direction, "text_size": name[len(direction) + 1:] if direction else None,
+        "chars_s": m.get("chars_per_s"), "chrf": (qual or {}).get("chrf") if direction else None,
         "conc": m["concurrency"], "batch": m.get("batch") or 1, "repeats": m.get("repeats", 1), "kind": m["kind"],
         "n_ok": m["n_ok"], "n_requests": m["n_requests"],
         "e2e_p1": _g(m, "e2e_ms", "p1"), "e2e_p50": _g(m, "e2e_ms", "p50"), "e2e_p99": _g(m, "e2e_ms", "p99"),
@@ -233,6 +309,7 @@ def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | N
     row["usd_per_1m_docs"] = cost.usd_per_million_items(usd, row["docs_s"]) if usd and workload else None
     row["usd_per_gb"] = cost.usd_per_gb(usd, row["bytes_s"]) if usd and workload else None
     row["gb_per_hour"] = cost.gb_per_hour(row["bytes_s"]) if workload else None
+    row["usd_per_1m_chars"] = cost.usd_per_million_items(usd, row["chars_s"]) if usd and direction else None
     return row
 
 
@@ -251,7 +328,7 @@ def pooled_levels(inp: RunInputs) -> list[dict]:
         else:
             recs = [r for m in per for r in inp.raw_loader(ck, m["level_key"])]
             pooled = metrics.combine_repeats(per, recs, concurrency=per[0]["concurrency"], kind=per[0]["kind"])
-            for k in ("cell_key", "level_key", "batch", "workload"):
+            for k in ("cell_key", "level_key", "batch", "workload", "direction", "name"):
                 pooled[k] = per[0].get(k)
             pooled["resources"] = utilization.merge_stats([m.get("resources") or {} for m in per]) or None
         out.append(pooled)
@@ -331,6 +408,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     prices = res.get("prices", {})
     amx_v = amx_verdicts(inp, cells, targets)
     qual = quality_scores(inp, cells, models)
+    tq = translation_quality(inp, cells, models, run)
     smoke = bool(res.get("smoke", run.is_smoke))
     rows = []
     for m in pooled_levels(inp):
@@ -340,7 +418,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if actual and actual != t.instance_type:
             t = t.model_copy(update={"instance_type": actual})
         row = make_row(m, c, models.get(c.model), t, prices.get(t.instance_type), amx_v.get(m["cell_key"]),
-                       qual.get(m["cell_key"]), smoke)
+                       qual.get(m["cell_key"]), smoke, tq.get(m["cell_key"]))
         sla, preset = sla_for(row, run)
         row["meets_sla"], row["sla_reason"] = meets_sla(row, sla)
         row["sla_preset"] = preset
@@ -355,6 +433,13 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
                 row["meets_sla"], row["sla_reason"] = False, vs["reason"]
     per_model = analyze(rows, run)
     warnings = collect_warnings(rows, cells, models, amx_v, qual, smoke)
+    for ck, per in sorted(tq.items()):
+        for name, sc in sorted(per.items()):
+            if sc.get("flag"):
+                warnings.append(f"{cells[ck].cell_id} {name}: translation quality flag: {sc['flag']}")
+            if (sc.get("truncated_pct") or 0) > 5:
+                warnings.append(f"{cells[ck].cell_id} {name}: {sc['truncated_pct']:.0f}% of translations hit the "
+                                f"{run.sampling.max_new_tokens}-token answer limit; raise it for this text size.")
     not_run = targets_not_run(cells, targets, rows, inp.capacity, run.purchase.max_launch_attempts)
     for nr in not_run:
         warnings.append(f"{nr['target']} DID NOT RUN ({nr['side']} side): {nr['reason']}")
@@ -369,7 +454,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if j["fair"] is False:
             warnings.append(f"UNFAIR PAIRING {j['cpu_target']} vs {j['gpu_target']}: {j['reason']}")
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
-            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "prices": prices,
+            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "translation_quality": tq, "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
             "not_run": not_run, "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
@@ -382,18 +467,16 @@ def analyze(rows: list[dict], run: RunConfig) -> dict:
     out: dict[str, dict] = {}
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
-        key = r["model"] + (f" {r['workload']}" + (f"-{r['bucket']}" if r["bucket"] else "") if r["workload"] else "")
-        if r["kind"] == "classifier" and not r["workload"]:
-            key += f" b{r['batch']}"
-        groups[key].append(r)
+        groups[analysis_key(r)].append(r)
     limit = run.capacity.max_cpu_instances_per_gpu
     for key, rs in sorted(groups.items()):
         gpu = [r for r in rs if r["accelerator"] == "gpu" and r["meets_sla"] and _throughput(r)]
         cpu = [r for r in rs if r["accelerator"] == "cpu" and r["meets_sla"] and _throughput(r)]
         best_gpu = max(gpu, key=_throughput) if gpu else None
-        unit = "docs_s" if rs[0]["workload"] else ("agg_out_tok_s" if rs[0]["kind"] == "generation" else "cls_s")
+        unit = ("chars_s" if rs[0].get("direction") else "docs_s" if rs[0]["workload"]
+                else ("agg_out_tok_s" if rs[0]["kind"] == "generation" else "cls_s"))
         cheapest = None
-        price_key = ("usd_per_1m_docs" if rs[0]["workload"] else
+        price_key = ("usd_per_1m_chars" if rs[0].get("direction") else "usd_per_1m_docs" if rs[0]["workload"] else
                      "usd_per_1m_tokens" if rs[0]["kind"] == "generation" else "usd_per_1m_items")
         priced = [r for r in cpu if r.get(price_key) is not None]
         if priced:
@@ -419,11 +502,24 @@ def analyze(rows: list[dict], run: RunConfig) -> dict:
     return out
 
 
+def analysis_key(r: dict) -> str:
+    """The question a row answers: model, plus the DSPM workload and bucket, the translation
+    direction and text size, or the classifier batch size."""
+    key = r["model"]
+    if r.get("direction"):
+        return f"{key} {r['direction']}-{r['text_size']}"
+    if r["workload"]:
+        key += f" {r['workload']}" + (f"-{r['bucket']}" if r["bucket"] else "")
+    elif r["kind"] == "classifier":
+        key += f" b{r['batch']}"
+    return key
+
+
 def _row_ref(r: dict | None) -> dict | None:
     if r is None:
         return None
-    return {k: r[k] for k in ("model", "target", "instance_type", "engine", "precision", "variant", "workload",
-                              "bucket", "conc", "batch")} | {"throughput": _throughput(r)}
+    return {k: r.get(k) for k in ("model", "target", "instance_type", "engine", "precision", "variant", "workload",
+                                  "bucket", "direction", "conc", "batch")} | {"throughput": _throughput(r)}
 
 
 def targets_not_run(cells, targets, rows, capacity: dict, max_attempts: int) -> list[dict]:
@@ -476,7 +572,8 @@ def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
 # ---------------------------------------------------------------------------- rendering
 
 CSV_COLUMNS = ("model", "slot", "target", "target_label", "instance_type", "engine", "precision", "variant",
-               "workload", "bucket", "conc", "batch", "repeats", "n_ok", "e2e_p1", "e2e_p50", "e2e_p99", "ttft_p1",
+               "workload", "bucket", "direction", "text_size", "chars_s", "usd_per_1m_chars", "chrf",
+               "conc", "batch", "repeats", "n_ok", "e2e_p1", "e2e_p50", "e2e_p99", "ttft_p1",
                "ttft_p50", "ttft_p99", "tpot_p50", "prefill_tok_s_p50", "decode_tok_s_p50", "agg_out_tok_s",
                "agg_in_tok_s", "req_s", "cls_s", "docs_s", "bytes_s", "error_pct", "timeout_pct", "effective_conc",
                "usd_per_hour", "usd_per_1m_tokens", "usd_per_1k_requests", "usd_per_1m_items", "usd_per_1m_docs",
@@ -513,14 +610,15 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
             "Price List API; $/unit figures assume the instance is held at that load for a whole hour. Capacity, "
             "not cost, decides the verdict.", ""]
     for key, pm in s["per_model"].items():
-        rows = [r for r in s["rows"] if (r["model"] + (f" {r['workload']}" + (f"-{r['bucket']}" if r["bucket"] else "")
-                                                       if r["workload"] else "")
-                                         + (f" b{r['batch']}" if r["kind"] == "classifier" and not r["workload"] else "")) == key]
+        rows = [r for r in s["rows"] if analysis_key(r) == key]
         if not rows:
             continue
         out += [f"## {key}", ""]
         gen = rows[0]["kind"] == "generation"
-        if gen and not rows[0]["workload"]:
+        if rows[0].get("direction"):
+            hdr = ["Target", "Instance", "Engine", "Precision", "C", "E2E P1/P50/P99 ms", "TTFT P50 ms", "TPOT P50 ms",
+                   "chars/s", "Agg tok/s", "req/s", "err %", "$/hr", "$/1M chars", "AMX", "chrF", "Q delta", "SLA"]
+        elif gen and not rows[0]["workload"]:
             hdr = ["Target", "Instance", "Engine", "Precision", "C", "E2E P1/P50/P99 ms", "TTFT P1/P50/P99 ms",
                    "TPOT P50 ms", "Prefill tok/s P50", "Agg tok/s", "req/s", "err %", "$/hr", "$/1M tok", "AMX",
                    "Q delta", "SLA"]
@@ -537,7 +635,12 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
             elif pm.get("best_gpu") and _row_ref(r) == pm["best_gpu"]:
                 mark = "**best GPU**"
             e2e = f"{_fmt(r['e2e_p1'], 0)}/{_fmt(r['e2e_p50'], 0)}/{_fmt(r['e2e_p99'], 0)}"
-            if gen and not r["workload"]:
+            if r.get("direction"):
+                body.append([r["target"], r["instance_type"], r["engine"], r["precision"], str(r["conc"]), e2e,
+                             _fmt(r["ttft_p50"], 0), _fmt(r["tpot_p50"]), _fmt(r["chars_s"], 0), _fmt(r["agg_out_tok_s"], 0),
+                             _fmt(r["req_s"], 2), _fmt(r["error_pct"], 2), _fmt(r["usd_per_hour"], 3),
+                             _fmt(r["usd_per_1m_chars"], 2), r["amx"] or "-", _fmt(r.get("chrf")), _fmt(r["quality_delta"], 3), mark])
+            elif gen and not r["workload"]:
                 body.append([r["target"], r["instance_type"], r["engine"], r["precision"], str(r["conc"]), e2e,
                              f"{_fmt(r['ttft_p1'], 0)}/{_fmt(r['ttft_p50'], 0)}/{_fmt(r['ttft_p99'], 0)}",
                              _fmt(r["tpot_p50"]), _fmt(r["prefill_tok_s_p50"], 0), _fmt(r["agg_out_tok_s"], 0),
@@ -564,6 +667,8 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
             out += [f"_{pm['note']}_", ""]
     if s.get("dspm_accuracy"):
         out += dspm_markdown(s)
+    if s.get("translation_quality"):
+        out += translation_markdown(s)
     if chart_names:
         out += ["## Charts", ""] + [f"![{n}](charts/{n})" for n in chart_names] + [""]
     out += ["## Price source", ""]
@@ -626,6 +731,24 @@ def dspm_markdown(s: dict) -> list[str]:
     return out
 
 
+def translation_markdown(s: dict) -> list[str]:
+    out = ["## Translation quality", "",
+           "chrF (character n-gram F-score, 0-100) of each cell's translations against the synthetic reference, "
+           "and against the model's GPU BF16 cell on the same items. Read the figures relative to each other: a "
+           "paraphrase lowers chrF for every cell alike. Length ratio is translated characters over reference "
+           "characters (1.0 = same length); truncated is the share of answers that hit the token limit.", ""]
+    body = []
+    for ck, per in sorted(s["translation_quality"].items()):
+        for name, a in sorted(per.items()):
+            vs = a.get("vs_reference_cell") or {}
+            body.append([ck.replace("__", " "), name, str(a["n"]), _fmt(a["chrf"]), _fmt(a["chrf_p10"]),
+                         _fmt(a["length_ratio"], 2), _fmt(a.get("truncated_pct"), 1), _fmt(vs.get("chrf")),
+                         _fmt(vs.get("exact_match_rate"), 3), a.get("flag") or "-"])
+    out += [_md_table(["Cell", "Direction", "n", "chrF vs reference", "chrF P10", "Length ratio", "Truncated %",
+                       "chrF vs GPU BF16", "Identical answers", "Flag"], body), "", MANAGED_MT_PRICES, ""]
+    return out
+
+
 def charts(s: dict) -> dict[str, bytes]:
     import matplotlib
 
@@ -635,11 +758,11 @@ def charts(s: dict) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     by_model: dict[str, list[dict]] = defaultdict(list)
     for r in s["rows"]:
-        by_model[r["model"] + (f"-{r['workload']}" + (f"-{r['bucket']}" if r["bucket"] else "") if r["workload"] else "")
-                 ].append(r)
+        by_model[analysis_key(r).replace(" ", "-")].append(r)
     specs = [("e2e_p99", "P99 E2E latency (ms)"), ("e2e_p50", "P50 E2E latency (ms)"), ("ttft_p99", "P99 TTFT (ms)"),
              ("agg_out_tok_s", "Aggregate output tok/s"), ("usd_per_1m_tokens", "$ per 1M output tokens"),
-             ("docs_s", "Documents/s"), ("usd_per_gb", "$ per GB classified"), ("cls_s", "Classifications/s")]
+             ("docs_s", "Documents/s"), ("usd_per_gb", "$ per GB classified"), ("cls_s", "Classifications/s"),
+             ("chars_s", "Source characters translated/s"), ("usd_per_1m_chars", "$ per 1M characters translated")]
     for name, rows in sorted(by_model.items()):
         for metric, label in specs:
             pts = [r for r in rows if r.get(metric) is not None and r["batch"] in (1, None)]

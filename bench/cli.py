@@ -141,8 +141,16 @@ def cmd_upload(args) -> int:
         raise SystemExit("no prompt sets in prompts/generated/; run tools/build_prompts.py first")
     for key, body in std.items():
         s3.put_object(Bucket=bucket, Key=key, Body=body)
-    s3.put_object(Bucket=bucket, Key="artifacts/prompts/manifest.json", Body=json.dumps(pools.manifest(std)).encode())
+    man = pools.manifest(std)
+    local = ROOT / "prompts/generated/manifest.json"
+    if local.exists():        # the dataset fingerprint the translation pools were rendered from (preflight checks it)
+        man.update({k: v for k, v in json.loads(local.read_text()).items() if k == "translation"})
+    s3.put_object(Bucket=bucket, Key="artifacts/prompts/manifest.json", Body=json.dumps(man).encode())
     n = len(std)
+    tds = ROOT / "data/translation/v1"
+    if (tds / "manifest.json").exists():
+        for f in ("items.jsonl.gz", "manifest.json"):
+            s3.upload_file(str(tds / f), bucket, f"datasets/translation/v1/{f}")
     ds = ROOT / "data/dspm/v1"
     if (ds / "requests/manifest.json").exists():
         dp = pools.dspm_pools(ds / "requests")
