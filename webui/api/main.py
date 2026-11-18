@@ -1292,7 +1292,12 @@ def _backfill_util(run_id: str, summary: dict) -> None:
         for m in _run_metrics(run_id):
             if m.get("accuracy") or not m.get("level_key"):
                 continue
-            by.setdefault((m["cell_key"], report.group_key(m["level_key"])), []).append(utilization.legacy(m.get("resources")))
+            res = m.get("resources") or {}
+            if "_source" not in res and m.get("window_wall_ns") and m.get("target_id"):
+                # Recorded by the per-target rollup, which mixed in any other host under the same hardware
+                # option at the time: re-read this level's window from CloudWatch for the run's own hosts.
+                res = _level_util_from_cloudwatch(run_id, m) or res
+            by.setdefault((m["cell_key"], report.group_key(m["level_key"])), []).append(utilization.legacy(res))
         for r in rows:
             if "util" not in r:
                 parts = by.get((r.get("cell_key"), r.get("level_group")), [])
@@ -1301,6 +1306,36 @@ def _backfill_util(run_id: str, summary: dict) -> None:
         summary.setdefault("warnings", []).append(f"Utilization could not be read for this run: {type(e).__name__}")
         for r in rows:
             r.setdefault("util", None)
+
+
+def _level_util_from_cloudwatch(run_id: str, m: dict) -> dict | None:
+    """One legacy measurement's utilization from CloudWatch, scoped to the run's hosts: 1-minute
+    points while CloudWatch keeps them (15 days), 5-minute after that; None when the hosts are not
+    known or nothing came back. Windows under 90 s are marked rough."""
+    hosts = _run_hosts(run_id, m["target_id"])
+    if not hosts:
+        return None
+    key = f"lvlutil:{run_id}:{m['level_key']}"
+    if key in _CACHE:
+        return _CACHE[key]
+    start, end = m["window_wall_ns"][0] / 1e9, m["window_wall_ns"][1] / 1e9
+    age_days = (time.time() - end) / 86400
+    period = 60 if age_days < 15 else 300
+    out = None
+    try:
+        resp = aws.client("cloudwatch").get_metric_data(
+            MetricDataQueries=utilization.queries(m["target_id"], period, hosts=hosts), ScanBy="TimestampAscending",
+            StartTime=datetime.fromtimestamp(start - start % period, UTC), EndTime=datetime.fromtimestamp(end + period, UTC))
+        out = utilization.summarize(utilization.merge(resp.get("MetricDataResults", []))) or None
+        if out:
+            out["_source"] = f"cloudwatch-{period}s-host"
+            out["_window_s"] = round(end - start, 1)
+            if end - start < 90:
+                out["_rough"] = True
+    except Exception:  # noqa: BLE001 - fall back to the stored (possibly diluted) figures
+        out = None
+    _CACHE[key] = out
+    return out
 
 
 def _run_hosts(run_id: str, target_id: str) -> list[str]:

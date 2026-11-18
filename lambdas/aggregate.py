@@ -30,18 +30,23 @@ def level_records(run_id: str, cell_key: str, level_key: str) -> list[dict]:
     return recs
 
 
-def resources(target_id: str, start_ns: int, end_ns: int) -> tuple[dict, dict | None]:
+def resources(target_id: str, start_ns: int, end_ns: int, host: str | None = None) -> tuple[dict, dict | None]:
     """Host-level utilization over the level window (design 13): mean, P95 and max of the 10-second
-    averages per metric (CPU for the whole host, not per core), plus the compact time series. The
-    metrics are found by target_id across whatever host served it (bench/utilization.py)."""
+    averages per metric (CPU for the whole host, not per core), plus the compact time series. Scoped
+    to the level's own host when known (another run may use the same hardware option at the same
+    time; its hosts must not dilute this one), else every host under the target_id."""
     if end_ns <= start_ns:
         return {}, None
     start = dt.datetime.fromtimestamp(start_ns / 1e9, dt.UTC)
     end = dt.datetime.fromtimestamp(end_ns / 1e9, dt.UTC) + dt.timedelta(seconds=10)
-    resp = common.client("cloudwatch").get_metric_data(MetricDataQueries=utilization.queries(target_id, 10),
-                                                       StartTime=start, EndTime=end, ScanBy="TimestampAscending")
+    queries = utilization.queries(target_id, 10, hosts=[host] if host else None)
+    resp = common.client("cloudwatch").get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end,
+                                                       ScanBy="TimestampAscending")
     series = utilization.merge(resp.get("MetricDataResults", []))
-    return utilization.summarize(series), utilization.compact(series)
+    out = utilization.summarize(series)
+    if out:
+        out["_source"] = "level-10s-host" if host else "level-10s"
+    return out, utilization.compact(series)
 
 
 def aggregate_level(event: dict, context: Any = None) -> dict:
@@ -65,7 +70,8 @@ def aggregate_level(event: dict, context: Any = None) -> dict:
             wait = delay - (time.time() - end / 1e9)
             if wait > 0:
                 time.sleep(min(wait, delay))
-            summary["resources"], summary["resources_series"] = resources(lvl["target_id"], start, end)
+            host = utilization.hostname(lvl.get("endpoint") or lvl.get("private_ip"))
+            summary["resources"], summary["resources_series"] = resources(lvl["target_id"], start, end, host)
         except Exception as e:  # noqa: BLE001 - resource metrics are context, not a reason to fail the level
             summary["resources_error"] = str(e)[:300]
     perf = (event.get("perf") or {}).get("counts")

@@ -53,6 +53,19 @@ def queries(target_id: str, period: int, labels: tuple[str, ...] | None = None, 
     return out
 
 
+def hostname(private_ip_or_endpoint: str | None, region: str = "us-east-1") -> str | None:
+    """The CloudWatch agent's `host` dimension for an instance, from its private IP (or the
+    http://ip:port endpoint a level carries): EC2's private DNS name, ip-A-B-C-D.ec2.internal in
+    us-east-1 and ip-A-B-C-D.<region>.compute.internal elsewhere."""
+    import re
+
+    m = re.search(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", private_ip_or_endpoint or "")
+    if not m:
+        return None
+    suffix = "ec2.internal" if region == "us-east-1" else f"{region}.compute.internal"
+    return f"ip-{'-'.join(m.groups())}.{suffix}"
+
+
 def merge(results: list[dict]) -> dict[str, dict[str, Any]]:
     """SEARCH returns one series per host; hosts active in the window are merged by timestamp
     (the mean where two overlap). -> label -> {"t": [epoch s], "v": [value], "hosts": n}"""
@@ -127,15 +140,22 @@ def legacy(resources: dict | None) -> dict:
         if not isinstance(v, dict) or v.get("mean") is None:
             continue
         out[label] = v if "n" in v else {k: v[k] for k in ("mean", "total") if k in v}
+    if out:
+        out["_source"] = (resources or {}).get("_source") or "level-rollup"
+        for k in ("_rough", "_window_s"):
+            if (resources or {}).get(k) is not None:
+                out[k] = resources[k]
     return out
 
 
 def merge_stats(parts: list[dict[str, dict[str, float]] | None]) -> dict[str, dict[str, float]]:
     """Resources of repeated measurements pooled: mean of means (weighted by samples when known),
     max of the p95s and maxes that exist (none when no part has them)."""
-    out: dict[str, dict[str, float]] = {}
-    for label in {k for p in parts for k in (p or {})}:
-        xs = [p[label] for p in parts if p and p.get(label) and p[label].get("mean") is not None]
+    out: dict = {}
+    sources = {p["_source"] for p in parts if p and isinstance(p.get("_source"), str)}
+    rough = any(p.get("_rough") for p in parts if p)
+    for label in {k for p in parts for k in (p or {}) if not k.startswith("_")}:
+        xs = [p[label] for p in parts if p and isinstance(p.get(label), dict) and p[label].get("mean") is not None]
         if not xs:
             continue
         w = [x.get("n") or 1 for x in xs]
@@ -149,6 +169,13 @@ def merge_stats(parts: list[dict[str, dict[str, float]] | None]) -> dict[str, di
         if any("total" in x for x in xs):
             agg["total"] = max(x["total"] for x in xs if "total" in x)
         out[label] = agg
+    if out and sources:
+        out["_source"] = "level-rollup" if "level-rollup" in sources else sorted(sources)[0]
+    if out and rough:
+        out["_rough"] = True
+    windows = [p["_window_s"] for p in parts if p and p.get("_window_s") is not None]
+    if out and windows:
+        out["_window_s"] = min(windows)
     return out
 
 
@@ -203,8 +230,14 @@ def sizing(rows: list[dict], spec: dict | None) -> dict | None:
         return {**base, "verdict": "unknown", "label": "No utilization samples",
                 "text": "The host published no utilization for these measurements (a very short measurement, or the agent had "
                         "not flushed yet), so nothing can be said about the size."}
-    top = max(with_util, key=_load_key)
-    low = min(with_util, key=_load_key)
+    # A measurement shorter than CloudWatch's 1-minute points (a quick check's heaviest setting can last
+    # 15 s) reads low because the point mixes in idle time: judge on the reliable measurements and say
+    # which heavier ones were too short to read.
+    reliable = [r for r in with_util if not (r.get("util") or {}).get("_rough")]
+    pool = reliable or with_util
+    top = max(pool, key=_load_key)
+    low = min(pool, key=_load_key)
+    too_short = sorted((r for r in with_util if r not in pool and _load_key(r) > _load_key(top)), key=_load_key)
     u_top = busy(top, label, scale)["mean"]
     p95_top = busy(top, label, scale)["p95"]
     u_low = busy(low, label, scale)["mean"]
@@ -239,7 +272,19 @@ def sizing(rows: list[dict], spec: dict | None) -> dict | None:
         text += (f" It was busier at the lightest load setting ({u_low:.0f}%) than at the heaviest: as requests piled up the {what} "
                  f"waited more, which points to a limit elsewhere (memory bandwidth, the serving software's scheduling, or the "
                  f"request pipeline) rather than to a lack of {what} capacity.")
+    if too_short:
+        heavier = ", ".join(f"{_load_text(r)} ({(r.get('util') or {}).get('_window_s') or 0:.0f} s, read {busy(r, label, scale)['mean']:.0f}%)"
+                            for r in too_short)
+        text += (f" Heavier settings ran too briefly for CloudWatch's 1-minute points to read them reliably: {heavier}; those "
+                 f"figures understate how busy the {what} was, so the verdict rests on the longest heavy measurement.")
     notes = []
+    srcs = {(r.get("util") or {}).get("_source") for r in with_util}
+    if not reliable and any((r.get("util") or {}).get("_rough") for r in with_util):
+        notes.append("Every measurement here was short (under 90 s) and was read back from 1-minute CloudWatch points, so "
+                     "the busy figures are approximate and lean low.")
+    if "level-rollup" in srcs:
+        notes.append("Recorded before 2026-11-18 without the host's name: if another instance ran under the same hardware option "
+                     "at the same time, its idle or busy time is mixed into these figures.")
     if cores:
         notes.append(f"CPU busy is the share of the {cores} physical cores: the serving software runs one thread per core, so the "
                      f"{spec.get('vcpus')} vCPUs can never read above 50% in raw host terms; 100% here means every core was busy.")

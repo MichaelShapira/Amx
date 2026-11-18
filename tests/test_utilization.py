@@ -50,6 +50,39 @@ def test_merge_combines_hosts_by_timestamp_and_stats_are_of_period_averages():
     assert U.summarize({}) == {} and U.compact({}) is None and U.stats([]) is None
 
 
+def test_hostname_is_the_private_dns_name_the_agent_publishes():
+    assert U.hostname("http://10.40.16.97:8000") == "ip-10-40-16-97.ec2.internal"
+    assert U.hostname("10.40.1.2") == "ip-10-40-1-2.ec2.internal" and U.hostname("10.0.0.1", "eu-west-1") == "ip-10-0-0-1.eu-west-1.compute.internal"
+    assert U.hostname(None) is None and U.hostname("http://host:8000") is None
+
+
+def test_source_tags_travel_through_legacy_and_merge():
+    old = U.legacy({"cpu": {"mean": 34.0, "p95": 97.0, "max": 100.0}})
+    assert old["_source"] == "level-rollup" and old["cpu"] == {"mean": 34.0}
+    new = U.legacy({"cpu": {"mean": 30.0, "p95": 40.0, "max": 50.0, "n": 5}, "_source": "level-10s-host"})
+    assert new["_source"] == "level-10s-host" and new["cpu"]["p95"] == 40.0
+    m = U.merge_stats([old, new])
+    assert m["_source"] == "level-rollup" and m["cpu"]["mean"] == (34.0 * 1 + 30.0 * 5) / 6
+    cw = {"cpu": {"mean": 20.0, "p95": 25.0, "max": 30.0, "n": 2}, "_source": "cloudwatch-60s-host", "_rough": True}
+    m2 = U.merge_stats([cw, cw])
+    assert m2["_source"] == "cloudwatch-60s-host" and m2["_rough"] is True and m2["cpu"]["n"] == 4
+    v = U.sizing([{**row("cpu", 4, 1, 25.0), "util": {**row("cpu", 4, 1, 25.0)["util"], "_rough": True, "_source": "cloudwatch-60s-host"}}], CPU_SPEC)
+    assert any("approximate" in n for n in v["notes"]) and not any("mixed into" in n for n in v["notes"])
+    # The Qwen run's GPU: 83% at 1 request (166 s), 50% at 4 (44 s, rough), 25% at 16 (14 s, rough). Judged on the 166 s
+    # measurement; the two short ones are named with their lengths, not used as the verdict.
+    def gpu(conc, busy_pct, win, rough):
+        r = row("gpu", conc, 1, busy_pct)
+        r["util"].update({"_source": "cloudwatch-60s-host", "_window_s": win, **({"_rough": True} if rough else {})})
+        return r
+    v = U.sizing([gpu(1, 83.0, 166, False), gpu(4, 50.0, 44, True), gpu(16, 25.0, 14, True)], GPU_SPEC)
+    assert v["verdict"] == "limit" and v["load_top"] == "1 request at a time" and v["util_top"] == 83.0
+    assert "too briefly" in v["text"] and "4 requests at a time (44 s, read 50%)" in v["text"] and "16 requests at a time (14 s, read 25%)" in v["text"]
+    assert not any("approximate" in n for n in v["notes"])
+    assert U.legacy({"cpu": {"mean": 1.0, "n": 2}, "_rough": True, "_window_s": 14.0, "_source": "x"})["_window_s"] == 14.0
+    v = U.sizing([{**row("cpu", 4, 1, 25.0), "util": {**row("cpu", 4, 1, 25.0)["util"], "_source": "level-rollup"}}], CPU_SPEC)
+    assert any("mixed into these figures" in n for n in v["notes"])
+
+
 def test_compact_thins_long_series_evenly():
     series = {"cpu": {"t": [float(i) for i in range(1000)], "v": [float(i % 100) for i in range(1000)], "hosts": 1}}
     c = U.compact(series, limit=100)
@@ -64,7 +97,7 @@ def test_merge_stats_pools_repeats_and_legacy_rows_keep_only_their_mean():
     assert U.merge_stats([{}, None]) == {}
     # Before 2026-11-18 p95/max were the busiest single core (100% on every CPU host): dropped, the mean stands.
     old = U.legacy({"cpu": {"mean": 34.0, "p95": 97.0, "max": 100.0}, "mem": {"mean": 7.0, "p95": 7.0, "max": 7.0}, "gpu": {}})
-    assert old == {"cpu": {"mean": 34.0}, "mem": {"mean": 7.0}}
+    assert old == {"cpu": {"mean": 34.0}, "mem": {"mean": 7.0}, "_source": "level-rollup"}
     assert U.merge_stats([old, U.legacy({"cpu": {"mean": 36.0, "max": 100.0}})])["cpu"] == {"mean": 35.0}
     assert U.legacy(None) == {} and U.legacy({"cpu": {"mean": 5.0, "p95": 6.0, "max": 7.0, "n": 3}})["cpu"]["p95"] == 6.0
 
@@ -186,6 +219,8 @@ def test_compare_carries_utilization_sizing_and_the_summary_backfills_old_report
         assert g["points"][1]["util"]["mem_max"] == 9.0
         s = g["sizing"]
         assert len(s) == 1 and s[0]["verdict"] == "limit" and s[0]["util_top"] == 100.0 and s[0]["side"] == "cpu"
+        assert any("mixed into these figures" in n for n in s[0]["notes"])      # moto's CloudWatch had nothing: the rollup figures stand, and say so
+        assert main._CACHE["lvlutil:r-util:m3__t2__bf16__short__c1__b8__r0"] is None
         assert s[0]["load_top"] == "16 requests at a time, 8 inputs per request" and s[0]["size"] == "32 vCPUs, 64 GiB"
         # The time series endpoint: moto has no SEARCH data, so each hardware option reports an empty series, never a 500.
         u = c.get("/api/runs/r-util/utilization").json()
