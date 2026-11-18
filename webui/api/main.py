@@ -6,6 +6,7 @@ credentials. Serves the built React app from webui/dist when present.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1473,7 +1474,11 @@ def exec_summary_post(c: SummaryIn):
     out = post_compare(CompareIn(run_ids=c.run_ids, sla=c.sla, limit=c.limit, models=c.models))
     if not out["analysis"]:
         raise HTTPException(400, "the selected runs are not comparable; fix that first")
-    key = "exec:" + json.dumps({"r": sorted(c.run_ids), "s": out["sla"], "l": c.limit, "m": c.models}, sort_keys=True, default=str)
+    # Keyed on the findings themselves (not only the selection), so a re-judged analysis (new targets, utilization
+    # read anew, a redeployed rule) never serves the summary of an earlier analysis.
+    findings = hashlib.sha256(json.dumps(exec_summary._compact(out["analysis"], out["comparability"], out["sla"], out["runs"]),
+                                         sort_keys=True, default=str).encode()).hexdigest()[:16]
+    key = "exec:" + json.dumps({"r": sorted(c.run_ids), "s": out["sla"], "l": c.limit, "m": c.models, "f": findings}, sort_keys=True, default=str)
     if key in _CACHE and not c.force:
         return _CACHE[key]
     try:
