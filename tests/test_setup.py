@@ -133,11 +133,17 @@ def test_catalog_store_seeds_from_the_repo_then_reads_what_setup_saved(cloud, mo
     seed = load_models(catalog_store.SEED)
     cat = catalog_store.load_catalog(fresh=True)
     assert [m.id for m in cat.models] == [m.id for m in seed.models] and catalog_store.source() == "seed"
-    smaller = ModelCatalog(size_cap_b=seed.size_cap_b, models=seed.models[:2])
+    gone = [m.id for m in seed.models[2:]]
+    smaller = ModelCatalog(size_cap_b=seed.size_cap_b, models=seed.models[:2], removed=gone)
     assert catalog_store.save_catalog(smaller) == "config/models.yaml"
     live = catalog_store.load_catalog(fresh=True)
     assert len(live.models) == 2 and catalog_store.source() == f"s3://{cloud['bucket']}/config/models.yaml"
+    assert live.removed == sorted(gone)
     assert catalog_store.load_catalog() is live                    # cached within the TTL
+    # A copy that merely LACKS shipped models (written before `removed` existed, or before a deploy that
+    # shipped new models) gets them back from the seed: shipped definitions are code, not bucket state.
+    catalog_store.save_catalog(ModelCatalog(size_cap_b=seed.size_cap_b, models=seed.models[:2]))
+    assert [m.id for m in catalog_store.load_catalog(fresh=True).models] == [m.id for m in seed.models]
     # A broken object never takes the catalog down: the seed answers and the error is kept for the page.
     boto3.client("s3", region_name="us-east-1").put_object(Bucket=cloud["bucket"], Key="config/models.yaml", Body=b"models: [{id: x}]")
     assert len(catalog_store.load_catalog(fresh=True).models) == len(seed.models) and catalog_store.source() == "seed"
@@ -252,10 +258,25 @@ def test_one_job_at_a_time_and_removal_rules(cloud, monkeypatch):
     assert out == {"removed": seed.models[0].id, "remaining": len(seed.models) - 1}
     live = catalog_store.load_catalog(fresh=True)
     assert seed.models[0].id not in {m.id for m in live.models} and catalog_store.source().startswith("s3://")
-    one = ModelCatalog(size_cap_b=seed.size_cap_b, models=[seed.models[1]])
+    one = ModelCatalog(size_cap_b=seed.size_cap_b, models=[seed.models[1]],
+                       removed=[m.id for m in seed.models if m.id != seed.models[1].id])
     catalog_store.save_catalog(one)
     with pytest.raises(O.OnboardingError, match="cannot be empty"):
         O.remove(seed.models[1].id, "me")
+
+
+def test_live_catalog_takes_shipped_definitions_from_the_seed_and_keeps_setup_changes():
+    seed = load_models(catalog_store.SEED)
+    old_m1 = seed.models[0].model_copy(update={"suites": ["standard"], "vllm_args": []})   # an older deployment's copy
+    added = seed.models[1].model_copy(update={"id": "u-added", "slot": "U1", "hf_repo": "org/added"})
+    stored = ModelCatalog(size_cap_b=4.0, models=[old_m1, added], removed=["m2-qwen3-4b-2507"])
+    live = catalog_store.merge_with_seed(seed, stored)
+    ids = [m.id for m in live.models]
+    assert ids[0] == seed.models[0].id and live.models[0].suites == seed.models[0].suites      # the seed's definition
+    assert "m2-qwen3-4b-2507" not in ids                                                     # removed in Setup stays removed
+    assert "m6-gemma-4-e4b" in ids                                                           # new in the seed: present
+    assert ids[-1] == "u-added" and live.models[-1].hf_repo == "org/added"                   # Setup's addition kept
+    assert live.size_cap_b == seed.size_cap_b == 8.0 and live.removed == ["m2-qwen3-4b-2507"]
 
 
 # ------------------------------------------------------------------------- the prompt corpus

@@ -143,6 +143,8 @@ class ModelSpec(Strict):
 class ModelCatalog(Strict):
     size_cap_b: float = 4.0
     models: list[ModelSpec]
+    # Shipped model ids a user removed in Setup (bench.catalog_store merges the live copy with the seed).
+    removed: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _cap_and_unique(self) -> ModelCatalog:

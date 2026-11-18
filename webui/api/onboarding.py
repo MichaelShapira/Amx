@@ -319,7 +319,8 @@ def _run(job_id: str, repo: str) -> None:
         pools_result = build_pools(spec, token, bucket, progress)
         progress("Adding the model to the catalog")
         new_models = [*catalog.models, spec]
-        new_cat = ModelCatalog(size_cap_b=max(catalog.size_cap_b, spec.nominal_size_b), models=new_models)
+        new_cat = ModelCatalog(size_cap_b=max(catalog.size_cap_b, spec.nominal_size_b), models=new_models,
+                               removed=list(catalog.removed))
         catalog_store.save_catalog(new_cat, bucket)
         j.update(status="done", stage="Done", pools=pools_result)
     except OnboardingError as e:
@@ -338,7 +339,12 @@ def remove(model_id: str, who: str | None) -> dict:
         raise OnboardingError("no such model")
     if len(keep) == 0:
         raise OnboardingError("The catalog cannot be empty; add another model before removing this one.")
-    catalog_store.save_catalog(ModelCatalog(size_cap_b=catalog.size_cap_b, models=keep), catalog_store.default_bucket())
+    gone = next(m for m in catalog.models if m.id == model_id)
+    # A removed shipped model is recorded by id: the live copy is merged with the seed on every read, and
+    # without the record the next read would bring it back (bench.catalog_store.merge_with_seed).
+    removed = sorted(set(catalog.removed) | ({model_id} if not gone.user_added else set()))
+    catalog_store.save_catalog(ModelCatalog(size_cap_b=catalog.size_cap_b, models=keep, removed=removed),
+                               catalog_store.default_bucket())
     return {"removed": model_id, "remaining": len(keep)}
 
 

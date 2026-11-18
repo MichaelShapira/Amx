@@ -1,12 +1,17 @@
 """The model catalog as data, not as a file baked into every deployment.
 
-`config/models.yaml` in the repository is the seed: the seven models the benchmark shipped with.
-The live catalog is the object `config/models.yaml` in the bench bucket, written by the web app's
-Setup page when a user adds or removes a model. Every reader (the web app, the pre-check and the
-report Lambdas) calls `load_catalog()`: the bucket copy when there is one, else the seed. The
-bucket name comes from the environment the deployment already sets (`BENCH_BUCKET` in the Lambdas,
-`AMXBENCH_OUTPUTS` in the web app) or is passed explicitly. The result is cached for a minute per
-process; `invalidate()` after a write.
+`config/models.yaml` in the repository is the seed: the models the benchmark ships with. The live
+catalog is the object `config/models.yaml` in the bench bucket, written by the web app's Setup page
+when a user adds or removes a model. Every reader (the web app, the pre-check and the report
+Lambdas) calls `load_catalog()`: the seed when there is no bucket copy, else the two MERGED
+(`merge_with_seed`): shipped models are code and take their definition from the seed of this
+deployment (so a deploy that adds a model or a suite to a shipped model shows up without touching
+the bucket), the bucket copy contributes what Setup did: the models it added and the shipped
+models it removed (`removed`). Before 2026-11-19 the bucket copy was read as is, so a deploy with
+a new shipped model changed nothing until someone re-saved the catalog. The bucket name comes from
+the environment the deployment already sets (`BENCH_BUCKET` in the Lambdas, `AMXBENCH_OUTPUTS` in
+the web app) or is passed explicitly. The result is cached for a minute per process;
+`invalidate()` after a write.
 """
 
 from __future__ import annotations
@@ -58,8 +63,20 @@ def _s3():
     return s3_factory()
 
 
+def merge_with_seed(seed: ModelCatalog, stored: ModelCatalog) -> ModelCatalog:
+    """Shipped models from the seed (every one the stored copy kept, plus any the seed gained since
+    the copy was written, minus the ones Setup recorded as removed); then the stored copy's own
+    additions. The size cap is the larger of the two."""
+    seed_ids = {m.id for m in seed.models}
+    kept = {m.id for m in stored.models}
+    removed = set(stored.removed)
+    models = [m for m in seed.models if m.id in kept or m.id not in removed]
+    models += [m for m in stored.models if m.id not in seed_ids]
+    return ModelCatalog(size_cap_b=max(seed.size_cap_b, stored.size_cap_b), models=models, removed=sorted(removed & seed_ids))
+
+
 def load_catalog(bucket: str | None = None, *, fresh: bool = False) -> ModelCatalog:
-    """The live catalog: the bucket object when it exists and parses, else the seed file."""
+    """The live catalog: the bucket object merged with the seed when it exists and parses, else the seed."""
     bucket = bucket or default_bucket()
     with _lock:
         if (not fresh and _cache["catalog"] is not None and _cache["bucket"] == bucket
@@ -69,7 +86,7 @@ def load_catalog(bucket: str | None = None, *, fresh: bool = False) -> ModelCata
         if bucket:
             try:
                 body = _s3().get_object(Bucket=bucket, Key=KEY)["Body"].read()
-                catalog = ModelCatalog.model_validate(yaml.safe_load(body))
+                catalog = merge_with_seed(load_models(SEED), ModelCatalog.model_validate(yaml.safe_load(body)))
                 source = f"s3://{bucket}/{KEY}"
             except Exception as e:  # noqa: BLE001 - no object yet, no permission, or invalid: the seed answers
                 if type(e).__name__ not in ("NoSuchKey",):
