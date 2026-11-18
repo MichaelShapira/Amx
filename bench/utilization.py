@@ -209,9 +209,10 @@ def _load_text(r: dict) -> str:
     return s + (f", {b} inputs per request" if b > 1 else "")
 
 
-def sizing(rows: list[dict], spec: dict | None) -> dict | None:
+def sizing(rows: list[dict], spec: dict | None, catalog: dict | None = None) -> dict | None:
     """One hardware option's verdict from its measurements (rows of one series: same model,
-    hardware, software and number format). `spec` is the instance catalog entry."""
+    hardware, software and number format). `spec` is the instance catalog entry; with the whole
+    `catalog`, the verdict carries which instance to use instead."""
     side = rows[0]["accelerator"] if rows else None
     label = "gpu" if side == "gpu" else "cpu"
     scale = cpu_scale(spec) if side == "cpu" else 1.0
@@ -306,18 +307,120 @@ def sizing(rows: list[dict], spec: dict | None) -> dict | None:
             notes.append(f"GPU memory peaked at {pct:.0f}% of {gmem['total'] / 1024:.0f} GiB: nearly full.")
         elif pct < 25:
             notes.append(f"GPU memory peaked at {pct:.0f}% of {gmem['total'] / 1024:.0f} GiB: most of it unused.")
+    suggestion = None
+    if catalog:
+        host_cpu = ((top.get("util") or {}).get("cpu") or {}).get("mean")
+        suggestion = suggest(verdict, base["instance_type"], spec, catalog, busy_top=u_top, mem_pct=mem_val,
+                             host_cpu_pct=host_cpu if side == "gpu" else None)
     return {**base, "verdict": verdict, "label": lbl, "size": size_words.strip(" ()"), "util_top": u_top, "util_p95_top": p95_top,
-            "util_low": u_low, "load_top": _load_text(top), "meets_top": meets, "text": text, "notes": notes}
+            "util_low": u_low, "load_top": _load_text(top), "meets_top": meets, "text": text, "notes": notes,
+            "run_id": rows[0].get("run_id"), "suggestion": suggestion}
 
 
-def sizing_for_rows(rows: list[dict], series_name, spec_for) -> list[dict]:
-    """One verdict per series (model x hardware x software x format), heaviest-load first."""
+# ----------------------------------------------------------------------------- what to use instead
+
+GPU_RANK = {"T4": 1, "L4": 2, "A10G": 3, "L40S": 4, "A100": 5, "H100": 6, "H200": 7, "B200": 8}   # rough compute order
+TARGET_BUSY = 60.0           # a smaller size is chosen so the same load would run it about this busy
+MEM_HEADROOM = 1.3           # host memory the smaller size must still have: peak use x this
+
+
+def _size_rank(spec: dict) -> tuple:
+    return (spec.get("gpus") or 0, spec.get("vcpus") or 0, spec.get("memory_gib") or 0)
+
+
+def suggest(verdict: str, instance_type: str | None, spec: dict | None, catalog: dict, *, busy_top: float | None,
+            mem_pct: float | None, host_cpu_pct: float | None = None) -> dict | None:
+    """Which instance to use instead, from the catalog: for an idle machine the smallest same-family
+    size the load would still fit (CPU: cores for ~60% busy and memory with headroom; GPU: the same
+    GPU chip with fewer host cores); for a saturated one the next size up (CPU) or the cheapest
+    stronger GPU. None when the current size is the right one or nothing in the catalog fits."""
+    if not spec or not instance_type or instance_type not in catalog:
+        return None
+    side = spec.get("accelerator")
+    fam = spec.get("family")
+    price = spec["usd_per_hour"]
+
+    def pack(t: str, why: str, kind: str) -> dict:
+        c = catalog[t]
+        return {"instance_type": t, "kind": kind, "why": why, "usd_per_hour": c["usd_per_hour"], "usd_delta_per_hour": c["usd_per_hour"] - price,
+                "vcpus": c.get("vcpus"), "memory_gib": c.get("memory_gib"), "gpus": c.get("gpus") or 0, "gpu_model": c.get("gpu_model"),
+                "gpu_memory_gib": c.get("gpu_memory_gib"), "pct_of_current": 100 * c["usd_per_hour"] / price}
+
+    same_family = sorted(((t, c) for t, c in catalog.items() if c.get("family") == fam and c.get("usd_per_hour")), key=lambda x: _size_rank(x[1]))
+    rank = GPU_RANK.get(spec.get("gpu_model") or "", 0)
+    stronger = sorted(((t, c) for t, c in catalog.items() if c.get("accelerator") == "gpu" and c.get("usd_per_hour")
+                       and GPU_RANK.get(c.get("gpu_model") or "", 0) > rank and (c.get("gpus") or 0) == 1
+                       and (c.get("vcpus") or 0) >= (spec.get("vcpus") or 0) / 2),
+                      key=lambda x: (not x[1].get("current_generation", True), x[1]["usd_per_hour"]))
+    if verdict == "good":
+        return pack(instance_type, f"Keep {instance_type}: it fits this load with headroom.", "keep")
+    if verdict == "limit":
+        if side == "cpu":
+            up = [(t, c) for t, c in same_family if _size_rank(c) > _size_rank(spec)]
+            doubled = [(t, c) for t, c in up if (c.get("vcpus") or 0) >= 2 * (spec.get("vcpus") or 0)]
+            if up:
+                t, c = (doubled or up)[0]
+                return pack(t, f"Keep {instance_type} for this load. For more traffic the next size up is {t} ({c['vcpus']} vCPUs, "
+                               f"${c['usd_per_hour']:.2f}/h).", "growth")
+        elif stronger:
+            t, c = stronger[0]
+            return pack(t, f"Keep {instance_type} for this load. For more traffic a bigger {fam} size would not help (same "
+                           f"{spec.get('gpu_model')}); the next stronger GPU is the {c.get('gpu_model')} in {t} (${c['usd_per_hour']:.2f}/h).", "growth")
+        return pack(instance_type, f"Keep {instance_type}: fully used for this load, nothing stronger in the catalog.", "keep")
+    if verdict == "over" and busy_top is not None:
+        mem_need = ((mem_pct or 0) / 100) * (spec.get("memory_gib") or 0) * MEM_HEADROOM
+        if side == "cpu":
+            cores_need = max(1.0, (spec.get("vcpus") or 2) / THREADS_PER_CORE * busy_top / TARGET_BUSY)
+            fits = [(t, c) for t, c in same_family if _size_rank(c) < _size_rank(spec)
+                    and (c.get("vcpus") or 0) / THREADS_PER_CORE >= cores_need and (c.get("memory_gib") or 0) >= mem_need]
+            if fits:
+                t, c = fits[0]
+                return pack(t, f"{t} ({c['vcpus']} vCPUs, {c['memory_gib']:.0f} GiB) would run this load about {min(100, busy_top * (spec['vcpus'] / c['vcpus'])):.0f}% "
+                               f"busy and still holds the model with room (memory peaked at {mem_pct or 0:.0f}% here). It costs "
+                               f"${c['usd_per_hour']:.2f}/h instead of ${price:.2f}/h.", "smaller")
+            if any(_size_rank(c) < _size_rank(spec) for _, c in same_family):
+                return {"instance_type": None, "kind": "none", "why": f"The cores sit idle, but no smaller {fam} size has the memory this model "
+                        f"needs (it used {mem_pct or 0:.0f}% of {spec.get('memory_gib', 0):.0f} GiB here). Keep {instance_type}, or send more requests at once.",
+                        "usd_per_hour": None, "usd_delta_per_hour": None}
+            return None
+        # GPU: the chip is the same across the family's single-GPU sizes; only the host part shrinks.
+        fits = [(t, c) for t, c in same_family if (c.get("gpus") or 0) == (spec.get("gpus") or 0) and c.get("gpu_model") == spec.get("gpu_model")
+                and _size_rank(c) < _size_rank(spec) and (c.get("memory_gib") or 0) >= mem_need
+                and (host_cpu_pct is None or (c.get("vcpus") or 0) >= (spec.get("vcpus") or 0) * host_cpu_pct / 100 * 1.5)]
+        if fits:
+            t, c = fits[0]
+            return pack(t, f"The GPU itself idled, so a bigger GPU is not the fix; {t} has the same {spec.get('gpu_model')} with fewer host "
+                           f"cores ({c['vcpus']} vCPUs, {c['memory_gib']:.0f} GiB) for ${c['usd_per_hour']:.2f}/h instead of ${price:.2f}/h. "
+                           f"The larger lever is to send more requests at once: this GPU has room for them.", "smaller")
+        return {"instance_type": None, "kind": "none", "why": f"The GPU idled, but every smaller {fam} size has the same GPU and too little "
+                f"host memory or CPU for what ran here. Keep {instance_type} and send more requests at once.", "usd_per_hour": None, "usd_delta_per_hour": None}
+    if verdict == "under":
+        if side == "cpu":
+            up = [(t, c) for t, c in same_family if _size_rank(c) > _size_rank(spec)]
+            doubled = [(t, c) for t, c in up if (c.get("vcpus") or 0) >= 2 * (spec.get("vcpus") or 0)]
+            if up:
+                t, c = (doubled or up)[0]
+                return pack(t, f"{t} has {c['vcpus']} vCPUs and {c['memory_gib']:.0f} GiB (this one: {spec.get('vcpus')} and "
+                               f"{spec.get('memory_gib', 0):.0f}) for ${c['usd_per_hour']:.2f}/h instead of ${price:.2f}/h; the saturated CPU is "
+                               f"what held this load back.", "bigger")
+            return None
+        if stronger:
+            t, c = stronger[0]
+            return pack(t, f"A bigger {fam} size would not help: every single-GPU {fam} size has the same {spec.get('gpu_model')}. The next "
+                           f"stronger GPU is the {c.get('gpu_model')} in {t} ({c.get('gpu_memory_gib', 0):.0f} GiB GPU memory) for "
+                           f"${c['usd_per_hour']:.2f}/h instead of ${price:.2f}/h.", "stronger")
+        return None
+    return None
+
+
+def sizing_for_rows(rows: list[dict], series_name, spec_for, catalog: dict | None = None) -> list[dict]:
+    """One verdict per series (model x hardware x software x format), GPU first."""
     by: dict[str, list[dict]] = {}
     for r in rows:
         by.setdefault(series_name(r), []).append(r)
     out = []
     for name, rs in by.items():
-        v = sizing(rs, spec_for(rs[0].get("instance_type")))
+        v = sizing(rs, spec_for(rs[0].get("instance_type")), catalog)
         if v:
             out.append({"series": name, **v})
     out.sort(key=lambda v: (v["side"] != "gpu", v["series"]))

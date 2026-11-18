@@ -232,3 +232,68 @@ def test_compare_carries_utilization_sizing_and_the_summary_backfills_old_report
         assert main._run_hosts("r-util", "t9-none") == []
         assert [w["conc"] for w in t["windows"]] == [1, 1, 16, 16] and t["windows"][0]["level"] == "m3__t2__bf16__short__c1__b8"
         assert c.get("/api/runs/no.such/utilization").status_code == 404 and c.get("/api/runs/bad id/utilization").status_code == 400
+
+
+# ----------------------------------------------------------------------------- what to use instead
+
+def _cat():
+    from bench import pairing
+    return pairing.load_catalog()["instances"]
+
+
+def test_idle_cpu_gets_the_smallest_same_family_size_the_load_still_fits():
+    cat = _cat()
+    # m8i.4xlarge (16 vCPUs = 8 cores) 30% busy of its cores, memory peaked at 20%: 8 cores x 0.3 / 0.6 = 4 cores -> m8i.2xlarge
+    s = U.suggest("over", "m8i.4xlarge", cat["m8i.4xlarge"], cat, busy_top=30.0, mem_pct=20.0)
+    assert s["instance_type"] == "m8i.2xlarge" and s["kind"] == "smaller" and s["usd_delta_per_hour"] < 0
+    assert "about 60% busy" in s["why"] and "$0.42/h instead of $0.85/h" in s["why"]
+    # memory binds: 69% of 64 GiB x 1.3 = 57 GiB; no smaller m8i has it
+    s = U.suggest("over", "m8i.4xlarge", cat["m8i.4xlarge"], cat, busy_top=30.0, mem_pct=69.0)
+    assert s["instance_type"] is None and s["kind"] == "none" and "no smaller m8i size has the memory" in s["why"]
+    # the smallest size already: nothing to suggest
+    assert U.suggest("over", "m8i.large", cat["m8i.large"], cat, busy_top=10.0, mem_pct=5.0) is None
+
+
+def test_saturated_cpu_gets_the_next_size_up_and_a_fully_used_one_a_growth_note():
+    cat = _cat()
+    s = U.suggest("under", "c8i.8xlarge", cat["c8i.8xlarge"], cat, busy_top=96.0, mem_pct=30.0)
+    assert s["instance_type"] == "c8i.16xlarge" and s["kind"] == "bigger" and "64 vCPUs" in s["why"]        # the size that doubles the cores, not 12xlarge
+    s = U.suggest("limit", "m8i.4xlarge", cat["m8i.4xlarge"], cat, busy_top=85.0, mem_pct=30.0)
+    assert s["instance_type"] == "m8i.8xlarge" and s["kind"] == "growth" and s["why"].startswith("Keep m8i.4xlarge")
+    keep = U.suggest("good", "m8i.4xlarge", cat["m8i.4xlarge"], cat, busy_top=60.0, mem_pct=30.0)
+    assert keep["instance_type"] == "m8i.4xlarge" and keep["kind"] == "keep" and keep["usd_delta_per_hour"] == 0
+    g = U.suggest("limit", "g6.2xlarge", cat["g6.2xlarge"], cat, busy_top=85.0, mem_pct=30.0)
+    assert g["instance_type"] == "g6e.xlarge" and g["kind"] == "growth" and g["why"].startswith("Keep g6.2xlarge")
+    assert U.suggest("unknown", "m8i.4xlarge", cat["m8i.4xlarge"], cat, busy_top=None, mem_pct=None) is None
+    assert U.suggest("over", "nope", None, cat, busy_top=10.0, mem_pct=1.0) is None
+
+
+def test_idle_gpu_keeps_the_chip_and_shrinks_the_host_saturated_gpu_gets_a_stronger_chip():
+    cat = _cat()
+    s = U.suggest("over", "g6.2xlarge", cat["g6.2xlarge"], cat, busy_top=17.0, mem_pct=14.0, host_cpu_pct=10.0)
+    assert s["instance_type"] == "g6.xlarge" and s["kind"] == "smaller" and "same L4" in s["why"] and "more requests at once" in s["why"]
+    # the host itself was busy: no smaller size has the vCPUs
+    s = U.suggest("over", "g6.2xlarge", cat["g6.2xlarge"], cat, busy_top=17.0, mem_pct=14.0, host_cpu_pct=70.0)
+    assert s["instance_type"] is None and "same GPU" in s["why"]
+    s = U.suggest("under", "g6.2xlarge", cat["g6.2xlarge"], cat, busy_top=97.0, mem_pct=20.0)
+    assert s["instance_type"] == "g6e.xlarge" and s["kind"] == "stronger" and "L40S" in s["why"] and "would not help" in s["why"]
+    assert U.suggest("under", "g6e.48xlarge", cat["g6e.48xlarge"], cat, busy_top=97.0, mem_pct=20.0) is None    # nothing stronger listed
+
+
+def test_sizing_carries_the_suggestion_and_compare_judges_its_pairing():
+    cat = _cat()
+    rows = [{**row("cpu", 1, 1, 10.0), "instance_type": "m8i.4xlarge", "run_id": "r"}, {**row("cpu", 16, 1, 15.0), "instance_type": "m8i.4xlarge", "run_id": "r"}]
+    v = U.sizing(rows, cat["m8i.4xlarge"], cat)
+    assert v["verdict"] == "over" and v["suggestion"]["instance_type"] == "m8i.2xlarge" and v["run_id"] == "r"
+    assert U.sizing(rows, cat["m8i.4xlarge"])["suggestion"] is None                     # no catalog: no suggestion
+    from webui.api import compare
+    common = {"kind": "generation", "model": "m1-qwen2.5-3b", "slot": "M1", "workload": None, "bucket": None, "e2e_p99": 100.0, "error_pct": 0,
+              "amx": "VERIFIED", "quality_flag": None, "run_id": "r", "variant": None}
+    g6 = {**common, "accelerator": "gpu", "target": "t1-g6", "instance_type": "g6.2xlarge", "engine": "vllm", "precision": "bf16", "conc": 16, "batch": 1,
+          "util": {"gpu": {"mean": 83.0, "p95": 100.0, "max": 100.0, "n": 5}}, "usd_per_hour": 0.9776, "agg_out_tok_s": 500.0, "amx": "n/a"}
+    cpu_rows = [{**common, **r, "target": "t2-m8i-4xl", "usd_per_hour": 0.847, "agg_out_tok_s": 100.0} for r in rows]
+    out = compare.analyze([{"run_id": "r", "rows": [g6, *cpu_rows], "run": {"suite": "standard"}}], {"max_error_pct": 1.0})
+    z = next(x for x in out["groups"][0]["sizing"] if x["side"] == "cpu")
+    assert z["suggestion"]["instance_type"] == "m8i.2xlarge"
+    assert z["suggestion"]["pairing"]["other"] == "g6.2xlarge" and z["suggestion"]["pairing"]["fair"] is False      # 0.98 / 0.42 = 2.3x
+    assert "outside" in z["suggestion"]["pairing"]["text"]

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
 import { type CompareOut, type ExecSummary, type Group, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, api, fmt } from "../api";
 import { useCatalog } from "../App";
@@ -214,6 +214,26 @@ const SIZING_KIND: Record<Sizing["verdict"], "ok" | "warn" | "bad" | "accent" | 
 
 function SizingCard({ z }: { z: Sizing }) {
   const u = z.util_top;
+  const nav = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const sug = z.suggestion;
+  // Open the wizard prefilled with this run's settings and the suggested size on this side, at the hardware
+  // step; nothing starts until Start is pressed on the last step.
+  const tryIt = async () => {
+    if (!z.run_id || !sug?.instance_type) return;
+    setBusy(true); setErr(null);
+    try {
+      const w = await api.wizardFrom(z.run_id);
+      if (z.side === "gpu" && w.gpu) w.gpu = { ...w.gpu, instance_type: sug.instance_type, alternates: [] };
+      if (z.side === "cpu") w.cpus = w.cpus.map((c) => (c.instance_type === z.instance_type ? { ...c, instance_type: sug.instance_type!, alternates: [] } : c));
+      w.sized_for = w.models[0] ? `${w.models[0]}|${w.precision}` : w.sized_for;      // keep the suggested size; no fresh proposal over it
+      w.copied_from = z.run_id;
+      w.name = "";
+      sessionStorage.setItem("wizard", JSON.stringify(w));
+      nav("/new", { state: { step: 4 } });
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
   return (
     <div className={`tile ${z.side}`} style={{ cursor: "default" }}>
       <div className="t"><Badge kind={z.side}>{z.side.toUpperCase()}</Badge> {z.series.replace(/^(GPU|CPU) · /, "")} <Badge kind={SIZING_KIND[z.verdict]}>{z.label}</Badge></div>
@@ -229,6 +249,22 @@ function SizingCard({ z }: { z: Sizing }) {
         </div>
       )}
       <div className="small mt">{z.text}</div>
+      {sug && (
+        <div className="mt" style={{ padding: "10px 12px", borderRadius: 10, background: "var(--bg-3)", border: "1px solid var(--line)" }}>
+          <div className="row between">
+            <div className="small" style={{ fontWeight: 650 }}>
+              {sug.instance_type ? <>Suggested: <Badge kind={z.side}>{sug.instance_type}</Badge> {sug.kind === "keep" ? "(keep this size)" : sug.kind === "growth" ? "when traffic grows" : sug.kind === "smaller" ? "to spend less" : sug.kind === "stronger" ? "for a faster GPU" : "for more capacity"}</> : <>No better size in the catalog</>}
+              {sug.kind !== "keep" && sug.usd_per_hour != null && sug.usd_delta_per_hour != null && (
+                <span className="muted" style={{ fontWeight: 450 }}> · {fmt.usd(sug.usd_per_hour)}/h ({(sug.usd_delta_per_hour as number) < 0 ? "−" : "+"}{fmt.usd(Math.abs(sug.usd_delta_per_hour as number))}/h{sug.pct_of_current != null ? `, ${fmt.n(sug.pct_of_current, 0)}% of today's price` : ""})</span>
+              )}
+            </div>
+            {sug.instance_type && z.run_id && sug.kind !== "growth" && sug.kind !== "keep" && <button className="btn sm primary" disabled={busy} onClick={tryIt} title="Open a new benchmark with this run's settings and this size on this side; nothing starts until you press Start">{busy ? "Opening…" : "Benchmark this size"}</button>}
+          </div>
+          <div className="small mt" style={{ marginTop: 6 }}>{sug.why}</div>
+          {sug.pairing && <div className={"small mt " + (sug.pairing.fair ? "muted" : "")} style={{ marginTop: 6, color: sug.pairing.fair ? undefined : "var(--warn)" }}>{sug.pairing.text}</div>}
+          {err && <div className="small mt" style={{ color: "var(--bad)" }}>{err}</div>}
+        </div>
+      )}
       {z.notes && z.notes.length > 0 && <ul className="small muted" style={{ margin: "6px 0 0", paddingLeft: 18 }}>{z.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
     </div>
   );

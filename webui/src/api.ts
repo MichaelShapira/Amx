@@ -103,8 +103,14 @@ export interface Card { series: string; instance_type: string; engine: string; p
 export interface PointUtil { busy_mean: number | null; busy_p95: number | null; busy_max: number | null; mem_max: number | null; gpu_mem_pct: number | null; cpu_mean: number | null; gpu_mean: number | null; cpu_scale?: number }
 export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; accuracy: Accuracy | null; util: PointUtil | null }
 /** Was the instance the right size for this load? One verdict per hardware option (bench/utilization.py). */
+export interface Suggestion {
+  instance_type: string | null; kind: "keep" | "smaller" | "bigger" | "stronger" | "growth" | "none"; why: string;
+  usd_per_hour: number | null; usd_delta_per_hour: number | null; pct_of_current?: number; vcpus?: number; memory_gib?: number; gpus?: number;
+  gpu_model?: string | null; gpu_memory_gib?: number | null; pairing?: { other: string; ratio: number | null; fair: boolean | null; text: string };
+}
 export interface Sizing {
-  series: string; side: "gpu" | "cpu"; instance_type: string | null; engine: string | null; precision: string | null; size?: string;
+  series: string; side: "gpu" | "cpu"; instance_type: string | null; engine: string | null; precision: string | null; size?: string; run_id?: string;
+  suggestion?: Suggestion | null;
   verdict: "over" | "good" | "limit" | "under" | "unknown"; label: string; text: string; notes?: string[]; busy_basis?: string;
   util_top?: number; util_p95_top?: number | null; util_low?: number; load_top?: string; meets_top?: boolean; measurements: number; with_samples: number;
   points: { conc: number; batch: number; meets: boolean; util_mean: number | null; util_p95: number | null; mem_pct: number | null }[];

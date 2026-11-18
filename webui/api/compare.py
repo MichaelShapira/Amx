@@ -297,7 +297,17 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                    "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy"),
                    "util": _util_point(r)}
                   for r in grows]
-        sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t))
+        sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t), pairing.load_catalog()["instances"])
+        for z in sizing:
+            sug = z.get("suggestion")
+            other = best_cpu if z["side"] == "gpu" else best_gpu
+            if sug and sug.get("instance_type") and other:
+                j = pairing.judge(sug["instance_type"], other["instance_type"]) if z["side"] == "cpu" else \
+                    pairing.judge(other["instance_type"], sug["instance_type"])
+                sug["pairing"] = {"other": other["instance_type"], "ratio": j.get("ratio"), "fair": j.get("fair"),
+                                  "text": (f"Pairs fairly with {other['instance_type']} on the other side (GPU price {j['ratio']}x the CPU's)." if j.get("fair")
+                                           else f"Against {other['instance_type']} on the other side the GPU price would be {j['ratio']}x the CPU's, outside "
+                                                f"this tool's fair band (0.5x-2x); change the other side too for a like-for-like comparison.")}
         out_groups.append({"key": g["key"], "label": g["label"], "units": u, "best_gpu": card(best_gpu), "best_cpu": card(best_cpu),
                            "verdict": verdict, "equivalence": equivalence, "points": points, "sizing": sizing,
                            "missing": {"gpu": (missing_side.get("gpu") or {}).get("reason") if not gpu_rows else None,

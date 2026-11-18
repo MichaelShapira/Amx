@@ -24,7 +24,10 @@ Rules:
   saturated and missing the targets; unknown = no samples). Quote the busy percentage. A mostly idle
   machine means a smaller size would do for this load, or that the test's load was too light to show the
   machine's limit; say which reading applies given the load settings tested. Never call a comparison
-  settled when one side was mostly idle and the other at its limit.
+  settled when one side was mostly idle and the other at its limit. When "suggested_instance" names a
+  size, recommend it by name with its hourly price and say why (the tool chose it from the same family
+  so the same load would run about 60% busy, or the next size up / stronger GPU for a saturated one);
+  repeat its pairing note when the change would break the fair price band.
 - If "hardware_that_did_not_run" is not empty, say so in the first sentence of the bottom line: which side
   (GPU or CPU) did not run and why (no capacity), and that the other side's numbers therefore stand alone
   with no comparison and no GPU-vs-CPU verdict. Never present a one-sided result as a comparison.
@@ -56,8 +59,12 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                        for e in g["equivalence"]],
                        "measurements_not_meeting_targets": [f"{p['series']} at {p['conc']}: {p['reason']}"
                                                             for p in g["points"] if not p["meets"]][:12],
-                       "hardware_sizing": [{k: v.get(k) for k in ("series", "instance_type", "size", "verdict", "label", "load_top",
-                                                                   "util_top", "util_p95_top", "util_low", "meets_top", "notes")}
+                       "hardware_sizing": [{**{k: v.get(k) for k in ("series", "instance_type", "size", "verdict", "label", "load_top",
+                                                                      "util_top", "util_p95_top", "util_low", "meets_top", "notes")},
+                                            "suggested_instance": ({k: v["suggestion"].get(k) for k in ("instance_type", "kind", "why", "usd_per_hour",
+                                                                                                        "usd_delta_per_hour")}
+                                                                   | {"pairing": (v["suggestion"].get("pairing") or {}).get("text")})
+                                            if v.get("suggestion") else None}
                                            for v in g.get("sizing") or []]})
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
