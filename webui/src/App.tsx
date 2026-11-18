@@ -7,6 +7,7 @@ import Runs from "./pages/Runs";
 import Results from "./pages/Results";
 import DataPage from "./pages/Data";
 import Setup from "./pages/Setup";
+import Technical from "./pages/Technical";
 import ErrorBoundary from "./components/ErrorBoundary";
 import AuthGate, { useSession } from "./components/AuthGate";
 
@@ -50,6 +51,7 @@ function Shell() {
             <NavLink to="/runs"><span className="ico">⏱️</span> Runs</NavLink>
             <NavLink to="/results"><span className="ico">📊</span> Results</NavLink>
             <NavLink to="/setup"><span className="ico">⚙️</span> Setup</NavLink>
+            <NavLink to="/technical"><span className="ico">🧩</span> Technical details</NavLink>
           </nav>
           <div className="spacer" />
           <div className={"status-pill " + (aws?.ok ? "" : "off")} title={aws?.ok ? `Credentials: ${aws.credentials ?? ""}` : aws?.error ?? ""}>
@@ -78,6 +80,7 @@ function Shell() {
             <Route path="/runs/:id" element={<Runs />} />
             <Route path="/results" element={<Results />} />
             <Route path="/setup" element={<Setup />} />
+            <Route path="/technical" element={<Technical />} />
             <Route path="/callback" element={<Home />} />
           </Routes>
           </ErrorBoundary>

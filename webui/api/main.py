@@ -133,6 +133,9 @@ class Wizard(BaseModel):
     launch_attempts: int = 30                  # launch attempts (about one a minute) before giving up on a hardware option
     name: str = ""
     allow_unfair: bool = False
+    sized_for: str | None = None               # "<model>|<precision>" the hardware step last sized for
+    copied_from: str | None = None             # run id this draft came from ("Copy to new run")
+    recommendation: str | None = None          # what "Re-run with recommended sizes" changed, for the banner
 
 
 def _unavailable_reason(mid: str, precision: str, hardware: str, cat: dict) -> str | None:
@@ -1235,6 +1238,68 @@ def run_as_wizard(run_id: str):
     return wizard_from_run(run, name=meta.get("name"), source_run_id=run_id)
 
 
+@app.get("/api/runs/{run_id}/wizard/recommended")
+def run_as_wizard_recommended(run_id: str):
+    """The run's settings with every hardware option moved to the size its utilization verdict
+    suggests (bench/utilization.suggest): the biggest change wins when one option served several
+    number formats (too small beats keep, keep beats smaller), 'keep' leaves the size. Nothing
+    starts; the banner on the New benchmark page lists what changed."""
+    w = dict(run_as_wizard(run_id))
+    s = _summary(run_id)
+    analysis = compare.analyze([s], compare.default_sla([s]))
+    cat = get_catalog()
+    engines_of = {h["id"]: set(h["engines"]) for h in cat["hardware"]}
+    order = {"bigger": 3, "stronger": 3, "smaller": 2, "none": 1, "keep": 1, "growth": 1}
+    changes, notes = [], []
+
+    def pick(side: dict | None, accelerator: str) -> dict | None:
+        """The suggestion for one wizard side entry: among the sizing verdicts of its instance type and
+        software, the highest-ranked change (a dearer size wins a tie)."""
+        if not side:
+            return None
+        best = None
+        for g in analysis["groups"]:
+            for z in g["sizing"]:
+                sug = z.get("suggestion")
+                if z["side"] != accelerator or z.get("instance_type") != side.get("instance_type") or not sug:
+                    continue
+                if z.get("engine") and side.get("hardware") in engines_of and z["engine"] not in engines_of[side["hardware"]]:
+                    continue
+                rank = (order.get(sug["kind"], 0), sug.get("usd_per_hour") or 0)
+                if best is None or rank > (order.get(best["kind"], 0), best.get("usd_per_hour") or 0):
+                    best = {**sug, "series": z["series"], "verdict": z["verdict"]}
+        return best
+
+    moves = ("smaller", "bigger", "stronger")
+    if w.get("gpu"):
+        sug = pick(w["gpu"], "gpu")
+        if sug and sug.get("instance_type") and sug["kind"] in moves:
+            changes.append(f"GPU: {w['gpu']['instance_type']} -> {sug['instance_type']} ({sug['why'][:160]})")
+            w["gpu"] = {**w["gpu"], "instance_type": sug["instance_type"], "alternates": []}
+        elif sug:
+            notes.append(f"GPU {w['gpu']['instance_type']} kept: {sug['why'][:120]}")
+    new_cpus = []
+    for c in w.get("cpus") or []:
+        sug = pick(c, "cpu")
+        if sug and sug.get("instance_type") and sug["kind"] in moves:
+            changes.append(f"CPU ({C.hardware_label(c['hardware'])}): {c['instance_type']} -> {sug['instance_type']} ({sug['why'][:160]})")
+            new_cpus.append({**c, "instance_type": sug["instance_type"], "alternates": []})
+        else:
+            if sug:
+                notes.append(f"CPU ({C.hardware_label(c['hardware'])}) {c['instance_type']} kept: {sug['why'][:120]}")
+            new_cpus.append(c)
+    w["cpus"] = new_cpus
+    w["name"] = ""
+    w["copied_from"] = run_id
+    w["sized_for"] = f"{w['models'][0]}|{w.get('precision', 'bf16')}" if w.get("models") else None
+    w["recommendation"] = (("Sizes set from this run's utilization verdicts. " + " ".join(changes)) if changes else
+                           "Every hardware option of this run was already the right size for its load; the sizes are unchanged.")
+    if notes:
+        w["recommendation"] += " " + " ".join(notes)
+    w["changes"] = changes
+    return w
+
+
 @app.post("/api/runs/{run_id}/stop")
 def stop_run(run_id: str):
     if not RUN_ID.match(run_id):
@@ -1640,6 +1705,77 @@ def _running_runs_using(model_id: str) -> list[str]:
     except Exception as e:  # noqa: BLE001 - an unreadable run table must not block removal; the page shows the reason
         _CACHE["runs_error"] = str(e)[:120]
     return out
+
+
+# ----------------------------------------------------------------------------- technical details
+
+TECH_FILES = {
+    "servers/thin/Dockerfile.torch": "Thin PyTorch server image (CPU and CUDA builds differ only in BASE_IMAGE)",
+    "servers/thin/Dockerfile.openvino": "Thin OpenVINO server image",
+    "servers/export/Dockerfile": "Export image: Hugging Face checkpoint -> OpenVINO IR",
+    "webui/Dockerfile": "Web application image (ECS Fargate)",
+    "host/stage_model.sh": "Stage the pinned model snapshot on a host (S3 cache, else Hugging Face)",
+    "host/serve.sh": "Run the engine container for one cell, wait for health, make the first request",
+    "servers/export/export.py": "Export driver: OVMS export_model.py for chat models, optimum-cli for the rest; content-hashed IR cache",
+    "servers/export/optimum_export.py": "optimum-cli with upstream-lifted Transformers version caps",
+}
+
+
+@app.get("/api/technical")
+def technical():
+    """What the Technical details page shows: hardware options with their engine images, the images
+    this project builds, the Dockerfiles and host scripts verbatim, and how each number format is
+    prepared for its engine. Read from the deployed tree, so it is what this build runs."""
+    import yaml
+
+    from bench import cellspec
+
+    key = "technical"
+    if key in _CACHE:
+        return _CACHE[key]
+    targets = load_targets(ROOT / "config/targets.yaml").resolved()
+    images = yaml.safe_load((ROOT / "config/images.yaml").read_text())["images"]
+    hardware = []
+    for tid, t in targets.items():
+        if not t.enabled:
+            continue
+        hardware.append({"id": tid, "label": t.label, "accelerator": t.accelerator, "instance_type": t.instance_type,
+                         "alternates": list(t.alternates), "cpu_features": list(t.cpu_features),
+                         "engines": [{"engine": name, "label": C.ENGINES.get(name, (name,))[0], "help": C.ENGINES.get(name, ("", ""))[1],
+                                      "image": e.image, "built": e.image.startswith("built:"),
+                                      "dockerfile": images.get(e.image[6:], {}).get("dockerfile") if e.image.startswith("built:") else None,
+                                      "port": e.port, "env": dict(e.env), "args": dict(e.args)}
+                                     for name, e in t.engines.items()]})
+    files = {}
+    for rel, title in TECH_FILES.items():
+        path = ROOT / rel
+        files[rel] = {"title": title, "text": path.read_text() if path.exists() else None, "present": path.exists()}
+    ov = {k: v for k, v in yaml.safe_load((ROOT / "config/models.yaml").read_text()).items() if k.startswith("x-ov-")}
+    out = {
+        "hardware": hardware,
+        "images": [{"name": n, **spec} for n, spec in images.items()],
+        "files": files,
+        "thin_tasks": dict(cellspec.THIN_TASK),
+        "export_presets": ov,
+        "precisions": {k: {"label": v[0], "help": v[1]} for k, v in C.PRECISIONS.items()},
+        "diagram": {"svg": "/api/technical/architecture.svg", "drawio": "/api/technical/architecture.drawio",
+                    "present": (ROOT / "docs/architecture.svg").exists()},
+        "harness_commit": os.environ.get("HARNESS_COMMIT"),
+    }
+    _CACHE[key] = out
+    return out
+
+
+@app.get("/api/technical/architecture.{ext}")
+def technical_diagram(ext: str):
+    if ext not in ("svg", "drawio", "png"):
+        raise HTTPException(404, "no such file")
+    path = ROOT / "docs" / f"architecture.{ext}"
+    if not path.exists():
+        raise HTTPException(404, "the diagram is not part of this build")
+    media = {"svg": "image/svg+xml", "drawio": "application/xml", "png": "image/png"}[ext]
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "public, max-age=3600"},
+                        filename=f"architecture.{ext}" if ext == "drawio" else None)
 
 
 # ----------------------------------------------------------------------------- static app

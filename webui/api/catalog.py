@@ -205,6 +205,14 @@ def _display(m) -> tuple[str, str]:
     return m.hf_repo.split("/")[-1], m.notes or "added from Hugging Face in Setup"
 
 
+def hardware_label(hw_id: str) -> str:
+    """A hardware option's software names ("vLLM", "OpenVINO + PyTorch"), for sentences."""
+    for h in hardware_options():
+        if h["id"] == hw_id:
+            return " + ".join(h["software"])
+    return hw_id
+
+
 def model_name(mid: str) -> str:
     if mid in MODELS:
         return MODELS[mid][0]

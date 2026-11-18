@@ -28,16 +28,22 @@ from infra.stacks.network import NetworkStack
 ROOT = Path(__file__).resolve().parents[2]
 HF_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:346399954218:secret:amx-gpu-bench/hf-token-naqygX"  # noqa: S105 - an ARN, not a value
 WORKER_RESERVED = 80          # highest level (64) plus the accuracy level's 16 headroom
-IMAGES = {
-    "thin-torch-cpu": ("servers/thin/Dockerfile.torch", {
-        "BASE_IMAGE": "public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:"
-                      "e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159"}),
-    "thin-torch-cuda": ("servers/thin/Dockerfile.torch", {
-        "BASE_IMAGE": "public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cu133-amzn2023@sha256:"
-                      "f9e5a7febd6ef9104deb79941b58c7b054091a29f2b661fe9c2ea076886cb7be"}),
-    "thin-openvino": ("servers/thin/Dockerfile.openvino", {}),
-    "export": ("servers/export/Dockerfile", {}),
-}
+def _built_images() -> dict[str, tuple[str, dict]]:
+    """name -> (Dockerfile, build args) for every engine image this project builds, from
+    config/images.yaml (the web app's Technical details page shows the same file)."""
+    import yaml
+
+    out = {}
+    for name, spec in yaml.safe_load((ROOT / "config" / "images.yaml").read_text())["images"].items():
+        if spec.get("runs_on", "").startswith("ECS"):
+            continue                              # the web app image is the WebApp stack's asset
+        base = spec.get("base_image", "")
+        args = {"BASE_IMAGE": base} if "@sha256:" in base else {}
+        out[name] = (spec["dockerfile"], args)
+    return out
+
+
+IMAGES = _built_images()
 P = sfn.JsonPath
 
 

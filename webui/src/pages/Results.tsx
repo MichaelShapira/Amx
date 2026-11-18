@@ -194,7 +194,10 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
       </div>
       <Curves points={pts} units={g.units} target={target} />
       <div className="hr" />
-      <h3>Was the hardware the right size? <Help text="From the CloudWatch agent on each test host: how busy the GPU (GPU options) or the whole CPU (CPU options) was during each measurement, as the average of 10-second samples. The verdict reads the heaviest load setting: a processor that is mostly idle there is bigger than this load needs (or the load was too light to find its limit); one near 100% while missing your targets is too small. Memory notes come from the same source." /></h3>
+      <div className="row between">
+        <h3 style={{ margin: 0 }}>Was the hardware the right size? <Help text="From the CloudWatch agent on each test host: how busy the GPU (GPU options) or the whole CPU (CPU options) was during each measurement, as the average of 10-second samples. The verdict reads the heaviest load setting: a processor that is mostly idle there is bigger than this load needs (or the load was too light to find its limit); one near 100% while missing your targets is too small. Memory notes come from the same source." /></h3>
+        <RerunRecommended runIds={Array.from(new Set(g.points.map((p) => p.run_id)))} />
+      </div>
       <div className="grid c2">
         {g.sizing.filter((z) => !shown || z.series === shown).map((z) => <SizingCard key={z.series} z={z} />)}
       </div>
@@ -211,6 +214,28 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
 
 
 const SIZING_KIND: Record<Sizing["verdict"], "ok" | "warn" | "bad" | "accent" | undefined> = { good: "ok", limit: "accent", over: "warn", under: "bad", unknown: undefined };
+
+/** Copy a run to a new benchmark with every hardware option moved to its recommended size (one run at a time). */
+function RerunRecommended({ runIds }: { runIds: string[] }) {
+  const nav = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (runIds.length !== 1) return null;
+  const go = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const w = await api.wizardRecommended(runIds[0]);
+      sessionStorage.setItem("wizard", JSON.stringify(w));
+      nav("/new", { state: { step: 4 } });
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="row">
+      {err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}
+      <button className="btn sm primary" disabled={busy} onClick={go} title="Open a new benchmark with this run's settings and every hardware option set to the size its verdict recommends (kept where it already fits); nothing starts until you press Start">{busy ? "Opening…" : "Re-run with recommended sizes"}</button>
+    </div>
+  );
+}
 
 function SizingCard({ z }: { z: Sizing }) {
   const u = z.util_top;

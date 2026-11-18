@@ -20,6 +20,13 @@ COPY bench /app/bench
 COPY lambdas /app/lambdas
 COPY tools /app/tools
 COPY config /app/config
+# Shown verbatim on the Technical details page: the engine Dockerfiles, the export tooling, the host
+# scripts, this Dockerfile and the architecture diagram (docs/architecture.svg from tools/architecture_diagram.py).
+COPY servers/thin/Dockerfile.torch servers/thin/Dockerfile.openvino /app/servers/thin/
+COPY servers/export/Dockerfile servers/export/export.py servers/export/optimum_export.py /app/servers/export/
+COPY host/stage_model.sh host/serve.sh /app/host/
+COPY webui/Dockerfile /app/webui/Dockerfile
+COPY docs/architecture.svg docs/architecture.drawio /app/docs/
 COPY webui/__init__.py /app/webui/__init__.py
 COPY webui/api /app/webui/api
 COPY --from=ui /ui/dist /app/webui/dist

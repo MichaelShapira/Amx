@@ -1,0 +1,47 @@
+# Container images this project builds (CDK Docker image assets, pushed to ECR at deploy). The Core
+# stack reads this file (infra/stacks/core.py); the web app's Technical details page shows it next to
+# the Dockerfiles. Engine images that are not built here (vLLM, OpenVINO Model Server) are pinned by
+# digest in config/targets.yaml.
+images:
+  thin-torch-cpu:
+    dockerfile: servers/thin/Dockerfile.torch
+    base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159
+    runs_on: AMX CPU hosts (hardware option "PyTorch")
+    purpose: >-
+      Plain PyTorch serving through the thin server (servers/thin): the least optimized way to serve a
+      model, kept as the floor every optimized stack is measured against. Weights load as-is from the
+      Hugging Face snapshot; nothing is converted. oneDNN inside PyTorch dispatches BF16 matrix math to
+      AMX, which the AMX probe verifies from the oneDNN trace.
+  thin-torch-cuda:
+    dockerfile: servers/thin/Dockerfile.torch
+    base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cu133-amzn2023@sha256:f9e5a7febd6ef9104deb79941b58c7b054091a29f2b661fe9c2ea076886cb7be
+    runs_on: GPU hosts (hardware option "vLLM + PyTorch", for models vLLM does not serve)
+    purpose: >-
+      The same thin server on the CUDA build of PyTorch: encoder-decoder models (Flan-T5) and
+      classifiers on the GPU side, where vLLM has no matching API. Same Dockerfile as the CPU image;
+      only the base image differs.
+  thin-openvino:
+    dockerfile: servers/thin/Dockerfile.openvino
+    base_image: (see Dockerfile) Python with optimum-intel and OpenVINO runtime
+    runs_on: AMX CPU hosts (hardware option "OpenVINO", models the model server does not host)
+    purpose: >-
+      OpenVINO through the thin server for encoder-decoder models and classifiers: loads an exported
+      OpenVINO IR (see the export image) with optimum-intel's OVModelFor* classes and serves the same
+      API as the other thin images.
+  export:
+    dockerfile: servers/export/Dockerfile
+    base_image: (see Dockerfile) Python with optimum-intel, nncf, openvino, OVMS export tooling
+    runs_on: AMX CPU hosts, once per model x OpenVINO number format, before serving
+    purpose: >-
+      Converts a Hugging Face checkpoint to OpenVINO IR: chat models through OVMS's export_model.py
+      (so the model server gets the layout and graph.pbtxt it expects), encoder-decoder models and
+      classifiers through optimum-cli. INT8 and INT4 weight compression is applied here (nncf). The IR
+      is cached in S3 under models/ov/<hash>/, where the hash covers the export arguments, the source
+      revision and the tool versions, so a changed setting never reuses an old conversion.
+  web app:
+    dockerfile: webui/Dockerfile
+    base_image: public.ecr.aws/docker/library/python:3.12-slim (API) and node:22 (UI build stage)
+    runs_on: ECS Fargate (WebApp stack)
+    purpose: >-
+      The FastAPI API and the React UI, built from the hashed requirements lock; runs as a non-root
+      user; syncs prompt pools and datasets from the bucket at start. Not an engine image.

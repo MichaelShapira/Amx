@@ -46,7 +46,9 @@ export default function NewRun() {
         <button className="btn sm" onClick={() => { setW(defaultWizard); setStep(0); }}>Reset</button>
       </div>
       {w.copied_from && (
-        <Note kind="ok"><b>Copied from run {w.copied_from}.</b> Every step is prefilled with that run's settings and nothing has started: click any step above to change it, then press Start on the last step. <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => set({ copied_from: null })}>Dismiss</button></Note>
+        <Note kind="ok"><b>Copied from run {w.copied_from}.</b> Every step is prefilled with that run's settings and nothing has started: click any step above to change it, then press Start on the last step.
+          {w.recommendation && <div className="mt small"><b>Recommended sizes applied.</b> {w.recommendation}</div>}
+          <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => set({ copied_from: null, recommendation: null })}>Dismiss</button></Note>
       )}
       <div className="steps">
         {STEPS.map((s, i) => (

@@ -43,6 +43,7 @@ export interface Wizard {
   spot_fallback: boolean; spot_wait_minutes: number; launch_attempts: number; name: string; allow_unfair: boolean;
   sized_for: string | null;          // "<model>|<precision>" the hardware step last pre-selected sizes for
   copied_from: string | null;        // run id this draft was copied from ("Copy to new run"), for the banner
+  recommendation?: string | null;    // what "Re-run with recommended sizes" changed, for the banner
 }
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
@@ -121,6 +122,14 @@ export interface UtilTarget {
   scoped_to_run: boolean; instances: number;
   gpu_mem_total_mib: number | null; windows: { level: string; name: string | null; conc: number; batch: number; start: number; end: number }[]; error: string | null;
 }
+export interface TechEngine { engine: string; label: string; help: string; image: string; built: boolean; dockerfile: string | null; port: number; env: Record<string, string>; args: Record<string, unknown> }
+export interface TechHardware { id: string; label: string; accelerator: "gpu" | "cpu"; instance_type: string; alternates: string[]; cpu_features: string[]; engines: TechEngine[] }
+export interface TechImage { name: string; dockerfile: string; base_image: string; runs_on: string; purpose: string }
+export interface Technical {
+  hardware: TechHardware[]; images: TechImage[]; files: Record<string, { title: string; text: string | null; present: boolean }>;
+  thin_tasks: Record<string, string>; export_presets: Record<string, Record<string, unknown>>; precisions: Record<string, { label: string; help: string }>;
+  diagram: { svg: string; drawio: string; present: boolean }; harness_commit: string | null;
+}
 export interface RunUtilization { run_id: string; start?: number; end?: number; period_s?: number; targets: UtilTarget[]; retention_note?: string; reason?: string }
 export interface Group {
   key: string; label: string; units: { thr: string; thr_label: string; cost: string; cost_label: string; lat: string; lat_label: string; lat_sla: string };
@@ -192,6 +201,8 @@ export const api = {
   aiProposeStart: (w: Wizard) => j<{ job_id: string; prompt_preview: string }>("/api/propose/ai", { method: "POST", body: JSON.stringify(w) }),
   aiProposeStatus: (id: string) => j<AiJob>(`/api/propose/ai/${id}`),
   wizardFrom: (id: string) => j<Wizard>(`/api/runs/${id}/wizard`),
+  wizardRecommended: (id: string) => j<Wizard & { changes: string[] }>(`/api/runs/${id}/wizard/recommended`),
+  technical: () => j<Technical>("/api/technical"),
   deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string; terminated_instances: string[] }>(`/api/runs/${id}`, { method: "DELETE" }),
   slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),

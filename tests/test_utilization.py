@@ -297,3 +297,50 @@ def test_sizing_carries_the_suggestion_and_compare_judges_its_pairing():
     assert z["suggestion"]["instance_type"] == "m8i.2xlarge"
     assert z["suggestion"]["pairing"]["other"] == "g6.2xlarge" and z["suggestion"]["pairing"]["fair"] is False      # 0.98 / 0.42 = 2.3x
     assert "outside" in z["suggestion"]["pairing"]["text"]
+
+
+def test_recommended_wizard_moves_every_hardware_option_to_its_suggested_size(monkeypatch):
+    """A quick run where the CPU option idled at 10% of its cores: the recommended copy keeps the GPU
+    (good) and shrinks the CPU to the smallest m8i that fits, says what changed, and does not start."""
+    import boto3
+    import moto
+    import yaml
+    from fastapi.testclient import TestClient
+
+    from webui.api import main
+    from webui.api.main import app
+
+    c = TestClient(app)
+    bucket = "amx-gpu-bench-123456789012-us-east-1"
+    common = {"model": "m1-qwen2.5-3b", "slot": "M1", "license": "apache-2.0", "workload": None, "bucket": None, "kind": "generation", "variant": None,
+              "n_ok": 50, "n_requests": 50, "e2e_p50": 40.0, "e2e_p99": 90.0, "ttft_p99": 100.0, "tpot_p50": 20.0, "error_pct": 0, "quality_flag": None,
+              "repeats": 1, "batch": 1, "cell_key": "k", "level_group": "k__short__c4"}
+    rows = [{**common, "target": "t1-g6", "target_label": "T1", "instance_type": "g6.2xlarge", "accelerator": "gpu", "engine": "vllm", "precision": "bf16",
+             "conc": 4, "agg_out_tok_s": 400.0, "usd_per_hour": 0.9776, "amx": "n/a", "util": {"gpu": {"mean": 60.0, "p95": 80.0, "max": 90.0, "n": 9}, "_source": "level-10s-host"}},
+            {**common, "target": "t2-m8i-4xl", "target_label": "T2", "instance_type": "m8i.4xlarge", "accelerator": "cpu", "engine": "vllm", "precision": "bf16",
+             "conc": 4, "agg_out_tok_s": 100.0, "usd_per_hour": 0.847, "amx": "VERIFIED", "util": {"cpu": {"mean": 5.0, "p95": 8.0, "max": 10.0, "n": 9}, "mem": {"mean": 10.0, "p95": 12.0, "max": 12.0, "n": 9}, "_source": "level-10s-host"}}]
+    run = {"suite": "standard", "mode": "smoke", "models": ["m1-qwen2.5-3b"], "concurrency": [4], "per_level": {"requests": 50}, "repeats": 1,
+           "prompt_set": "short", "sampling": {"temperature": 0.0, "max_new_tokens": 128, "ignore_eos": True, "seed": 0},
+           "cells": [{"target": "t1-g6", "precision": "bf16", "model": "m1-qwen2.5-3b"}, {"target": "t2-m8i-4xl", "precision": "bf16", "model": "m1-qwen2.5-3b"}],
+           "instance_types": {"t1-g6": "g6.2xlarge", "t2-m8i-4xl": "m8i.4xlarge"}, "sla": {"max_error_pct": 1.0},
+           "purchase": {"type": "spot", "spot_fallback_on_demand": True, "spot_capacity_window_s": 600, "max_launch_attempts": 30}}
+    with moto.mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=bucket)
+        s3.put_object(Bucket=bucket, Key="runs/r-rec/report/summary.json", Body=json.dumps({"run_id": "r-rec", "rows": rows, "smoke": True, "run": run}).encode())
+        s3.put_object(Bucket=bucket, Key="runs/r-rec/run.yaml", Body=yaml.safe_dump({"run": run}).encode())
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="amx-gpu-bench", BillingMode="PAY_PER_REQUEST",
+            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}])
+        monkeypatch.setattr(main, "_outputs", lambda: {"BucketName": bucket, "RunStateMachineArn": "arn:aws:states:us-east-1:1:stateMachine:x"})
+        for k in list(main._CACHE):
+            if k.startswith(("summary:", "metrics:", "util:", "hosts:")):
+                main._CACHE.pop(k)
+        w = c.get("/api/runs/r-rec/wizard/recommended").json()
+        assert w["gpu"]["instance_type"] == "g6.2xlarge"                                   # good match: kept
+        assert [x["instance_type"] for x in w["cpus"]] == ["m8i.xlarge"]                  # 10% of 8 cores / 60% target = 1.3 cores -> 2-core m8i.xlarge
+        assert w["copied_from"] == "r-rec" and w["sized_for"] == "m1-qwen2.5-3b|bf16" and w["name"] == ""
+        assert len(w["changes"]) == 1 and w["changes"][0].startswith("CPU (vLLM): m8i.4xlarge -> m8i.xlarge")
+        assert "Sizes set from this run's utilization verdicts" in w["recommendation"] and "GPU g6.2xlarge kept" in w["recommendation"]
+        assert c.get("/api/runs/no.such/wizard/recommended").status_code == 404

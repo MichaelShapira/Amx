@@ -9,6 +9,9 @@
 !lambdas/**
 !tools/**
 !config/**
+!host/**
+!docs/architecture.svg
+!docs/architecture.drawio
 !webui/__init__.py
 !webui/api/**
 !webui/src/**
