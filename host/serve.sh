@@ -74,7 +74,9 @@ export_ov() {
 # in the run's bringup/ prefix and repeat the exception lines last on stderr. vLLM prints the real
 # cause in the engine-core process traceback, far above the final "Engine core initialization
 # failed" lines, so the last 50 lines alone never named it (run gemma-20261115T102422Z, W8A8).
-container_failure() {
+# keep_container_log SPEC: the whole container log into the run's bringup/ prefix, the exception
+# lines repeated last on stderr (what the run page shows).
+keep_container_log() {
   local spec=$1 log
   log="$STATE_DIR/container-$(jq -r .cell_key "$spec").log"
   docker logs "$CONTAINER" >"$log" 2>&1 || true
@@ -87,6 +89,9 @@ container_failure() {
   gzip -f "$log"
   s3_put "$log.gz" "s3://$(jq -r .bucket "$spec")/runs/$(jq -r .run_id "$spec")/bringup/$(jq -r .cell_key "$spec").container.log.gz" \
     || log "could not upload the container log"
+}
+container_failure() {
+  keep_container_log "$1"
   die "container exited before becoming healthy"
 }
 
@@ -102,16 +107,23 @@ wait_health() {
   done
 }
 
-# first_request BASE SPEC: one real request; prints the API path that worked.
+# first_request BASE SPEC: one real request; prints the API path that worked. When every path fails,
+# the server's own answer (status and body) per path and the container log are kept: the server was
+# healthy, so only its response says why (run flan-dlp-dspm-20261118T071834Z lost the GPU side with
+# nothing but "failed on every API path" recorded).
 first_request() {
-  local base=$1 spec=$2 body path
+  local base=$1 spec=$2 body path status resp
   body=$(jq -c .health.probe.body "$spec")
   for path in $(jq -r '.health.probe.path, (.health.probe.alt_paths // [])[]' "$spec"); do
-    if curl -sf -o /dev/null -H 'Content-Type: application/json' -d "$body" "$base$path"; then
+    resp=$(curl -s -m 600 -w '\n%{http_code}' -H 'Content-Type: application/json' -d "$body" "$base$path" 2>&1) || true
+    status=${resp##*$'\n'}
+    if [[ "$status" =~ ^2 ]]; then
       echo "$path"; return 0
     fi
+    log "first request to $path -> HTTP ${status:-none}: $(printf '%s' "${resp%$'\n'*}" | tr '\n' ' ' | cut -c1-600)"
   done
-  die "first request failed on every API path"
+  keep_container_log "$spec"
+  die "first request failed on every API path (the server's answers are above; its log is in bringup/)"
 }
 
 start() {

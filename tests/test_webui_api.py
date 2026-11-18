@@ -566,3 +566,17 @@ def test_classifier_runs_are_judged_on_the_whole_decision_only():
     assert report.meets_sla(cls_row, {"p99_e2e_ms": 30, "max_error_pct": 1.0}) == (False, "p99_e2e_ms 40 > 30")
     gen_row = {**cls_row, "kind": "generation"}
     assert report.meets_sla(gen_row, {"p99_ttft_ms": 2000, "max_error_pct": 1.0}) == (False, "p99_ttft_ms not measured")
+
+
+def test_a_rejected_first_request_names_the_servers_answer_or_says_it_was_not_kept():
+    from webui.api.main import cell_error_text as failure_sentence
+    old = ("bring-up of m5-flan-t5-xl|t1-g6|bf16 failed (Failed): ...credentials-store 2026-11-18T07:28:13Z stage: syncing google/flan-t5-xl "
+           "from the S3 cache 2026-11-18T07:31:30Z ERROR: first request failed on every API path failed to run commands: exit status 1")
+    t = failure_sentence(old, None)
+    assert t.startswith("The serving software started and reported healthy, but rejected the first real request") and "not recorded" in t
+    new = ("bring-up of m5 failed (Failed): 2026-11-19T07:31:20Z first request to /v1/completions -> HTTP 500: "
+           '{"error":{"message":"CUDA error: device-side assert triggered","type":"server_error","code":500}} '
+           "2026-11-19T07:31:30Z ERROR: first request failed on every API path (the server's answers are above; its log is in bringup/)")
+    t = failure_sentence(new, None)
+    assert "/v1/completions answered HTTP 500" in t and "device-side assert" in t and "not recorded" not in t
+    assert failure_sentence(new, "RuntimeError: CUDA error").endswith("Cause: RuntimeError: CUDA error")

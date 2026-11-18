@@ -809,6 +809,15 @@ def cell_error_text(raw: str, stderr: str = "") -> str:
             return f"The serving software stopped while loading the model. Cause: {cause}"
         return ("The serving software stopped while loading the model; the run kept only the last lines of its log, which do "
                 "not name the cause (runs since 2026-11-15 keep the whole log). Details: " + tail[-240:])
+    if "first request failed on every API path" in s:
+        answers = re.findall(r"first request to (\S+) -> HTTP (\S+): (.*?)(?=\s+\d{4}-\d{2}-\d{2}T|\s+ERROR:|$)", s, re.S)
+        if answers:
+            said = "; ".join(f"{path} answered HTTP {code}: {body.strip()[:200]}" for path, code, body in answers[:3])
+            return ("The serving software started and reported healthy, but rejected the first real request. " + said +
+                    (f" Cause: {cause}" if cause else ". The whole server log is kept under bringup/ in the run's folder."))
+        return ("The serving software started and reported healthy, but rejected the first real request, and this run (before "
+                "2026-11-18) kept neither the server's answer nor its log, so the cause is not recorded. Runs since then keep both. "
+                "Details: " + tail[-240:])
     if "bring-up of" in s and not tail:
         return ("The instance was taken away while the model was loading, and the run gave up after its replacements were "
                 "taken away too (before 2026-11-13 runs shared one instance per hardware option; every run now gets its own). "
