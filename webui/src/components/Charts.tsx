@@ -1,5 +1,5 @@
-import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { fmt, type Group, type Point } from "../api";
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { fmt, type Group, type Point, type UtilTarget } from "../api";
 
 // One hue per software stack, warm for GPU and cool for CPU, so the same software always has the
 // same colour on every chart and no two lines on a chart share a shade (three blues were
@@ -138,5 +138,97 @@ export function InstancesBar({ rows, limit }: { rows: Group["equivalence"]; limi
         </Bar>
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+
+// ----------------------------------------------------------------------------- utilization
+
+/** How busy each hardware option's own processor (GPU or CPU) was at each load setting: the mean of
+ * the 10-second samples over the measurement, with the 95th percentile as a thin line of the same colour. */
+export function UtilizationCurves({ points }: { points: Point[] }) {
+  const series = seriesKeys(points);
+  const styles = seriesStyles(series);
+  const xs = Array.from(new Set(points.map((p) => p.conc))).sort((a, b) => a - b);
+  const rows = xs.map((x) => {
+    const row: Record<string, number | string | null> = { conc: x };
+    for (const p of points) if (p.conc === x) {
+      const k = p.series + (p.batch > 1 ? ` ·b${p.batch}` : "");
+      row[k] = p.util?.busy_mean ?? null;
+      row[k + " (p95)"] = p.util?.busy_p95 ?? null;
+    }
+    return row;
+  });
+  const any = points.some((p) => p.util?.busy_mean != null);
+  if (!any) return <div className="small muted mt">No utilization samples were recorded for these measurements.</div>;
+  return (
+    <div>
+      <div className="small" style={{ fontWeight: 650 }}>How busy the hardware was <span className="muted" style={{ fontWeight: 450 }}>— GPU busy % for GPU options; for CPU options the share of the physical cores that were busy (the serving software runs one thread per core). Solid = average over the measurement, thin = 95th percentile. Shaded: below {35}% mostly idle, above {80}% at its limit.</span></div>
+      <ResponsiveContainer width="100%" height={290}>
+        <LineChart data={rows} margin={{ top: 10, right: 16, left: 0, bottom: 28 }}>
+          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" />
+          <ReferenceArea y1={0} y2={35} fill="var(--warn)" fillOpacity={0.07} />
+          <ReferenceArea y1={80} y2={100} fill="var(--bad)" fillOpacity={0.07} />
+          <XAxis dataKey="conc" tick={{ fill: "var(--fg-3)", fontSize: 12 }} label={{ value: "requests at a time", position: "bottom", offset: 8, fill: "var(--fg-3)", fontSize: 12 }} />
+          <YAxis domain={[0, 100]} tick={{ fill: "var(--fg-3)", fontSize: 12 }} width={48} tickFormatter={(v) => `${v}%`} />
+          <Tooltip contentStyle={tipStyle} formatter={(v: any) => `${fmt.n(Number(v), 0)}%`} labelFormatter={(l) => `${l} concurrent`} />
+          {series.map((k) => (
+            <Line key={k} type="monotone" dataKey={k} stroke={styles[k].color} strokeWidth={2.5} strokeDasharray={styles[k].dash}
+              dot={(p: any) => (p.cx == null || p.cy == null || p.value == null ? <g key={`${k}-${p.index}`} /> : <Marker key={`${k}-${p.index}`} cx={p.cx} cy={p.cy} r={4} style={styles[k]} />)}
+              activeDot={{ r: 6, fill: styles[k].color, stroke: "var(--bg-2)", strokeWidth: 2 }} connectNulls isAnimationActive={false} />
+          ))}
+          {series.map((k) => (
+            <Line key={k + "p95"} type="monotone" dataKey={k + " (p95)"} stroke={styles[k].color} strokeWidth={1} strokeOpacity={0.55} dot={false} connectNulls isAnimationActive={false} legendType="none" />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+const UTIL_LINES: { key: "cpu" | "gpu" | "mem" | "gpu_mem_pct"; label: string; color: string; dash?: string }[] = [
+  { key: "gpu", label: "GPU busy %", color: "var(--gpu)" },
+  { key: "cpu", label: "CPU busy % (whole host)", color: "var(--cpu)" },
+  { key: "mem", label: "host memory used %", color: "var(--fg-3)", dash: "4 3" },
+  { key: "gpu_mem_pct", label: "GPU memory used %", color: "var(--gpu)", dash: "2 4" },
+];
+
+/** One hardware option's utilization over the run (CloudWatch), with each measurement's window shaded
+ * and labelled by its load setting, so idle gaps (model loading, waiting) read as such. */
+export function UtilizationTimeline({ t }: { t: UtilTarget }) {
+  const s = t.series;
+  if (!s || !s.t.length) return <div className="small muted">{t.error ?? "CloudWatch has no utilization points for this hardware option in the run's window."}</div>;
+  const t0 = s.t[0];
+  const total = t.gpu_mem_total_mib;
+  // CPU engines run one thread per physical core (two vCPUs each), so the host average tops out at 50%:
+  // shown as the share of the physical cores, like the per-measurement figures (bench/utilization.cpu_scale).
+  const cpuScale = t.accelerator === "cpu" && (t.spec?.vcpus ?? 0) > 1 ? 2 : 1;
+  const cores = cpuScale > 1 ? Math.floor((t.spec?.vcpus ?? 0) / 2) : null;
+  const rows = s.t.map((ts, i) => ({
+    t: Math.round((ts - t0) / 60), cpu: s.cpu?.[i] != null ? Math.min(100, (s.cpu[i] as number) * cpuScale) : null, gpu: s.gpu?.[i] ?? null, mem: s.mem?.[i] ?? null,
+    gpu_mem_pct: total && s.gpu_mem?.[i] != null ? Math.round((100 * (s.gpu_mem[i] as number)) / total) : null,
+  }));
+  const present = UTIL_LINES.filter((l) => rows.some((r) => r[l.key] != null)).map((l) => (l.key === "cpu" && cores ? { ...l, label: `CPU busy % (share of its ${cores} physical cores)` } : l));
+  const windows = t.windows.map((w) => ({ ...w, x1: (w.start - t0) / 60, x2: (w.end - t0) / 60 }));
+  return (
+    <div>
+      <div className="chart-legend">
+        {present.map((l) => <span key={l.key} className="chart-legend-item"><svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke={l.color} strokeWidth="2.5" strokeDasharray={l.dash} /></svg>{l.label}</span>)}
+        <span className="chart-legend-item"><span style={{ display: "inline-block", width: 14, height: 10, background: "var(--accent)", opacity: 0.18, borderRadius: 2 }} /> a measurement (hover for its load setting)</span>
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={rows} margin={{ top: 10, right: 16, left: 0, bottom: 28 }}>
+          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" />
+          {windows.map((w, i) => (
+            <ReferenceArea key={i} x1={Math.round(w.x1)} x2={Math.max(Math.round(w.x1), Math.round(w.x2))} fill="var(--accent)" fillOpacity={0.12} ifOverflow="extendDomain"
+              label={{ value: `${w.conc}${w.batch > 1 ? `×${w.batch}` : ""}`, position: "insideTop", fill: "var(--fg-3)", fontSize: 10 }} />
+          ))}
+          <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "var(--fg-3)", fontSize: 12 }} label={{ value: "minutes since the first measurement", position: "bottom", offset: 8, fill: "var(--fg-3)", fontSize: 12 }} />
+          <YAxis domain={[0, 100]} tick={{ fill: "var(--fg-3)", fontSize: 12 }} width={48} tickFormatter={(v) => `${v}%`} />
+          <Tooltip contentStyle={tipStyle} formatter={(v: any, name: any) => [`${fmt.n(Number(v), 0)}%`, UTIL_LINES.find((l) => l.key === name)?.label ?? name]} labelFormatter={(l) => `minute ${l}`} />
+          {present.map((l) => <Line key={l.key} type="monotone" dataKey={l.key} stroke={l.color} strokeWidth={l.dash ? 1.5 : 2.5} strokeDasharray={l.dash} dot={false} connectNulls isAnimationActive={false} />)}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }

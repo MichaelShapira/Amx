@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
-import { api, fmt, type CompareOut, type ExecSummary, type Group, type RunRow, type SummaryInfo } from "../api";
+import { type CompareOut, type ExecSummary, type Group, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, api, fmt } from "../api";
 import { useCatalog } from "../App";
-import { Badge, Help, Label, Metric, Note, Spinner, Toggle } from "../components/ui";
-import { Curves, InstancesBar, Swatch, seriesKeys, seriesStyles } from "../components/Charts";
+import { Badge, Help, Label, Metric, Note, Spinner, Toggle, instanceLine } from "../components/ui";
+import { Curves, InstancesBar, Swatch, UtilizationCurves, UtilizationTimeline, seriesKeys, seriesStyles } from "../components/Charts";
 
 export default function Results() {
   const cat = useCatalog();
@@ -129,6 +129,7 @@ export default function Results() {
               </div>
               <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} />
               {out.analysis.groups.map((g) => <GroupView key={g.key} g={g} view={view} series={series} setSeries={setSeries} limit={limit} target={(sla?.[g.units.lat_sla] as number | null | undefined) ?? null} />)}
+              <RunUtilization runIds={selected} />
               {out.analysis.warnings.length > 0 && (
                 <div className="card mt"><h3>Notes from the reports</h3><ul className="muted small">{Array.from(new Set(out.analysis.warnings)).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
               )}
@@ -192,16 +193,99 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
         )}
       </div>
       <Curves points={pts} units={g.units} target={target} />
+      <div className="hr" />
+      <h3>Was the hardware the right size? <Help text="From the CloudWatch agent on each test host: how busy the GPU (GPU options) or the whole CPU (CPU options) was during each measurement, as the average of 10-second samples. The verdict reads the heaviest load setting: a processor that is mostly idle there is bigger than this load needs (or the load was too light to find its limit); one near 100% while missing your targets is too small. Memory notes come from the same source." /></h3>
+      <div className="grid c2">
+        {g.sizing.filter((z) => !shown || z.series === shown).map((z) => <SizingCard key={z.series} z={z} />)}
+      </div>
+      <div className="mt"><UtilizationCurves points={pts} /></div>
       <details className="mt"><summary className="small">All measurements in this group</summary>
         <table className="tbl mt">
-          <thead><tr><th>Hardware · software · format</th><th className="num">Concurrent</th><th className="num">Batch</th><th className="num">{g.units.thr_label}</th><th className="num">{g.units.lat_label}</th><th className="num">median (ms)</th><th className="num">{g.units.cost_label}</th><th className="num">errors %</th><th>Meets targets</th><th>Run</th></tr></thead>
-          <tbody>{g.points.map((p, i) => <tr key={i}><td><Swatch style={styles[p.series + (p.batch > 1 ? ` ·b${p.batch}` : "")]} /><Badge kind={p.side}>{p.side.toUpperCase()}</Badge> {p.series.replace(/^(GPU|CPU) · /, "")}</td><td className="num">{p.conc}</td><td className="num">{p.batch > 1 ? p.batch : "–"}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">{fmt.n(p.latency)}</td><td className="num">{fmt.n(p.e2e_p50)}</td><td className="num">{fmt.usd(p.cost)}</td><td className="num">{fmt.n(p.error_pct, 1)}</td><td>{p.meets ? <Badge kind="ok">yes</Badge> : <Badge kind="bad">{p.reason || "no"}</Badge>}</td><td className="tiny">{p.run_id}</td></tr>)}</tbody>
+          <thead><tr><th>Hardware · software · format</th><th className="num">Concurrent</th><th className="num">Batch</th><th className="num">{g.units.thr_label}</th><th className="num">{g.units.lat_label}</th><th className="num">median (ms)</th><th className="num">{g.units.cost_label}</th><th className="num">errors %</th><th className="num">busy %</th><th>Meets targets</th><th>Run</th></tr></thead>
+          <tbody>{g.points.map((p, i) => <tr key={i}><td><Swatch style={styles[p.series + (p.batch > 1 ? ` ·b${p.batch}` : "")]} /><Badge kind={p.side}>{p.side.toUpperCase()}</Badge> {p.series.replace(/^(GPU|CPU) · /, "")}</td><td className="num">{p.conc}</td><td className="num">{p.batch > 1 ? p.batch : "–"}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">{fmt.n(p.latency)}</td><td className="num">{fmt.n(p.e2e_p50)}</td><td className="num">{fmt.usd(p.cost)}</td><td className="num">{fmt.n(p.error_pct, 1)}</td><td className="num" title={p.util?.busy_p95 != null ? `95th percentile ${fmt.n(p.util.busy_p95, 0)}%` : ""}>{p.util?.busy_mean != null ? `${fmt.n(p.util.busy_mean, 0)}%` : "–"}</td><td>{p.meets ? <Badge kind="ok">yes</Badge> : <Badge kind="bad">{p.reason || "no"}</Badge>}</td><td className="tiny">{p.run_id}</td></tr>)}</tbody>
         </table>
       </details>
     </div>
   );
 }
 
+
+const SIZING_KIND: Record<Sizing["verdict"], "ok" | "warn" | "bad" | "accent" | undefined> = { good: "ok", limit: "accent", over: "warn", under: "bad", unknown: undefined };
+
+function SizingCard({ z }: { z: Sizing }) {
+  const u = z.util_top;
+  return (
+    <div className={`tile ${z.side}`} style={{ cursor: "default" }}>
+      <div className="t"><Badge kind={z.side}>{z.side.toUpperCase()}</Badge> {z.series.replace(/^(GPU|CPU) · /, "")} <Badge kind={SIZING_KIND[z.verdict]}>{z.label}</Badge></div>
+      {z.size && <div className="d">{z.instance_type}: {z.size}</div>}
+      {u != null && (
+        <div className="row mt" style={{ gap: 14 }}>
+          <Gauge value={u} />
+          <div className="small">
+            <div><b>{fmt.n(u, 0)}%</b> busy on average at the heaviest load ({z.load_top}){z.util_p95_top != null ? <>, <b>{fmt.n(z.util_p95_top, 0)}%</b> at its busiest</> : null}.</div>
+            {z.util_low != null && z.points.length > 1 && <div className="muted">{fmt.n(z.util_low, 0)}% at the lightest load setting.</div>}
+            <div className="muted">{z.with_samples} of {z.measurements} measurements had samples{z.busy_basis ? `; busy = ${z.busy_basis}` : ""}.</div>
+          </div>
+        </div>
+      )}
+      <div className="small mt">{z.text}</div>
+      {z.notes && z.notes.length > 0 && <ul className="small muted" style={{ margin: "6px 0 0", paddingLeft: 18 }}>{z.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
+    </div>
+  );
+}
+
+/** A small bar: 0–100% busy with the idle (<35%) and saturated (>80%) bands shaded. */
+function Gauge({ value }: { value: number }) {
+  const v = Math.max(0, Math.min(100, value));
+  const color = v < 35 ? "var(--warn)" : v > 80 ? "var(--bad)" : "var(--ok)";
+  return (
+    <svg width="120" height="22" aria-label={`${Math.round(v)}% busy`}>
+      <rect x="0" y="6" width="120" height="10" rx="5" fill="var(--bg-3)" stroke="var(--line)" />
+      <rect x="0" y="6" width={42} height="10" rx="5" fill="var(--warn)" opacity="0.12" />
+      <rect x="96" y="6" width={24} height="10" fill="var(--bad)" opacity="0.12" />
+      <rect x="0" y="6" width={Math.max(2, (120 * v) / 100)} height="10" rx="5" fill={color} />
+    </svg>
+  );
+}
+
+/** Utilization over the whole run for every hardware option of the selected runs, from CloudWatch. */
+function RunUtilization({ runIds }: { runIds: string[] }) {
+  const [data, setData] = useState<Record<string, RunUtilization | { error: string }>>({});
+  useEffect(() => {
+    let alive = true;
+    for (const id of runIds) {
+      if (data[id]) continue;
+      api.utilization(id).then((u) => alive && setData((d) => ({ ...d, [id]: u }))).catch((e) => alive && setData((d) => ({ ...d, [id]: { error: (e as Error).message } })));
+    }
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runIds.join(",")]);
+  return (
+    <div className="card mt">
+      <h2>Utilization over the run <Help text="CPU busy (whole host), host memory, GPU busy and GPU memory for each test machine across the whole run, read from CloudWatch (the agent on every host samples every 10 seconds; CloudWatch keeps 1-minute averages for 15 days, 5-minute ones for 63). Shaded bands are the measurements, labelled with their load setting (requests at a time, × inputs per request for batches); the gaps between them are model loading, warm-up and waiting. A machine that stays low inside the bands at the heaviest load is bigger than the load needs." /></h2>
+      {runIds.map((id) => {
+        const u = data[id];
+        if (!u) return <Spinner key={id} label={`Reading CloudWatch for ${id}…`} />;
+        if ("error" in u && !("targets" in u)) return <Note key={id} kind="bad">{id}: {u.error}</Note>;
+        const run = u as RunUtilization;
+        return (
+          <div key={id} className="mt">
+            <div className="row between"><h3 style={{ margin: 0 }}>{id}</h3><span className="tiny muted">{run.retention_note ?? run.reason}</span></div>
+            {run.targets.length === 0 && <div className="small muted">{run.reason ?? "No hardware option recorded a measurement window."}</div>}
+            <div className="grid c2 mt">
+              {run.targets.map((t) => (
+                <div key={t.target} className={`tile ${t.accelerator}`} style={{ cursor: "default" }}>
+                  <div className="t"><Badge kind={t.accelerator}>{t.accelerator.toUpperCase()}</Badge> {t.instance_type ?? t.target}{t.spec ? <span className="muted small"> · {instanceLine(t.spec, true)}</span> : null}{t.scoped_to_run && t.instances > 1 ? <Badge kind="warn">{t.instances} instances (replaced during the run)</Badge> : null}{!t.scoped_to_run && t.hosts > 1 ? <Badge kind="warn" >{t.hosts} hosts published for this option in this window <Help text="The run did not record which instance served this hardware option, so the lines merge every host that reported under its id during the window: a replacement after a Spot interruption, or another run using the same option at the same time." /></Badge> : null}</div>
+                  <UtilizationTimeline t={t} />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function ExecutiveSummary({ runIds, sla, limit, models }: { runIds: string[]; sla: Record<string, number | string | null> | null; limit: number; models: string[] | null }) {
   const [model, setModel] = useState<{ name: string; call_id: string } | null>(null);

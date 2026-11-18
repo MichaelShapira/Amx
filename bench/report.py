@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality
+from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality, utilization
 from bench.cellspec import cell_key
 from bench.config import ModelSpec, ResolvedCell, RunConfig, load_targets
 
@@ -217,6 +217,7 @@ def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | N
         "effective_conc": m.get("effective_concurrency"),
         "usd_per_hour": usd,
         "cpu_util_mean": _g(m, "resources", "cpu", "mean"), "gpu_util_mean": _g(m, "resources", "gpu", "mean"),
+        "util": m.get("resources") or None,                    # host-level mean/p95/max per metric (bench/utilization.py)
         "amx": (amx_v or {}).get("verdict") if target.accelerator == "cpu" else "n/a",
         "amx_basis": (amx_v or {}).get("basis"), "effective_precision": (amx_v or {}).get("effective_precision",
                                                                                         c.precision),
@@ -250,8 +251,9 @@ def pooled_levels(inp: RunInputs) -> list[dict]:
         else:
             recs = [r for m in per for r in inp.raw_loader(ck, m["level_key"])]
             pooled = metrics.combine_repeats(per, recs, concurrency=per[0]["concurrency"], kind=per[0]["kind"])
-            for k in ("cell_key", "level_key", "batch", "workload", "resources"):
+            for k in ("cell_key", "level_key", "batch", "workload"):
                 pooled[k] = per[0].get(k)
+            pooled["resources"] = utilization.merge_stats([m.get("resources") or {} for m in per]) or None
         out.append(pooled)
     return out
 

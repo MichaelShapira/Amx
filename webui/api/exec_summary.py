@@ -18,12 +18,20 @@ Rules:
 - Capacity (how many CPU machines replace one GPU, and whether that is within the stated limit) is the
   decision criterion; cost is context.
 - Mention accuracy and answer-quality findings where present; speed alone is not a recommendation.
+- Say whether each machine was the right size, from "hardware_sizing": it gives, per hardware option, how
+  busy the GPU or CPU was at the heaviest load setting and a verdict (over = mostly idle, bigger than this
+  load needs; good = working hard with headroom; limit = fully used and still meeting the targets; under =
+  saturated and missing the targets; unknown = no samples). Quote the busy percentage. A mostly idle
+  machine means a smaller size would do for this load, or that the test's load was too light to show the
+  machine's limit; say which reading applies given the load settings tested. Never call a comparison
+  settled when one side was mostly idle and the other at its limit.
 - If "hardware_that_did_not_run" is not empty, say so in the first sentence of the bottom line: which side
   (GPU or CPU) did not run and why (no capacity), and that the other side's numbers therefore stand alone
   with no comparison and no GPU-vs-CPU verdict. Never present a one-sided result as a comparison.
 - Structure, with these exact headings in Markdown: "## Bottom line", "## What was tested",
-  "## Findings", "## Caveats", "## Recommendation", "## Suggested next step".
-- Bottom line: at most three sentences. Whole summary: at most 450 words.
+  "## Findings", "## Was the hardware the right size?", "## Caveats", "## Recommendation",
+  "## Suggested next step".
+- Bottom line: at most three sentences. Whole summary: at most 520 words.
 - Say "measurement" or "load setting", never "level"; say "repeated" rather than "passes".
 """
 
@@ -47,7 +55,10 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                                            "instances_per_gpu", "hourly_cost_ratio", "within_limit")}
                                                        for e in g["equivalence"]],
                        "measurements_not_meeting_targets": [f"{p['series']} at {p['conc']}: {p['reason']}"
-                                                            for p in g["points"] if not p["meets"]][:12]})
+                                                            for p in g["points"] if not p["meets"]][:12],
+                       "hardware_sizing": [{k: v.get(k) for k in ("series", "instance_type", "size", "verdict", "label", "load_top",
+                                                                   "util_top", "util_p95_top", "util_low", "meets_top", "notes")}
+                                           for v in g.get("sizing") or []]})
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
             "comparability": {k: comparability.get(k) for k in ("ok", "blockers", "warnings")},

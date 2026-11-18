@@ -220,12 +220,12 @@ def test_webapp_role_is_least_privilege(templates):
     for s in stmts:
         acts = [s["Action"]] if isinstance(s["Action"], str) else s["Action"]
         if s["Resource"] == "*":
-            assert all(a.split(":")[1].startswith(("Describe", "List", "GetAuthorizationToken")) for a in acts), acts
+            assert all(a.split(":")[1].startswith(("Describe", "List", "GetAuthorizationToken", "GetMetricData")) for a in acts), acts
         if "ec2:TerminateInstances" in acts:
             assert s["Condition"] == {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
         if "s3:ListBucket" in acts:
             assert set(s["Condition"]["StringLike"]["s3:prefix"]) == {"runs/*", "artifacts/prompts/*", "datasets/*",
-                                                                      "artifacts/dspm/*", "config/*"}
+                                                                      "artifacts/dspm/*", "config/*", "hosts/*"}
         if "s3:PutObject" in acts:
             text = json.dumps(s["Resource"])
             assert text.count("runs/*/run.yaml") == 1 or (        # Setup: the catalog object and a new model's pools

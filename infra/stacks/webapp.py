@@ -22,6 +22,7 @@ Shape (why each piece):
   prefixes, the live model catalog and the prompt pools the Setup page writes, the one table, the
   run state machine, EC2 terminate only on instances tagged bench:managed, the pre-check
   function's configuration, Claude and OpenAI models on Bedrock, the AgentCore web-search tool,
+  CloudWatch metric reads (the hosts' utilization),
   and the Hugging Face token secret (write, describe, and read for the onboarding job only).
 * AWS WAF on the distribution: AWS IP reputation list, the common rule set and a per-IP rate limit.
 
@@ -247,7 +248,7 @@ class WebAppStack(Stack):
     def _grant(self, role: iam.Role) -> None:
         core, acct, region = self.core, self.account, self.region
         bucket = core.bucket
-        read_prefixes = ["runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*", "config/*"]
+        read_prefixes = ["runs/*", "artifacts/prompts/*", "datasets/*", "artifacts/dspm/*", "config/*", "hosts/*"]
         role.add_to_policy(iam.PolicyStatement(
             sid="ListRunAndDataPrefixes", actions=["s3:ListBucket"], resources=[bucket.bucket_arn],
             conditions={"StringLike": {"s3:prefix": read_prefixes}}))
@@ -300,6 +301,9 @@ class WebAppStack(Stack):
         role.add_to_policy(iam.PolicyStatement(
             sid="ListBedrockModels", actions=["bedrock:ListFoundationModels", "bedrock:ListInferenceProfiles"],
             resources=["*"]))
+        # The Results page reads the test hosts' CPU/GPU/memory utilization over a run (the agent's
+        # AmxGpuBench namespace). GetMetricData supports no resource ARN or condition key: read-only, "*".
+        role.add_to_policy(iam.PolicyStatement(sid="ReadHostUtilization", actions=["cloudwatch:GetMetricData"], resources=["*"]))
         role.add_to_policy(iam.PolicyStatement(
             sid="WebSearchTool", actions=["bedrock-agentcore:InvokeWebSearch"],
             resources=[WEB_SEARCH_TOOL_ARN.format(region=region)]))

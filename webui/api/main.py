@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import catalog_store, pairing, report  # noqa: E402
+from bench import catalog_store, pairing, report, utilization  # noqa: E402
 from bench.config import RunConfig, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import GENERATIVE, levels_for_cell  # noqa: E402
@@ -1251,8 +1252,131 @@ def _summary(run_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(404, f"no report for {run_id}: {str(e)[:120]}") from e
     s = json.loads(body)
+    _backfill_util(run_id, s)
     _CACHE[key] = s
     return s
+
+
+def _run_metrics(run_id: str) -> list[dict]:
+    """Every measurement's metrics file (runs/<id>/metrics/<cell>/<level>.json), cached per run."""
+    key = f"metrics:{run_id}"
+    if key in _CACHE:
+        return _CACHE[key]
+    s3, bucket, out, skipped = aws.client("s3"), _outputs()["BucketName"], [], []
+    kw = {"Bucket": bucket, "Prefix": f"runs/{run_id}/metrics/"}
+    while True:
+        r = s3.list_objects_v2(**kw)
+        for o in r.get("Contents") or []:
+            if o["Key"].endswith(".json"):
+                try:
+                    out.append(json.loads(s3.get_object(Bucket=bucket, Key=o["Key"])["Body"].read()))
+                except Exception as e:  # noqa: BLE001 - one unreadable file loses one measurement's utilization, not the page
+                    skipped.append(f"{o['Key'].rsplit('/', 1)[-1]}: {type(e).__name__}")
+        if not r.get("IsTruncated"):
+            break
+        kw["ContinuationToken"] = r["NextContinuationToken"]
+    if skipped:
+        _CACHE[f"metrics_skipped:{run_id}"] = skipped
+    _CACHE[key] = out
+    return out
+
+
+def _backfill_util(run_id: str, summary: dict) -> None:
+    """Reports written before utilization was carried per row get it from the metrics files: the
+    resources of every repeat of a pooled row, merged (bench/utilization.merge_stats)."""
+    rows = summary.get("rows") or []
+    if not rows or all("util" in r for r in rows):
+        return
+    try:
+        by: dict[tuple[str, str], list[dict]] = {}
+        for m in _run_metrics(run_id):
+            if m.get("accuracy") or not m.get("level_key"):
+                continue
+            by.setdefault((m["cell_key"], report.group_key(m["level_key"])), []).append(utilization.legacy(m.get("resources")))
+        for r in rows:
+            if "util" not in r:
+                parts = by.get((r.get("cell_key"), r.get("level_group")), [])
+                r["util"] = utilization.merge_stats(parts) or None
+    except Exception as e:  # noqa: BLE001 - the report still renders without utilization
+        summary.setdefault("warnings", []).append(f"Utilization could not be read for this run: {type(e).__name__}")
+        for r in rows:
+            r.setdefault("util", None)
+
+
+def _run_hosts(run_id: str, target_id: str) -> list[str]:
+    """Hostnames (the CloudWatch `host` dimension) of the instances this run launched for one
+    hardware option: instance ids from runs/<id>/targets/<tid>.json, hostnames from the facts each
+    host uploaded at boot (hosts/<tid>/<iid>-<boot>.json, `uname`). Empty when either is missing."""
+    key = f"hosts:{run_id}:{target_id}"
+    if key in _CACHE:
+        return _CACHE[key]
+    s3, bucket, out = aws.client("s3"), _outputs()["BucketName"], []
+    try:
+        events = json.loads(s3.get_object(Bucket=bucket, Key=f"runs/{run_id}/targets/{target_id}.json")["Body"].read())
+        iids = sorted({e["instance_id"] for e in events if isinstance(e, dict) and e.get("instance_id")})
+        for iid in iids:
+            keys = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket, Prefix=f"hosts/{target_id}/{iid}-").get("Contents") or [])
+            if not keys:
+                continue
+            facts = json.loads(s3.get_object(Bucket=bucket, Key=keys[-1])["Body"].read())
+            parts = str(facts.get("uname") or "").split()
+            if len(parts) > 1 and parts[1].startswith("ip-"):
+                out.append(parts[1])
+    except Exception:  # noqa: BLE001 - no record: fall back to every host that served this hardware option
+        out = []
+    _CACHE[key] = out
+    return out
+
+
+@app.get("/api/runs/{run_id}/utilization")
+def get_utilization(run_id: str):
+    """CPU, memory and GPU utilization over the whole run, per hardware option, from CloudWatch
+    (1-minute points for 15 days, 5-minute ones for 63 days), with every measurement's window so
+    the chart can show which load setting was running when."""
+    if not RUN_ID.match(run_id):
+        raise HTTPException(400, "not a run id")
+    key = f"util:{run_id}"
+    if _CACHE.get(key, (0, None))[0] > time.time() - 600:
+        return _CACHE[key][1]
+    s = _summary(run_id)
+    mets = [m for m in _run_metrics(run_id) if m.get("window_wall_ns")]
+    if not mets:
+        out = {"run_id": run_id, "targets": [], "reason": "no measurement windows recorded for this run"}
+        _CACHE[key] = (time.time(), out)
+        return out
+    start = min(m["window_wall_ns"][0] for m in mets) / 1e9 - 120
+    end = max(m["window_wall_ns"][1] for m in mets) / 1e9 + 120
+    age_days = (time.time() - end) / 86400
+    period = 60 if age_days < 15 else 300 if age_days < 63 else 3600
+    cat = pairing.load_catalog()["instances"]
+    itypes = (s.get("run") or {}).get("instance_types") or {}
+    cw = aws.client("cloudwatch")
+    targets = []
+    for tid in sorted({m["target_id"] for m in mets if m.get("target_id")}):
+        hosts = _run_hosts(run_id, tid)                 # the run's own instances, by hostname (empty: not known)
+        try:
+            resp = cw.get_metric_data(MetricDataQueries=utilization.queries(tid, period, hosts=hosts or None), ScanBy="TimestampAscending",
+                                      StartTime=datetime.fromtimestamp(start, UTC), EndTime=datetime.fromtimestamp(end, UTC))
+            series = utilization.merge(resp.get("MetricDataResults", []))
+            error = None
+        except Exception as e:  # noqa: BLE001 - say so per hardware option; the page keeps the per-measurement numbers
+            series, error = {}, (aws.expired_sentence() if aws.is_expired(e) else f"{type(e).__name__}: {str(e)[:120]}")
+        itype = itypes.get(tid)
+        spec = cat.get(itype) if itype else None
+        windows = [{"level": report.group_key(m["level_key"]), "name": m.get("name"), "conc": m.get("conc"), "batch": m.get("batch") or 1,
+                    "start": m["window_wall_ns"][0] / 1e9, "end": m["window_wall_ns"][1] / 1e9}
+                   for m in mets if m.get("target_id") == tid]
+        targets.append({"target": tid, "instance_type": itype, "accelerator": (spec or {}).get("accelerator") or compare._accelerator(tid),
+                        "spec": spec, "series": utilization.compact(series, limit=600), "hosts": max([v["hosts"] for v in series.values()] or [0]),
+                        "scoped_to_run": bool(hosts), "instances": len(hosts),
+                        "gpu_mem_total_mib": max(series["gpu_mem_total"]["v"]) if series.get("gpu_mem_total", {}).get("v") else None,
+                        "windows": sorted(windows, key=lambda w: w["start"]), "error": error})
+    out = {"run_id": run_id, "start": start, "end": end, "period_s": period, "targets": targets,
+           "retention_note": ("1-minute averages; CloudWatch keeps them for 15 days after the run." if period == 60 else
+                              "5-minute averages: CloudWatch has aged out the 1-minute points (kept 15 days)." if period == 300 else
+                              "Hourly averages: the finer points have aged out of CloudWatch.")}
+    _CACHE[key] = (time.time(), out)
+    return out
 
 
 @app.get("/api/runs/{run_id}/summary")

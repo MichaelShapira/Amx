@@ -99,11 +99,28 @@ export interface SummaryInfo { run_id: string; shape: Shape; default_sla: Record
 
 export interface Accuracy { recall: number; recall_ci: [number, number]; fpr: number; fpr_ci: [number, number]; precision: number; f1: number; format_adherence: number; agreement_with_gpu: number | null; qualifies_vs_gpu: boolean | null; fit: boolean }
 export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; amx: string | null; accuracy: Accuracy | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
-export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; accuracy: Accuracy | null }
+/** How busy the hardware was during one measurement (host-level means of 10-second samples). */
+export interface PointUtil { busy_mean: number | null; busy_p95: number | null; busy_max: number | null; mem_max: number | null; gpu_mem_pct: number | null; cpu_mean: number | null; gpu_mean: number | null; cpu_scale?: number }
+export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; accuracy: Accuracy | null; util: PointUtil | null }
+/** Was the instance the right size for this load? One verdict per hardware option (bench/utilization.py). */
+export interface Sizing {
+  series: string; side: "gpu" | "cpu"; instance_type: string | null; engine: string | null; precision: string | null; size?: string;
+  verdict: "over" | "good" | "limit" | "under" | "unknown"; label: string; text: string; notes?: string[]; busy_basis?: string;
+  util_top?: number; util_p95_top?: number | null; util_low?: number; load_top?: string; meets_top?: boolean; measurements: number; with_samples: number;
+  points: { conc: number; batch: number; meets: boolean; util_mean: number | null; util_p95: number | null; mem_pct: number | null }[];
+}
+export interface UtilSeries { t: number[]; period_s: number | null; cpu?: (number | null)[]; mem?: (number | null)[]; gpu?: (number | null)[]; gpu_mem?: (number | null)[]; gpu_power?: (number | null)[] }
+export interface UtilTarget {
+  target: string; instance_type: string | null; accelerator: "gpu" | "cpu"; spec: InstanceSpec | null; series: UtilSeries | null; hosts: number;
+  scoped_to_run: boolean; instances: number;
+  gpu_mem_total_mib: number | null; windows: { level: string; name: string | null; conc: number; batch: number; start: number; end: number }[]; error: string | null;
+}
+export interface RunUtilization { run_id: string; start?: number; end?: number; period_s?: number; targets: UtilTarget[]; retention_note?: string; reason?: string }
 export interface Group {
   key: string; label: string; units: { thr: string; thr_label: string; cost: string; cost_label: string; lat: string; lat_label: string; lat_sla: string };
   best_gpu: Card | null; best_cpu: Card | null;
   verdict: { text: string; instances_per_gpu?: number; hourly_cost_ratio?: number; within_limit: boolean | null; limit?: number; missing_side?: "gpu" | "cpu" } | null;
+  sizing: Sizing[];
   equivalence: { series: string; instance_type: string; precision: string; conc: number; instances_per_gpu: number; hourly_cost_ratio: number; within_limit: boolean; run_id: string }[];
   points: Point[]; series: string[]; missing: { gpu: string | null; cpu: string | null };
 }
@@ -178,6 +195,7 @@ export const api = {
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
   stop: (id: string) => j<any>(`/api/runs/${id}/stop`, { method: "POST" }),
   summary: (id: string) => j<SummaryInfo>(`/api/runs/${id}/summary`),
+  utilization: (id: string) => j<RunUtilization>(`/api/runs/${id}/utilization`),
   /** The Markdown report, fetched with the session token and saved as a file (a plain link cannot carry the token). */
   downloadReport: async (id: string) => {
     const token = await accessToken();

@@ -1,0 +1,199 @@
+"""Hardware utilization: the CloudWatch queries, merging across hosts, the per-measurement
+statistics and the sizing verdict; the API's time series and the summary backfill (moto)."""
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import pytest
+
+from bench import utilization as U
+
+T0 = dt.datetime(2026, 11, 18, 7, 20, tzinfo=dt.UTC)
+
+
+def ts(i: int) -> dt.datetime:
+    return T0 + dt.timedelta(seconds=10 * i)
+
+
+def test_queries_search_by_target_id_at_host_level_and_never_name_a_host():
+    q = U.queries("t2-m8i-4xl", 10)
+    assert [x["Id"] for x in q] == ["cpu", "mem", "gpu", "gpu_mem", "gpu_mem_total", "gpu_power"]
+    cpu = q[0]["Expression"]
+    assert cpu.startswith("SEARCH('{AmxGpuBench,cpu,host,target_id} MetricName=\"cpu_usage_active\" cpu=\"cpu-total\" target_id=\"t2-m8i-4xl\"'")
+    assert cpu.endswith("'Average', 10)") and "host=" not in cpu
+    assert "'Maximum', 60)" in U.queries("t1-g6", 60, ("gpu_mem_total",))[0]["Expression"]
+    assert 'target_id="x"' in U.queries('x"', 10, ("mem",))[0]["Expression"]          # a quote cannot break out of the filter
+    scoped = U.queries("t2", 60, ("cpu", "mem"), hosts=["ip-10-40-1-1.ec2.internal", 'ip-10-40-2-2"'])
+    assert [q["Id"] for q in scoped] == ["cpu__0", "cpu__1", "mem__0", "mem__1"]
+    assert ' host="ip-10-40-1-1.ec2.internal" target_id="t2"' in scoped[0]["Expression"] and ' host="ip-10-40-2-2" ' in scoped[1]["Expression"]
+    merged = U.merge([{"Id": "cpu__0", "Label": "a", "Timestamps": [ts(0)], "Values": [10.0]}, {"Id": "cpu__1", "Label": "b", "Timestamps": [ts(1)], "Values": [20.0]}])
+    assert merged["cpu"]["v"] == [10.0, 20.0] and merged["cpu"]["hosts"] == 2
+
+
+def test_merge_combines_hosts_by_timestamp_and_stats_are_of_period_averages():
+    res = [
+        {"Id": "cpu", "Label": "cpu-total ip-a t2", "Timestamps": [ts(0), ts(1), ts(2)], "Values": [10.0, 30.0, 50.0]},
+        {"Id": "cpu", "Label": "cpu-total ip-b t2", "Timestamps": [ts(2), ts(3)], "Values": [70.0, 90.0]},   # a replacement host
+        {"Id": "cpu", "Label": "cpu-total ip-old t2", "Timestamps": [], "Values": []},                         # an earlier run's host
+        {"Id": "gpu_mem", "Label": "L4", "Timestamps": [ts(0), ts(1)], "Values": [1000.0, 3000.0]},
+        {"Id": "gpu_mem_total", "Label": "L4", "Timestamps": [ts(0), ts(1)], "Values": [23034.0, 23034.0]},
+    ]
+    series = U.merge(res)
+    assert series["cpu"]["v"] == [10.0, 30.0, 60.0, 90.0] and series["cpu"]["hosts"] == 2       # overlap at ts(2) averaged
+    st = U.summarize(series)
+    assert st["cpu"] == {"mean": 47.5, "p95": 90.0, "max": 90.0, "n": 4}
+    assert st["gpu_mem"]["max"] == 3000.0 and st["gpu_mem"]["total"] == 23034.0 and "gpu_mem_total" not in st
+    c = U.compact(series)
+    assert c["t"] == [int(ts(i).timestamp()) for i in range(4)] and c["cpu"] == [10.0, 30.0, 60.0, 90.0]
+    assert c["gpu_mem"] == [1000.0, 3000.0, None, None] and c["period_s"] == 10 and "gpu_mem_total" not in c
+    assert U.summarize({}) == {} and U.compact({}) is None and U.stats([]) is None
+
+
+def test_compact_thins_long_series_evenly():
+    series = {"cpu": {"t": [float(i) for i in range(1000)], "v": [float(i % 100) for i in range(1000)], "hosts": 1}}
+    c = U.compact(series, limit=100)
+    assert len(c["t"]) == 100 and c["t"][0] == 0 and c["t"][-1] == 990 and c["period_s"] == 10
+
+
+def test_merge_stats_pools_repeats_and_legacy_rows_keep_only_their_mean():
+    a = {"cpu": {"mean": 20.0, "p95": 40.0, "max": 50.0, "n": 10}, "gpu_mem": {"mean": 1.0, "p95": 2.0, "max": 2.0, "n": 10, "total": 23034.0}}
+    b = {"cpu": {"mean": 40.0, "p95": 60.0, "max": 90.0, "n": 30}}
+    m = U.merge_stats([a, b, {}])
+    assert m["cpu"] == {"mean": 35.0, "p95": 60.0, "max": 90.0, "n": 40} and m["gpu_mem"]["total"] == 23034.0
+    assert U.merge_stats([{}, None]) == {}
+    # Before 2026-11-18 p95/max were the busiest single core (100% on every CPU host): dropped, the mean stands.
+    old = U.legacy({"cpu": {"mean": 34.0, "p95": 97.0, "max": 100.0}, "mem": {"mean": 7.0, "p95": 7.0, "max": 7.0}, "gpu": {}})
+    assert old == {"cpu": {"mean": 34.0}, "mem": {"mean": 7.0}}
+    assert U.merge_stats([old, U.legacy({"cpu": {"mean": 36.0, "max": 100.0}})])["cpu"] == {"mean": 35.0}
+    assert U.legacy(None) == {} and U.legacy({"cpu": {"mean": 5.0, "p95": 6.0, "max": 7.0, "n": 3}})["cpu"]["p95"] == 6.0
+
+
+def test_cpu_busy_is_the_share_of_physical_cores():
+    assert U.cpu_scale(CPU_SPEC) == 2.0 and U.cpu_scale(GPU_SPEC) == 1.0 and U.cpu_scale(None) == 1.0
+    r = row("cpu", 4, 1, 45.0)                       # 45% of 32 vCPUs = 90% of the 16 physical cores
+    assert U.busy(r, "cpu", 2.0) == {"mean": 90.0, "p95": 100.0, "max": 100.0}
+    assert U.busy(row("cpu", 4, 1, None), "cpu", 2.0) == {"mean": None, "p95": None, "max": None}
+
+
+def row(side, conc, batch=1, busy=None, meets=True, engine="vllm", mem=None, gmem=None, total=None):
+    label = "gpu" if side == "gpu" else "cpu"
+    util = {}
+    if busy is not None:
+        util[label] = {"mean": busy, "p95": min(100.0, busy + 15), "max": 100.0, "n": 5}
+    if mem is not None:
+        util["mem"] = {"mean": mem, "p95": mem, "max": mem, "n": 5}
+    if gmem is not None:
+        util["gpu_mem"] = {"mean": gmem, "p95": gmem, "max": gmem, "n": 5, "total": total}
+    return {"accelerator": side, "instance_type": "c8i.8xlarge" if side == "cpu" else "g6.2xlarge", "engine": engine, "precision": "bf16",
+            "conc": conc, "batch": batch, "meets_user_sla": meets, "util": util or None}
+
+
+CPU_SPEC = {"vcpus": 32, "memory_gib": 64.0, "accelerator": "cpu"}
+GPU_SPEC = {"gpus": 1, "gpu_model": "L4", "gpu_memory_gib": 22.0, "accelerator": "gpu"}
+
+
+def test_sizing_verdicts_read_from_the_heaviest_load_setting():
+    over = U.sizing([row("cpu", 1, 8, 10.0), row("cpu", 1, 32, 14.0), row("cpu", 4, 32, 15.5)], CPU_SPEC)    # host %, x2 = cores
+    assert over["verdict"] == "over" and over["load_top"] == "4 requests at a time, 32 inputs per request"
+    assert "busy 31% of the time on average, 61% at its busiest" in over["text"] and "smaller CPU size" in over["text"]
+    assert "barely moved" not in over["text"] and over["size"] == "32 vCPUs, 64 GiB"
+    assert [p["conc"] for p in over["points"]] == [1, 1, 4] and over["points"][2]["util_mean"] == 31.0
+    assert over["busy_basis"].startswith("share of its 16 physical cores") and any("16 physical cores" in n for n in over["notes"])
+
+    flat = U.sizing([row("cpu", 1, 1, 6.0), row("cpu", 16, 1, 9.0)], CPU_SPEC)
+    assert flat["verdict"] == "over" and "barely moved between the lightest (12%)" in flat["text"]
+    busier_light = U.sizing([row("gpu", 1, 1, 31.0), row("gpu", 16, 1, 17.0)], GPU_SPEC)            # the Qwen run's GPU
+    assert busier_light["verdict"] == "over" and "barely moved" not in busier_light["text"]
+    assert "busier at the lightest load setting (31%)" in busier_light["text"] and "limit elsewhere" in busier_light["text"]
+
+    good = U.sizing([row("gpu", 1, 1, 30.0), row("gpu", 16, 1, 62.0)], GPU_SPEC)
+    assert good["verdict"] == "good" and "room left over" in good["text"] and good["size"] == "1x L4 with 22 GiB"
+
+    limit = U.sizing([row("gpu", 16, 1, 92.0, meets=True)], GPU_SPEC)
+    assert limit["verdict"] == "limit" and "still meeting your targets" in limit["text"]
+
+    under = U.sizing([row("cpu", 16, 1, 48.0, meets=False, engine="thin-torch")], CPU_SPEC)     # 48% of vCPUs = 96% of cores
+    assert under["verdict"] == "under" and "too small for this load" in under["text"] and under["util_top"] == 96.0
+    assert U.sizing([row("gpu", 16, 1, 62.0)], GPU_SPEC)["busy_basis"] == "GPU busy time"
+
+    unknown = U.sizing([row("cpu", 1, 1, None), row("cpu", 4, 1, None)], CPU_SPEC)
+    assert unknown["verdict"] == "unknown" and unknown["with_samples"] == 0 and unknown["measurements"] == 2
+    assert U.sizing([], None) is not None and U.sizing([], None)["verdict"] == "unknown"
+
+
+def test_sizing_notes_memory_and_explains_vllm_reservation():
+    v = U.sizing([row("gpu", 4, 1, 50.0, engine="vllm", gmem=20700.0, total=23034.0)], GPU_SPEC)
+    assert any("vLLM reserves most" in n and "90%" in n for n in v["notes"])
+    v = U.sizing([row("gpu", 4, 1, 50.0, engine="thin-torch", gmem=4000.0, total=23034.0)], GPU_SPEC)
+    assert any("most of it unused" in n for n in v["notes"])
+    v = U.sizing([row("cpu", 4, 1, 25.0, mem=91.0)], CPU_SPEC)
+    assert any("Host memory peaked at 91%" in n for n in v["notes"])
+    v = U.sizing([row("cpu", 4, 1, 25.0, mem=69.0, engine="vllm")], CPU_SPEC)
+    assert any("vLLM reserves space for its cache" in n for n in v["notes"])
+
+
+def test_sizing_for_rows_groups_by_series_gpu_first():
+    rows = [{**row("cpu", 1, 1, 20.0), "run_id": "r"}, {**row("gpu", 1, 1, 10.0), "run_id": "r"}, {**row("cpu", 8, 1, 30.0), "run_id": "r"}]
+    out = U.sizing_for_rows(rows, lambda r: f"{r['accelerator']}·{r['instance_type']}", lambda t: GPU_SPEC if t.startswith("g") else CPU_SPEC)
+    assert [v["series"] for v in out] == ["gpu·g6.2xlarge", "cpu·c8i.8xlarge"] and out[1]["verdict"] == "good" and out[1]["measurements"] == 2
+
+
+# ----------------------------------------------------------------------------- through the API
+
+pytest.importorskip("fastapi")
+
+
+def test_compare_carries_utilization_sizing_and_the_summary_backfills_old_reports(monkeypatch):
+    import boto3
+    import moto
+    from fastapi.testclient import TestClient
+
+    from webui.api import main
+    from webui.api.main import app
+
+    c = TestClient(app)
+    bucket = "amx-gpu-bench-123456789012-us-east-1"
+    rows = []
+    for conc in (1, 16):
+        rows.append({"model": "m3-roberta-large-mnli", "slot": "M3", "license": "mit", "target": "t2-m8i-4xl", "target_label": "x",
+                     "instance_type": "c8i.8xlarge", "accelerator": "cpu", "engine": "vllm", "precision": "bf16", "variant": None,
+                     "workload": None, "bucket": None, "conc": conc, "batch": 8, "repeats": 2, "kind": "classifier", "n_ok": 50,
+                     "n_requests": 50, "e2e_p50": 40.0, "e2e_p99": 80.0, "cls_s": 100.0 * conc, "usd_per_hour": 1.5, "error_pct": 0,
+                     "amx": "VERIFIED", "usd_per_1m_items": 4.0, "cell_key": "m3__t2__bf16", "level_group": f"m3__t2__bf16__short__c{conc}__b8"})
+    summary = {"run_id": "r-util", "rows": rows, "smoke": True, "run": {"suite": "standard", "concurrency": [1, 16], "instance_types": {"t2-m8i-4xl": "c8i.8xlarge"}}}
+    with moto.mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=bucket)
+        s3.put_object(Bucket=bucket, Key="runs/r-util/report/summary.json", Body=json.dumps(summary).encode())
+        for i, (conc, rep, busy) in enumerate(((1, 0, 10.0), (1, 1, 14.0), (16, 0, 55.0), (16, 1, 61.0))):
+            m = {"cell_key": "m3__t2__bf16", "level_key": f"m3__t2__bf16__short__c{conc}__b8__r{rep}", "target_id": "t2-m8i-4xl",
+                 "name": "short", "conc": conc, "batch": 8, "repeat": rep, "window_wall_ns": [1_763_452_800_000_000_000 + i * 10**11, 1_763_452_860_000_000_000 + i * 10**11],
+                 "resources": {"cpu": {"mean": busy, "p95": busy + 20, "max": 100.0, "n": 6}, "mem": {"mean": 8.0, "p95": 9.0, "max": 9.0, "n": 6}}}
+            s3.put_object(Bucket=bucket, Key=f"runs/r-util/metrics/m3__t2__bf16/{m['level_key']}.json", Body=json.dumps(m).encode())
+        s3.put_object(Bucket=bucket, Key="runs/r-util/targets/t2-m8i-4xl.json", Body=json.dumps([
+            {"event": "launched", "instance_id": "i-aaa"}, {"event": "replaced", "instance_id": "i-bbb"}]).encode())
+        s3.put_object(Bucket=bucket, Key="hosts/t2-m8i-4xl/i-aaa-20261118T070000Z.json", Body=json.dumps({"uname": "Linux ip-10-40-1-1.ec2.internal 6.12 x86_64"}).encode())
+        s3.put_object(Bucket=bucket, Key="hosts/t2-m8i-4xl/i-bbb-20261118T073000Z.json", Body=json.dumps({"uname": "Linux ip-10-40-2-2.ec2.internal 6.12 x86_64"}).encode())
+        monkeypatch.setattr(main, "_outputs", lambda: {"BucketName": bucket, "RunStateMachineArn": "arn:aws:states:us-east-1:1:stateMachine:x"})
+        for k in list(main._CACHE):
+            if k.startswith(("summary:", "metrics:", "util:", "hosts:")):
+                main._CACHE.pop(k)
+        out = c.post("/api/compare", json={"run_ids": ["r-util"]}).json()
+        g = out["analysis"]["groups"][0]
+        # backfilled from the metrics files, merged over repeats, CPU as the share of c8i.8xlarge's 16 physical cores (x2)
+        assert g["points"][0]["util"]["busy_mean"] == 24.0 and g["points"][1]["util"]["busy_p95"] == 100.0 and g["points"][0]["util"]["cpu_mean"] == 12.0
+        assert g["points"][1]["util"]["mem_max"] == 9.0
+        s = g["sizing"]
+        assert len(s) == 1 and s[0]["verdict"] == "limit" and s[0]["util_top"] == 100.0 and s[0]["side"] == "cpu"
+        assert s[0]["load_top"] == "16 requests at a time, 8 inputs per request" and s[0]["size"] == "32 vCPUs, 64 GiB"
+        # The time series endpoint: moto has no SEARCH data, so each hardware option reports an empty series, never a 500.
+        u = c.get("/api/runs/r-util/utilization").json()
+        assert u["period_s"] in (60, 300, 3600) and [t["target"] for t in u["targets"]] == ["t2-m8i-4xl"]
+        t = u["targets"][0]
+        assert t["instance_type"] == "c8i.8xlarge" and t["accelerator"] == "cpu" and len(t["windows"]) == 4
+        assert t["scoped_to_run"] and t["instances"] == 2                                  # the run's own two hosts, by name
+        assert main._run_hosts("r-util", "t2-m8i-4xl") == ["ip-10-40-1-1.ec2.internal", "ip-10-40-2-2.ec2.internal"]
+        assert main._run_hosts("r-util", "t9-none") == []
+        assert [w["conc"] for w in t["windows"]] == [1, 1, 16, 16] and t["windows"][0]["level"] == "m3__t2__bf16__short__c1__b8"
+        assert c.get("/api/runs/no.such/utilization").status_code == 404 and c.get("/api/runs/bad id/utilization").status_code == 400

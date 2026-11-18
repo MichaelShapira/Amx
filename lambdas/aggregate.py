@@ -7,11 +7,10 @@ import os
 import time
 from typing import Any
 
-from bench import metrics
+from bench import metrics, utilization
 from lambdas import common
 
-CW_METRICS = (("cpu_usage_active", "cpu"), ("mem_used_percent", "mem"), ("nvidia_smi_utilization_gpu", "gpu"),
-              ("nvidia_smi_memory_used", "gpu_mem"), ("nvidia_smi_power_draw", "gpu_power"))
+
 def _publish_delay_s() -> float:
     """Agent force-flush interval (60 s) plus its publish jitter (up to ~60 s); 0 in tests."""
     return float(os.environ.get("AGENT_PUBLISH_DELAY_S", "130"))
@@ -31,30 +30,18 @@ def level_records(run_id: str, cell_key: str, level_key: str) -> list[dict]:
     return recs
 
 
-def resources(target_id: str, start_ns: int, end_ns: int) -> dict:
-    """Mean, P95 and max of the CloudWatch agent metrics over the level window (design 13)."""
+def resources(target_id: str, start_ns: int, end_ns: int) -> tuple[dict, dict | None]:
+    """Host-level utilization over the level window (design 13): mean, P95 and max of the 10-second
+    averages per metric (CPU for the whole host, not per core), plus the compact time series. The
+    metrics are found by target_id across whatever host served it (bench/utilization.py)."""
     if end_ns <= start_ns:
-        return {}
+        return {}, None
     start = dt.datetime.fromtimestamp(start_ns / 1e9, dt.UTC)
     end = dt.datetime.fromtimestamp(end_ns / 1e9, dt.UTC) + dt.timedelta(seconds=10)
-    queries = []
-    for i, (name, _) in enumerate(CW_METRICS):
-        for stat in ("Average", "p95", "Maximum"):
-            queries.append({"Id": f"m{i}_{stat.lower()}", "MetricStat": {
-                "Metric": {"Namespace": "AmxGpuBench", "MetricName": name,
-                           "Dimensions": [{"Name": "target_id", "Value": target_id}]},
-                "Period": 10, "Stat": stat}, "ReturnData": True})
-    resp = common.client("cloudwatch").get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
-    out: dict[str, dict] = {}
-    for r in resp.get("MetricDataResults", []):
-        idx, stat = r["Id"][1:].split("_", 1)
-        label = CW_METRICS[int(idx)][1]
-        vals = r.get("Values") or []
-        if not vals:
-            continue
-        agg = max(vals) if stat in ("maximum", "p95") else sum(vals) / len(vals)
-        out.setdefault(label, {})[{"average": "mean", "p95": "p95", "maximum": "max"}[stat]] = agg
-    return out
+    resp = common.client("cloudwatch").get_metric_data(MetricDataQueries=utilization.queries(target_id, 10),
+                                                       StartTime=start, EndTime=end, ScanBy="TimestampAscending")
+    series = utilization.merge(resp.get("MetricDataResults", []))
+    return utilization.summarize(series), utilization.compact(series)
 
 
 def aggregate_level(event: dict, context: Any = None) -> dict:
@@ -78,7 +65,7 @@ def aggregate_level(event: dict, context: Any = None) -> dict:
             wait = delay - (time.time() - end / 1e9)
             if wait > 0:
                 time.sleep(min(wait, delay))
-            summary["resources"] = resources(lvl["target_id"], start, end)
+            summary["resources"], summary["resources_series"] = resources(lvl["target_id"], start, end)
         except Exception as e:  # noqa: BLE001 - resource metrics are context, not a reason to fail the level
             summary["resources_error"] = str(e)[:300]
     perf = (event.get("perf") or {}).get("counts")

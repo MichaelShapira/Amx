@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from bench import pairing, report
+from bench import pairing, report, utilization
 from webui.api.catalog import MODELS, PRESETS, PROMPT_SETS, WORKLOADS
 
 # ----------------------------------------------------------------------------- run shape
@@ -141,6 +141,23 @@ def _series_name(r: dict) -> str:
     side = "GPU" if r["accelerator"] == "gpu" else "CPU"
     eng = {"vllm": "vLLM", "ovms": "OpenVINO", "thin-openvino": "OpenVINO", "thin-torch": "PyTorch"}.get(r["engine"], r["engine"])
     return f"{side} · {r['instance_type']} · {eng} · {r['precision']}"
+
+
+def _util_point(r: dict) -> dict | None:
+    """The utilization a chart point carries: the side's own processor (CPU as the share of physical
+    cores, bench/utilization.cpu_scale), host memory, GPU memory."""
+    u = r.get("util") or {}
+    if not u:
+        return None
+    label = "gpu" if r["accelerator"] == "gpu" else "cpu"
+    scale = utilization.cpu_scale(pairing.spec(r.get("instance_type"))) if label == "cpu" else 1.0
+    own = utilization.busy(r, label, scale)
+    gm = u.get("gpu_mem") or {}
+    gm_val = gm.get("max", gm.get("mean"))
+    mem = u.get("mem") or {}
+    return {"busy_mean": own["mean"], "busy_p95": own["p95"], "busy_max": own["max"], "mem_max": mem.get("max", mem.get("mean")),
+            "gpu_mem_pct": (100 * gm_val / gm["total"]) if gm_val is not None and gm.get("total") else None,
+            "cpu_mean": (u.get("cpu") or {}).get("mean"), "gpu_mean": (u.get("gpu") or {}).get("mean"), "cpu_scale": scale}
 
 
 def _best(rows: list[dict], thr: str):
@@ -277,10 +294,12 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                    "instance_type": r["instance_type"], "precision": r["precision"], "engine": r["engine"],
                    "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99"), "ttft_p99": r.get("ttft_p99"),
                    "tpot_p50": r.get("tpot_p50"), "req_s": r.get("req_s"), "error_pct": r.get("error_pct"),
-                   "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy")}
+                   "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy"),
+                   "util": _util_point(r)}
                   for r in grows]
+        sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t))
         out_groups.append({"key": g["key"], "label": g["label"], "units": u, "best_gpu": card(best_gpu), "best_cpu": card(best_cpu),
-                           "verdict": verdict, "equivalence": equivalence, "points": points,
+                           "verdict": verdict, "equivalence": equivalence, "points": points, "sizing": sizing,
                            "missing": {"gpu": (missing_side.get("gpu") or {}).get("reason") if not gpu_rows else None,
                                        "cpu": (missing_side.get("cpu") or {}).get("reason") if not cpu_rows else None},
                            "series": sorted({_series_name(r) for r in grows})})
