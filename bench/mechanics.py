@@ -57,8 +57,18 @@ def _shape(rows: list[dict]) -> dict:
     if gen:
         tin = (r.get("agg_in_tok_s") or 0) / req_s if req_s else None
         tout = (r.get("agg_out_tok_s") or 0) / req_s if req_s else None
-        write_ms = (r.get("tpot_p50") or 0) * max((tout or 1) - 1, 0)
-        share = min(1.0, write_ms / r["e2e_p50"]) if r.get("e2e_p50") else None
+        ttft, tpot, e2e = r.get("ttft_p50"), r.get("tpot_p50"), r.get("e2e_p50")
+        if ttft and tpot and e2e and e2e > ttft:
+            # Per-request medians, not the aggregate ratio: the steady-state window counts the tokens of requests
+            # that straddle it but only the requests that finish inside it, so agg_tok_s / req_s overstates the
+            # per-request token count at high concurrency (186 for a 128/128 run with 50 requests).
+            if r.get("prefill_tok_s_p50"):
+                tin = r["prefill_tok_s_p50"] * ttft / 1000
+            tout = 1 + (e2e - ttft) / tpot
+            share = 1 - ttft / e2e
+        else:
+            write_ms = (tpot or 0) * max((tout or 1) - 1, 0)
+            share = min(1.0, write_ms / e2e) if e2e else None
     else:
         items_s = r.get("cls_s") or 0
         tin = (r.get("agg_in_tok_s") or 0) / items_s if items_s else None

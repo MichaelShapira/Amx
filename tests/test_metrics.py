@@ -89,6 +89,22 @@ def test_low_effective_concurrency_flagged():
     assert any(f.startswith("effective_concurrency") for f in s["flags"])
 
 
+def test_short_window_flagged_when_a_worker_has_fewer_than_three_requests():
+    # 50 requests over 32 workers: 18 workers get two, 14 get one; the window closes after one request.
+    recs = []
+    for i in range(50):
+        w = i % 32
+        s = (i // 32) * 40
+        recs.append(rec(w, s, s + 5, s + 30, s + 36))
+    s = m.summarize_level(recs, concurrency=32)
+    assert "short_window_1_requests_per_worker" in s["flags"]
+    # Three or more per worker is a steady-state window; concurrency 1 is never flagged.
+    recs = [rec(0, i * 40, i * 40 + 5, i * 40 + 30, i * 40 + 36) for i in range(3)] + \
+           [rec(1, i * 40, i * 40 + 5, i * 40 + 30, i * 40 + 36) for i in range(3)]
+    assert not any(f.startswith("short_window") for f in m.summarize_level(recs, concurrency=2)["flags"])
+    assert not any(f.startswith("short_window") for f in m.summarize_level([rec(0, 0, 5, 30, 36)], concurrency=1)["flags"])
+
+
 def test_start_spread_flag():
     recs = [rec(0, 0, 10, 90, 100), rec(1, 400, 410, 490, 500)]
     assert any(f.startswith("start_spread") for f in m.wave_flags(recs))

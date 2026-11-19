@@ -21,6 +21,7 @@ START_SPREAD_FLAG_MS = 250.0
 LATE_WORKER_MS = 2000.0
 LATE_WAVE_FRACTION = 0.10
 EFFECTIVE_CONC_FLAG = 0.9
+MIN_REQUESTS_PER_WORKER = 3
 CV_FLAG = 0.10
 
 
@@ -209,6 +210,15 @@ def summarize_level(records: Sequence[dict], *, concurrency: int, kind: str = "g
     eff = out["effective_concurrency"]
     if eff is not None and eff < EFFECTIVE_CONC_FLAG * concurrency:
         flags.append(f"effective_concurrency_{eff:.2f}")
+    # The window ends when the first worker runs out of requests; with fewer than MIN_REQUESTS_PER_WORKER each,
+    # it spans about one request and the throughput is not a steady-state figure (50 requests at c32 gave a GPU
+    # 57 items/s where c8 gave 422).
+    per_worker: dict = defaultdict(int)
+    for r in records:
+        per_worker[r.get("worker")] += 1
+    fewest = min(per_worker.values()) if per_worker else 0
+    if concurrency > 1 and fewest < MIN_REQUESTS_PER_WORKER:
+        flags.append(f"short_window_{fewest}_requests_per_worker")
     out["flags"] = sorted(set(flags))
     return out
 

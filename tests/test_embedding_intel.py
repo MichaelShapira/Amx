@@ -178,6 +178,13 @@ def test_mechanics_explains_reading_versus_writing():
     assert gpu["bandwidth_gb_s"] == 300 and 215 < gpu["implied_bandwidth_gb_s"] < 217
     assert cpu["top_conc"] == 16 and cpu["achieved_tflops"] == pytest.approx(16 * 8e9 / 0.150 / 1e12)
     assert "memory is 2.8x faster" in m["why"] and "mostly writing" in m["why"]
+    # With per-request medians present the shape comes from them, not from agg_tok_s / req_s, which overstates the
+    # per-request token count at high concurrency (the live 128/128 Intel smoke run read as 186/185, 100% writing).
+    live = [{"model": "m", "accelerator": "gpu", "instance_type": "g6.xlarge", "engine": "vllm", "precision": "bf16", "kind": "generation",
+             "conc": 16, "batch": 1, "req_s": 7.07, "agg_in_tok_s": 909.9, "agg_out_tok_s": 904.7, "ttft_p50": 141.96, "tpot_p50": 16.688,
+             "e2e_p50": 2260.85, "prefill_tok_s_p50": 905.5, "workload": None}]
+    m3 = mechanics.explain_group(live, params, hosts, instances)["shape"]
+    assert 127 <= m3["input_tokens"] <= 129 and 127 <= m3["output_tokens"] <= 129 and 0.93 < m3["writing_share"] < 0.95
     emb = [{"model": "m", "accelerator": "cpu", "instance_type": "m8i.4xlarge", "engine": "vllm", "precision": "bf16", "kind": "classifier",
             "conc": 8, "batch": 8, "req_s": 10, "cls_s": 80, "agg_in_tok_s": 3200, "workload": None, "e2e_p50": 100}]
     m2 = mechanics.explain_group(emb, params, hosts, instances)

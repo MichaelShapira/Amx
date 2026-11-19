@@ -649,7 +649,7 @@ def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
             w.append(f"{cells[ck].cell_id}: quality flag: {q['flag']}")
     for r in rows:
         for f in (r["flags"] or "").split(";"):
-            if f.startswith(("prompt_token_mismatch", "cv_", "output_length_mismatch", "effective_concurrency")):
+            if f.startswith(("prompt_token_mismatch", "cv_", "output_length_mismatch", "effective_concurrency", "short_window")):
                 w.append(f"{r['model']} {r['target']} {r['precision']} c{r['conc']}: {f}")
     return w
 
