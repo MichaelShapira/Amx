@@ -226,6 +226,97 @@ def build_quality_sets(models, out: Path, cache: Path, seed: int, token):
     return manifest
 
 
+def build_embedding_sets(models, items: list[dict], dataset_manifest: dict, out: Path, token) -> dict:
+    """Embedding pools: every corpus text (translation corpus, all three languages) of a size, with the
+    model's document prefix, under prompts/generated/<model>/embed-<size>.jsonl. item_id is
+    "<corpus id>:<lang>" so the report can score cross-lingual retrieval against the corpus."""
+    from bench.embedding import LANGUAGES, SIZES, item_key
+
+    manifest = {}
+    for m in models:
+        if m.type != "embedding":
+            continue
+        tok = tokenizer_for(m, token)
+        prefix = m.embedding.prefix if m.embedding else ""
+        max_len = m.embedding.max_length if m.embedding else m.max_input_tokens
+        for size in SIZES:
+            rng = random.Random(f"embed|{size}")
+            rows = []
+            for it in items:
+                if it["size"] != size:
+                    continue
+                for lang in LANGUAGES:
+                    text = it["text"][lang]
+                    rows.append({"item_id": item_key(it["id"], lang), "lang": lang, "size": size, "input": prefix + text,
+                                 "prompt_tokens_expected": min(count_tokens(tok, prefix + text), max_len), "chars": len(text)})
+            rng.shuffle(rows)                                        # any prefix is a fair language mix
+            for k, r in enumerate(rows):
+                r["id"] = f"embed-{size}-{k:04d}"
+            path = out / m.id / f"embed-{size}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows)
+            path.write_text(data, encoding="utf-8")
+            toks = [x["prompt_tokens_expected"] for x in rows]
+            manifest[f"{m.id}/embed-{size}"] = {"n": len(rows), "size": size, "min_tokens": min(toks), "max_tokens": max(toks),
+                                                "languages": list(LANGUAGES), "sha256": hashlib.sha256(data.encode()).hexdigest(),
+                                                "dataset_sha256": dataset_manifest["dataset_sha256"]}
+            print(f"{m.id}/embed-{size}: {len(rows)} texts, {min(toks)}-{max(toks)} tokens")
+    return manifest
+
+
+INTEL_INPUT_TOKENS = (128, 2048)
+INTEL_POOL_SIZE = 512
+
+
+def random_prompt(tok, rng: random.Random, n_tokens: int, model) -> tuple[str, int]:
+    """A prompt of about n_tokens tokens made of random vocabulary tokens, the way `vllm bench serve
+    --dataset-name random` builds its requests: sample ids, decode to text, re-count as the server will."""
+    from bench.prompts import render
+
+    special = set(tok.all_special_ids or [])
+    vocab = tok.vocab_size
+    ids = [i for i in (rng.randrange(vocab) for _ in range(n_tokens * 2)) if i not in special][:n_tokens]
+    text = tok.decode(ids, skip_special_tokens=True)
+    for _ in range(8):
+        got = render(model, tok, text)["tokens"] if model.prompt_format.kind == "plain" else count_tokens(tok, text)
+        if abs(got - n_tokens) <= max(2, n_tokens // 50):
+            break
+        if got > n_tokens:
+            text = tok.decode(tok(text, add_special_tokens=False)["input_ids"][: n_tokens - (got - n_tokens) // 2 - 1],
+                              skip_special_tokens=True)
+        else:
+            extra = [i for i in (rng.randrange(vocab) for _ in range(2 * (n_tokens - got) + 4)) if i not in special]
+            text = text + tok.decode(extra[: n_tokens - got], skip_special_tokens=True)
+    return text, count_tokens(tok, text)
+
+
+def build_intel_sets(models, out: Path, token, seed: int = 0) -> dict:
+    """Intel's benchmark pools: INTEL_POOL_SIZE random prompts of 128 and 2,048 tokens per generation
+    model, sent as plain completions (no chat template, as `vllm bench serve` does)."""
+    manifest = {}
+    for m in models:
+        if m.type not in ("decoder", "encoder-decoder") or "intel" not in m.suites:
+            continue
+        tok = tokenizer_for(m, token)
+        for n in INTEL_INPUT_TOKENS:
+            if n > m.max_input_tokens:
+                continue
+            rng = random.Random(f"intel|{seed}|{n}")
+            rows = []
+            for k in range(INTEL_POOL_SIZE):
+                text, got = random_prompt(tok, rng, n, m)
+                rows.append({"id": f"intel-random-{n}-{k:04d}", "prompt": text, "prompt_tokens_expected": got})
+            path = out / m.id / f"intel-random-{n}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows)
+            path.write_text(data, encoding="utf-8")
+            toks = [x["prompt_tokens_expected"] for x in rows]
+            manifest[f"{m.id}/intel-random-{n}"] = {"n": len(rows), "target": n, "min_tokens": min(toks), "max_tokens": max(toks),
+                                                    "sha256": hashlib.sha256(data.encode()).hexdigest()}
+            print(f"{m.id}/intel-random-{n}: {len(rows)} prompts, {min(toks)}-{max(toks)} tokens")
+    return manifest
+
+
 def token_from_secret(name: str) -> str:
     import boto3
 
@@ -254,9 +345,9 @@ def main(argv=None) -> int:
     if args.hf_token_secret:
         token = token_from_secret(args.hf_token_secret)
     catalog = load_models(ROOT / "config" / "models.yaml")
-    wanted = args.models or [m.id for m in catalog.models
-                             if m.enabled and "standard" in m.suites]
+    wanted = args.models or [m.id for m in catalog.models if m.enabled]
     models = [catalog.get(i) for i in wanted]
+    std_models = [m for m in models if "standard" in m.suites]
     out, cache = Path(args.out), Path(args.cache)
     sentences, hashes = gutenberg_corpus(cache / "gutenberg")
     manifest = {"seed": args.seed, "n": args.n, "gutenberg_sha256": hashes,
@@ -268,8 +359,9 @@ def main(argv=None) -> int:
         prev = json.loads((out / "manifest.json").read_text())
         manifest["sets"] = {k: v for k, v in prev.get("sets", {}).items() if k.split("/")[0] not in wanted}
         manifest.update({k: v for k, v in prev.items() if k not in manifest})
-    manifest["sets"].update(build_length_sets(models, sentences, out, args.n, args.seed, args.sets, token))
-    manifest["sets"].update(build_quality_sets(models, out, cache / "hf", args.seed, token))
+    manifest["sets"].update(build_length_sets(std_models, sentences, out, args.n, args.seed, args.sets, token))
+    manifest["sets"].update(build_quality_sets(std_models, out, cache / "hf", args.seed, token))
+    manifest["sets"].update(build_intel_sets(models, out, token, args.seed))
     translation_dir = ROOT / "data" / "translation" / "v1"
     if (translation_dir / "items.jsonl.gz").exists():
         from tools.translation import build_requests as tr
@@ -277,6 +369,7 @@ def main(argv=None) -> int:
         items, tman = tr.read_items(translation_dir)
         tmodels = [m for m in models if "translation" in m.suites]
         manifest["sets"].update(tr.build_for_models(items, tman, out, tmodels, {m.id: tokenizer_for(m, token) for m in tmodels}))
+        manifest["sets"].update(build_embedding_sets(models, items, tman, out, token))
         manifest["translation"] = {"dataset_version": tman["version"], "dataset_sha256": tman["dataset_sha256"], "seed": tr.SEED}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote {out / 'manifest.json'}")

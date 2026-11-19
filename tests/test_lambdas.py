@@ -560,7 +560,7 @@ def test_bringup_error_keeps_the_line_that_names_the_failure():
     assert len(tail) <= 400 and "Pulling fs layer" not in tail and "TracerWarning" not in tail and "it/s]" not in tail
     assert "+ /usr/local/bin/python" not in tail and "`torch_dtype` is deprecated" in tail
     # Through the state machine's error envelope and the 1000-char cap, the message stays whole.
-    msg = f"bring-up of m1-qwen2.5-3b|t3-m8i-4xl-ov|bf16-ov failed (Failed): {tail}"
+    msg = f"bring-up of m1-qwen3-1.7b|t3-m8i-4xl-ov|bf16-ov failed (Failed): {tail}"
     cause = json.dumps({"errorMessage": msg, "errorType": "RuntimeError", "stackTrace": ["x"] * 20})
     stored = error_message({"Error": "RuntimeError", "Cause": cause})[:1000]
     assert stored == msg and stored.endswith("exit status 1")

@@ -128,6 +128,40 @@ def cls_server():
     s.stop()
 
 
+def _tiny_embedder(tmp: Path) -> str:
+    """The tiny RoBERTa encoder with a sentence-transformers layout written next to it: mean pooling,
+    one Dense projection (hidden -> 8, random but fixed) and Normalize, the modules EmbeddingGemma uses."""
+    import shutil
+
+    from safetensors.torch import save_file
+    from transformers import AutoConfig
+
+    src = Path(_snapshot(*TINY["seq-cls"]))
+    out = tmp / "tiny-embed"
+    shutil.copytree(src, out, dirs_exist_ok=True)
+    hidden = AutoConfig.from_pretrained(out).hidden_size
+    (out / "modules.json").write_text(json.dumps([
+        {"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"},
+        {"idx": 1, "name": "1", "path": "1_Pooling", "type": "sentence_transformers.models.Pooling"},
+        {"idx": 2, "name": "2", "path": "2_Dense", "type": "sentence_transformers.models.Dense"},
+        {"idx": 3, "name": "3", "path": "3_Normalize", "type": "sentence_transformers.models.Normalize"}]))
+    (out / "1_Pooling").mkdir(exist_ok=True)
+    (out / "1_Pooling" / "config.json").write_text(json.dumps({"word_embedding_dimension": hidden, "pooling_mode_mean_tokens": True}))
+    (out / "2_Dense").mkdir(exist_ok=True)
+    (out / "2_Dense" / "config.json").write_text(json.dumps({"in_features": hidden, "out_features": 8, "bias": False,
+                                                             "activation_function": "torch.nn.modules.linear.Identity"}))
+    g = torch.Generator().manual_seed(0)
+    save_file({"linear.weight": torch.randn(8, hidden, generator=g)}, str(out / "2_Dense" / "model.safetensors"))
+    return str(out)
+
+
+@pytest.fixture(scope="module")
+def embed_server(tmp_path_factory):
+    s = Server(_settings(_tiny_embedder(tmp_path_factory.mktemp("emb")), "embed", dtype="fp32"))
+    yield s
+    s.stop()
+
+
 @pytest.fixture(scope="module")
 def det_server(tmp_path_factory):
     s = Server(_settings(_tiny_privacy_filter(tmp_path_factory.mktemp("pf")), "token-cls", dtype="fp32"))
@@ -237,6 +271,26 @@ def test_classify_shapes(cls_server):
     pair = httpx.post(cls_server.url("/classify"), json={"input": [["premise text", "hypothesis"]]}).json()
     assert len(pair["data"]) == 1
     assert httpx.post(cls_server.url("/classify"), json={"input": ["a", ["b", "c"]]}).status_code == 400
+
+
+def test_embeddings_follow_the_sentence_transformers_modules(embed_server):
+    """/v1/embeddings: one unit-length vector per input with the Dense module's width, batched like the
+    classifier, deterministic, and the same vector whether the text comes alone or in a batch."""
+    with httpx.Client() as c:
+        rec, body = bc.post_json(c, embed_server.url("/v1/embeddings"),
+                                 {"model": "tiny-embed", "input": ["a short text", "another one", "third"]}, timeout_s=30)
+    assert rec["error"] is None and rec["prompt_tokens"] > 0
+    assert body["object"] == "list" and len(body["data"]) == 3 and body["data"][0]["object"] == "embedding"
+    vecs = [d["embedding"] for d in body["data"]]
+    assert all(len(v) == 8 for v in vecs)
+    assert all(abs(sum(x * x for x in v) - 1.0) < 1e-4 for v in vecs)              # Normalize module applied
+    assert vecs[0] != vecs[1]
+    alone = httpx.post(embed_server.url("/v1/embeddings"), json={"input": "another one"}).json()["data"][0]["embedding"]
+    assert max(abs(a - b) for a, b in zip(alone, vecs[1], strict=True)) < 1e-4    # padding does not change the mean pooling
+    assert httpx.post(embed_server.url("/v1/embeddings"), json={"input": [["a", "b"]]}).status_code == 400
+    assert httpx.post(embed_server.url("/classify"), json={"input": ["x"]}).status_code == 404
+    health = httpx.get(embed_server.url("/health")).json()
+    assert health["task"] == "embed"
 
 
 def test_multi_label_uses_sigmoid():

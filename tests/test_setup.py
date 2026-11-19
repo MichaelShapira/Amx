@@ -179,7 +179,7 @@ def test_decoder_spec_gets_the_dspm_rules_of_the_shipped_chat_model_and_says_wha
     cfg = {"architectures": ["MistralForCausalLM"], "model_type": "mistral", "max_position_embeddings": 32768}
     spec, notes = O.derive_spec(found(), cfg, {"chat_template": "{{ x }}"}, {"m1"}, "U1")
     assert spec.id == "u-mistral-7b-instruct-v0.3" and spec.slot == "U1" and spec.type == "decoder"
-    assert spec.user_added and spec.dspm_profile == "M1" and spec.suites == ["standard", "dspm", "translation"]
+    assert spec.user_added and spec.dspm_profile == "M1" and spec.suites == ["standard", "dspm", "translation", "intel"]
     assert spec.nominal_size_b == 7.25 and spec.max_input_tokens == 4096 and spec.max_model_len == 16384
     assert spec.prompt_format.kind == "chat_template"
     assert set(spec.precisions) == {"bf16", "bf16-ov", "int8-ov", "int4-ov"}
@@ -235,8 +235,7 @@ def test_shipped_models_keep_their_own_dspm_rules_and_alternates_stand_in_for_th
             assert m.dspm_profile == base, (m.id, m.slot)   # M3-alt follows M3's rules
     # M6 (Gemma 4 E4B) shipped after the DSPM rules were written: a chat model, so it follows M1's rules.
     assert seed.get("m6-gemma-4-e4b").dspm_profile == "M1"
-    assert seed.get("alt-modernbert-large-zeroshot").dspm_profile == "M3"
-    assert seed.get("alt-qwen2.5-1.5b").dspm_profile == "M4"
+    assert seed.get("m7-gemma-4-e2b").dspm_profile == "M1"      # a chat model shipped after the rules: M1's
 
 
 # ------------------------------------------------------------------------- onboarding: the job and remove
@@ -269,14 +268,14 @@ def test_live_catalog_takes_shipped_definitions_from_the_seed_and_keeps_setup_ch
     seed = load_models(catalog_store.SEED)
     old_m1 = seed.models[0].model_copy(update={"suites": ["standard"], "vllm_args": []})   # an older deployment's copy
     added = seed.models[1].model_copy(update={"id": "u-added", "slot": "U1", "hf_repo": "org/added"})
-    stored = ModelCatalog(size_cap_b=4.0, models=[old_m1, added], removed=["m2-qwen3-4b-2507"])
+    stored = ModelCatalog(size_cap_b=4.0, models=[old_m1, added], removed=["m7-gemma-4-e2b"])
     live = catalog_store.merge_with_seed(seed, stored)
     ids = [m.id for m in live.models]
     assert ids[0] == seed.models[0].id and live.models[0].suites == seed.models[0].suites      # the seed's definition
-    assert "m2-qwen3-4b-2507" not in ids                                                     # removed in Setup stays removed
+    assert "m7-gemma-4-e2b" not in ids                                                     # removed in Setup stays removed
     assert "m6-gemma-4-e4b" in ids                                                           # new in the seed: present
     assert ids[-1] == "u-added" and live.models[-1].hf_repo == "org/added"                   # Setup's addition kept
-    assert live.size_cap_b == seed.size_cap_b == 8.0 and live.removed == ["m2-qwen3-4b-2507"]
+    assert live.size_cap_b == seed.size_cap_b == 8.0 and live.removed == ["m7-gemma-4-e2b"]
 
 
 # ------------------------------------------------------------------------- the prompt corpus

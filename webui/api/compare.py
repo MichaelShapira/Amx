@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import math
 
-from bench import pairing, report, utilization
-from webui.api.catalog import DIRECTIONS, MODELS, PRESETS, PROMPT_SETS, TEXT_SIZES, WORKLOADS
+from bench import mechanics, pairing, report, utilization
+from webui.api.catalog import (
+    DIRECTIONS,
+    INTEL_IO,
+    MODELS,
+    PRESETS,
+    PROMPT_SETS,
+    TEXT_SIZES,
+    WORKLOADS,
+)
 
 # ----------------------------------------------------------------------------- run shape
 
@@ -37,6 +45,12 @@ def shape(summary: dict) -> dict:
         s.update(prompt_set=run.get("prompt_set"), answer_tokens=(run.get("sampling") or {}).get("max_new_tokens"),
                  directions=sorted((run.get("translation") or {}).get("directions") or []),
                  dataset=str(h.get("dataset_sha256"))[:12], test_items=(run.get("translation") or {}).get("test_items"))
+    elif run.get("suite") == "embedding":
+        s.update(prompt_set=run.get("prompt_set"), test_items=(run.get("embedding") or {}).get("test_items"))
+    elif run.get("suite") == "intel":
+        i = run.get("intel") or {}
+        s.update(prompt_set="intel", io=f"{i.get('input_tokens', 128)}/{i.get('output_tokens', 128)}",
+                 answer_tokens=i.get("output_tokens", 128))
     else:
         h = summary.get("dspm_hashes") or {}
         s.update(workloads=sorted((run.get("dspm") or {}).get("workloads") or []),
@@ -79,6 +93,16 @@ def comparability(summaries: list[dict]) -> dict:
         d, v = differ("temperature")
         if d:
             warnings.append(f"Different sampling temperatures ({', '.join(v)}); timings are unaffected, answer quality is.")
+    elif shapes[0]["use_case"] == "embedding":
+        d, v = differ("prompt_set")
+        if d:
+            blockers.append("Different text sizes (" + ", ".join(TEXT_SIZES.get(x, (x,))[0] for x in v) + "): embedding a "
+                            "sentence and a paragraph load the hardware differently.")
+    elif shapes[0]["use_case"] == "intel":
+        d, v = differ("io")
+        if d:
+            blockers.append("Different token shapes (" + ", ".join(INTEL_IO.get(x, (x,))[0] for x in v) + "): Intel's "
+                            "figures are per shape.")
     elif shapes[0]["use_case"] == "translation":
         d, v = differ("prompt_set")
         if d:
@@ -140,6 +164,12 @@ def _group_key(r: dict) -> tuple[str, str]:
         label += " · " + DIRECTIONS.get(r["direction"], (r["direction"],))[0]
         label += f" ({TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]})"
         return key, label
+    if r.get("model_type") == "embedding":
+        key += "|embed|" + str(r.get("text_size")) + (f"|b{r['batch']}" if r.get("batch", 1) > 1 else "")
+        label += f" · embeddings, {TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]}"
+        if r.get("batch", 1) > 1:
+            label += f" · batch of {r['batch']}"
+        return key, label
     if r.get("workload"):
         key += "|" + r["workload"] + ("|" + r["bucket"] if r.get("bucket") else "")
         label += " · " + WORKLOADS.get(r["workload"], (r["workload"],))[0]
@@ -152,6 +182,9 @@ def _group_key(r: dict) -> tuple[str, str]:
 
 
 def _unit(r: dict) -> dict:
+    if r.get("model_type") == "embedding":
+        return {"thr": "cls_s", "thr_label": "embeddings/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M embeddings",
+                "lat": "e2e_p99", "lat_label": "whole request, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("direction"):
         return {"thr": "chars_s", "thr_label": "characters/s", "cost": "usd_per_1m_chars", "cost_label": "$ per 1M characters",
                 "lat": "e2e_p99", "lat_label": "whole translation, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
@@ -203,6 +236,18 @@ def _acc(summary: dict, r: dict) -> dict | None:
             "precision": a["precision"]["value"], "f1": a["f1"], "format_adherence": a["format_adherence"]["value"],
             "agreement_with_gpu": (a.get("vs_gpu") or {}).get("agreement", {}).get("value"),
             "qualifies_vs_gpu": (a.get("vs_gpu") or {}).get("qualifies"), "fit": bool(a["fitness"]["fit"])}
+
+
+def _eq(summary: dict, r: dict) -> dict | None:
+    """Embedding quality of this row's cell (report.embedding_quality)."""
+    a = (summary.get("embedding_quality") or {}).get(r.get("cell_key") or "")
+    if not a:
+        return None
+    vs = a.get("vs_reference_cell") or {}
+    rt = a.get("retrieval") or {}
+    return {"n": a.get("n"), "dim": a.get("dim"), "cosine_mean": vs.get("cosine_mean"), "cosine_min": vs.get("cosine_min"),
+            "recall_de": (rt.get("de") or {}).get("recall_at_1"), "recall_es": (rt.get("es") or {}).get("recall_at_1"),
+            "flag": a.get("flag")}
 
 
 def _tq(summary: dict, r: dict) -> dict | None:
@@ -271,6 +316,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             r["meets_user_sla"], r["user_sla_reason"] = report.meets_sla(r, sla)
             r["accuracy"] = _acc(s, r)
             r["translation"] = _tq(s, r)
+            r["embedding"] = _eq(s, r)
             rows.append(r)
     missing = [nr for s in summaries for nr in not_run(s)]
     # A side counts as missing only when NO selected run measured it.
@@ -281,6 +327,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
     for r in rows:
         key, label = _group_key(r)
         groups.setdefault(key, {"key": key, "label": label, "rows": []})["rows"].append(r)
+    mech_ctx = mechanics.context(summaries)
     out_groups = []
     for g in groups.values():
         grows = g["rows"]
@@ -296,7 +343,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                     "precision": r["precision"], "conc": r["conc"], "batch": r.get("batch", 1), "usd_per_hour": r["usd_per_hour"],
                     "throughput": r.get(u["thr"]), "latency": r.get(u["lat"]), "cost": r.get(u["cost"]),
                     "quality_delta": r.get("quality_delta"), "amx": r.get("amx"), "accuracy": r.get("accuracy"),
-                    "translation": r.get("translation"),
+                    "translation": r.get("translation"), "embedding": r.get("embedding"),
                     "run_id": r["run_id"], "ttft_p50": r.get("ttft_p50"), "tpot_p50": r.get("tpot_p50"),
                     "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99")}
 
@@ -339,7 +386,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                    "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99"), "ttft_p99": r.get("ttft_p99"),
                    "tpot_p50": r.get("tpot_p50"), "req_s": r.get("req_s"), "error_pct": r.get("error_pct"),
                    "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy"),
-                   "translation": r.get("translation"), "util": _util_point(r)}
+                   "translation": r.get("translation"), "embedding": r.get("embedding"), "util": _util_point(r)}
                   for r in grows]
         sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t), pairing.load_catalog()["instances"])
         for z in sizing:
@@ -352,8 +399,12 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                                   "text": (f"Pairs fairly with {other['instance_type']} on the other side (GPU price {j['ratio']}x the CPU's)." if j.get("fair")
                                            else f"Against {other['instance_type']} on the other side the GPU price would be {j['ratio']}x the CPU's, outside "
                                                 f"this tool's fair band (0.5x-2x); change the other side too for a like-for-like comparison.")}
+        try:
+            mech = mechanics.explain_group(grows, *mech_ctx)
+        except Exception as e:  # noqa: BLE001 - an explanation never blocks the results
+            mech = {"error": str(e)[:200]}
         out_groups.append({"key": g["key"], "label": g["label"], "units": u, "best_gpu": card(best_gpu), "best_cpu": card(best_cpu),
-                           "verdict": verdict, "equivalence": equivalence, "points": points, "sizing": sizing,
+                           "verdict": verdict, "equivalence": equivalence, "points": points, "sizing": sizing, "mechanics": mech,
                            "missing": {"gpu": (missing_side.get("gpu") or {}).get("reason") if not gpu_rows else None,
                                        "cpu": (missing_side.get("cpu") or {}).get("reason") if not cpu_rows else None},
                            "series": sorted({_series_name(r) for r in grows})})
@@ -365,9 +416,12 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
     gpu_types = sorted({r["instance_type"] for r in rows if r["accelerator"] == "gpu"})
     cpu_types = sorted({r["instance_type"] for r in rows if r["accelerator"] == "cpu"})
     cross = [pairing.judge(c, g) for c in cpu_types for g in gpu_types]
+    intel_ref = [r for s in summaries for r in (s.get("intel_reference") or [])]
+    seen = set()
+    intel_ref = [r for r in intel_ref if not (tuple(sorted(r.items())) in seen or seen.add(tuple(sorted(r.items()))))]
     return {"groups": out_groups, "pairing": cross, "run_pairing": pairs, "not_run": missing,
             "warnings": [w for s in summaries for w in (s.get("warnings") or [])],
-            "smoke": any(s.get("smoke") for s in summaries)}
+            "smoke": any(s.get("smoke") for s in summaries), "intel_reference": intel_ref}
 
 
 def default_sla(summaries: list[dict]) -> dict:

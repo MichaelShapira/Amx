@@ -41,7 +41,32 @@ USE_CASES = {
                  "Use it for document, support-ticket and product-content translation."),
         "icon": "translate",
     },
+    "embedding": {
+        "name": "Embeddings (search, RAG, deduplication)",
+        "short": "How fast each hardware option turns texts into embedding vectors, and what it costs per million texts.",
+        "long": ("Embeds short messages or paragraphs from the synthetic EN/DE/ES corpus into vectors, the step behind "
+                 "semantic search, retrieval-augmented generation and near-duplicate detection. Reports embeddings per "
+                 "second, cost per million embeddings, time per request, whether the CPU's vectors match the GPU's "
+                 "(cosine similarity) and whether a German or Spanish text retrieves its English translation. Embedding "
+                 "is all reading and no writing: the whole text is processed at once and no token is generated, which is "
+                 "the work Intel's AMX units are built for."),
+        "icon": "vector",
+    },
+    "intel": {
+        "name": "Intel's published benchmark (reproduced)",
+        "short": "The exact test Intel's Software Catalog publishes Xeon numbers for, run on your GPU and CPU options, with Intel's figures beside yours.",
+        "long": ("Random prompts of 128 tokens, answers of exactly 128 tokens, requests sent as fast as the machine takes them, "
+                 "one concurrency at a time; a machine passes a load setting when each generated token takes at most "
+                 "100 ms and the first token arrives within 3 s. This is the method behind Intel's catalog figures for "
+                 "Qwen3 and Llama 3.1 (two-socket Xeon 6 servers), shown next to your results per core so a cloud slice "
+                 "and a whole server can be compared."),
+        "icon": "intel",
+    },
 }
+INTEL_IO = {"128/128": ("128 in / 128 out", "Intel's headline shape: a short prompt, a short answer."),
+            "2048/128": ("2,048 in / 128 out", "Long prompt, short answer: reading-heavy."),
+            "128/2048": ("128 in / 2,048 out", "Short prompt, long answer: writing-heavy."),
+            "2048/2048": ("2,048 in / 2,048 out", "Long prompt, long answer.")}
 # Translation use case: directions and text sizes (bench.plan.TRANSLATION_DIRECTIONS / _SIZES).
 DIRECTIONS = {
     "en-de": ("English → German", "Source text in English, translated into German."),
@@ -57,25 +82,25 @@ TEXT_SIZES = {
 }
 
 MODELS = {
-    "m1-qwen2.5-3b": ("Qwen2.5 3B Instruct", "General chat model, 3 billion parameters. Research license: "
-                                              "results are for evaluation only, not for a commercial decision on this model."),
-    "m2-qwen3-4b-2507": ("Qwen3 4B Instruct", "General chat model, 4 billion parameters, Apache-2.0 license."),
+    "m1-qwen3-1.7b": ("Qwen3 1.7B", "Alibaba's compact chat model, 1.7 billion parameters, Apache-2.0. The model Intel's "
+                                    "catalog describes as built for extreme throughput on server CPUs and publishes Xeon "
+                                    "benchmarks for. Thinking mode is off, as in Intel's recipe."),
     "m3-roberta-large-mnli": ("RoBERTa-large (classifier)", "Text classifier, 0.36 billion parameters. Does not generate "
                                                             "text; answers 'does this text match this statement'. Very "
                                                             "fast, lower accuracy."),
-    "m4-gemma-2-2b": ("Gemma 2 2B Instruct", "Google chat model, 2.6 billion parameters, Gemma license."),
     "m5-flan-t5-xl": ("Flan-T5 XL", "Instruction-following model of the older encoder-decoder type, 2.85 billion "
                                     "parameters. Many production classifiers still use this family."),
     "m6-gemma-4-e4b": ("Gemma 4 E4B Instruct", "Google's newest small chat model: 8.0 billion stored parameters (Google "
                                                  "counts 4.5 billion effective), understands text, images and audio; text "
                                                  "only here. Apache-2.0. Served with the vLLM settings from Intel's Xeon recipe."),
-    "d1-privacy-filter": ("OpenAI privacy-filter (PII detector)", "Purpose-built detector, 1.4 billion parameters: marks "
-                                                                  "the exact words that are personal data. Sensitive-data use case only."),
-    "d2-roblox-pii-v2": ("Roblox PII classifier v2", "Purpose-built classifier, 0.56 billion parameters: flags chat "
-                                                     "messages with personal data. Sensitive-data use case only."),
+    "m7-gemma-4-e2b": ("Gemma 4 E2B Instruct", "The compact Gemma 4: 5.1 billion stored parameters (2 billion effective), "
+                                                 "text, image and audio upstream, text only here. Apache-2.0."),
+    "e1-embeddinggemma-300m": ("EmbeddingGemma 300M", "Google's embedding model (Gemma-3-based), 0.3 billion parameters, "
+                                                       "768-dimensional vectors, 100+ languages. The embedding model Intel's "
+                                                       "catalog lists for Xeon. Embeddings use case only."),
 }
 MODEL_KIND = {"decoder": "Chat / generation", "encoder-decoder": "Instruction model (encoder-decoder)",
-              "encoder-classifier": "Classifier", "token-classifier": "Detector (marks words)"}
+              "encoder-classifier": "Classifier", "token-classifier": "Detector (marks words)", "embedding": "Embedding model"}
 
 ENGINES = {"vllm": ("vLLM", "The most common open-source serving software for chat models, on GPUs and Intel CPUs."),
            "ovms": ("OpenVINO", "Intel's optimized CPU serving stack (OpenVINO Model Server)."),
@@ -202,7 +227,7 @@ def catalog() -> dict:
                      "type": m.type, "params_b": round(m.params / 1e9, 2), "license": m.license,
                      "commercial_ok": m.license not in ("qwen-research",), "use_cases": list(m.suites),
                      "precisions": precs, "batch_capable": m.type not in ("decoder", "encoder-decoder"),
-                     "batch_sizes_default": (m.classifier.batch_sizes if m.classifier else [1]),
+                     "batch_sizes_default": (m.classifier.batch_sizes if m.classifier else m.embedding.batch_sizes if m.embedding else [1]),
                      "hf_repo": m.hf_repo, "user_added": m.user_added})
     insts = {t: {**s, "type": t} for t, s in cat["instances"].items() if s.get("usd_per_hour")}
     return {
@@ -211,6 +236,7 @@ def catalog() -> dict:
         "prompt_sets": {k: {"label": v[0], "help": v[1]} for k, v in PROMPT_SETS.items()},
         "workloads": {k: {"label": v[0], "help": v[1]} for k, v in WORKLOADS.items()},
         "directions": {k: {"label": v[0], "help": v[1]} for k, v in DIRECTIONS.items()},
+        "intel_io": {k: {"label": v[0], "help": v[1]} for k, v in INTEL_IO.items()},
         "text_sizes": {k: {"label": v[0], "help": v[1], "answer_tokens": v[2]} for k, v in TEXT_SIZES.items()},
         "presets": {k: {"label": v[0], "help": v[1], "p99_e2e_ms": v[2]} for k, v in PRESETS.items()},
         "depths": {k: {"label": v[0], "help": v[1], "requests": v[2], "passes": v[3]} for k, v in DEPTHS.items()},
@@ -275,6 +301,17 @@ def dataset_info(use_case: str) -> dict:
                             "timings are comparable.")}
     if use_case == "translation":
         return _translation_info()
+    if use_case == "embedding":
+        info = _translation_info()
+        if not info.get("available"):
+            return info
+        return {**info, "kind": "embedding", "prefix": _embedding_prefix(),
+                "summary": (f"The same {info['items']} synthetic items as the translation use case, every text in English, German "
+                            "and Spanish, embedded one by one. Each text is prefixed with the model's document prompt. Besides "
+                            "speed, the report checks that the CPU's vectors point the same way as the GPU's and that a German or "
+                            "Spanish text's nearest English neighbour is its own translation.")}
+    if use_case == "intel":
+        return _intel_info()
     man_p = ROOT / "data/dspm/v1/manifest.json"
     if not man_p.exists():
         return {"available": False, "reason": "the dataset is not built locally (tools/dspm/build_dataset.py)"}
@@ -314,6 +351,7 @@ def _translation_info() -> dict:
     return {"available": True, "kind": "parallel", "version": man.get("version"),
             "fingerprint": str(man.get("dataset_sha256"))[:12], "items": man.get("items"), "sizes": sizes,
             "directions": {k: {"label": v[0], "help": v[1]} for k, v in DIRECTIONS.items()},
+        "intel_io": {k: {"label": v[0], "help": v[1]} for k, v in INTEL_IO.items()},
             "domains": man.get("domains") or {}, "chars": man.get("chars") or {}, "words": man.get("words") or {},
             "sources": [{"name": "seeded template generator (this repository, tools/translation)",
                          "role": "every item written in English, German and Spanish from one template", "license": "-"}],
@@ -323,6 +361,34 @@ def _translation_info() -> dict:
                         "release notes, invoices. Nothing is real; no third-party text is used. The model is asked to translate "
                         "the source text and reply with the translation only."),
             "instruction": translation.INSTRUCTION}
+
+
+def _embedding_prefix() -> str:
+    for m in catalog_store.load_catalog().models:
+        if m.type == "embedding" and m.embedding:
+            return m.embedding.prefix
+    return ""
+
+
+def _intel_info() -> dict:
+    man_p = ROOT / "prompts/generated/manifest.json"
+    man = json.loads(man_p.read_text()) if man_p.exists() else {}
+    sets = {k: v for k, v in (man.get("sets") or {}).items() if "/intel-random-" in k}
+    ref_p = ROOT / "config/intel_catalog_benchmarks.json"
+    ref = json.loads(ref_p.read_text()) if ref_p.exists() else {"rows": []}
+    published: dict[str, list] = {}
+    for r in ref["rows"]:
+        published.setdefault(r["model_id"], []).append({k: r.get(k) for k in ("cpu_model", "sockets", "total_cores", "memory_gb", "ddr5_mt_s",
+                                                                                "io", "max_concurrency", "throughput_tok_s", "tpot_ms", "ttft_ms", "tested")})
+    return {"available": bool(sets), "kind": "intel", "sets": sets, "io": {k: {"label": v[0], "help": v[1]} for k, v in INTEL_IO.items()},
+            "published": published, "source": ref.get("source"), "note": ref.get("note"),
+            "reason": None if sets else "the random-prompt pools are not built locally (tools/build_prompts.py)",
+            "summary": ("Random vocabulary tokens assembled into prompts of a fixed length and sent as plain completions, exactly as "
+                        "`vllm bench serve --dataset-name random` does; every answer is cut at the same length (ignore_eos). Nothing "
+                        "about the text matters: the test measures how many tokens a machine reads and writes per second under a "
+                        "concurrency, and whether it stays within 100 ms per token and 3 s to the first token. Intel publishes the "
+                        "same test for Qwen3 and Llama 3.1 on two-socket Xeon 6 servers; those figures are shown with yours."),
+            "sources": [{"name": "Intel Software Catalog", "role": "method and published figures", "license": "-"}]}
 
 
 _TRANSLATION_CACHE: list[dict] | None = None
@@ -357,6 +423,27 @@ def sample(use_case: str, *, prompt_set: str | None = None, model: str | None = 
     import random
 
     rnd = random.Random(seed)  # noqa: S311 - display sampling
+    if use_case == "embedding":
+        size = prompt_set if prompt_set in TEXT_SIZES else "sentence"
+        lang = direction if direction in ("en", "de", "es") else None
+        pool = [x for x in _translation_items() if x["size"] == size]
+        prefix = _embedding_prefix()
+        out = []
+        for x in rnd.sample(pool, min(n, len(pool))):
+            for lg in ([lang] if lang else ("en", "de", "es")):
+                out.append({"id": f"{x['id']}:{lg}", "domain": x["domain"], "lang": lg, "size": size, "text": prefix + x["text"][lg],
+                            "chars": x["chars"][lg], "words": x["words"][lg]})
+        return out
+    if use_case == "intel":
+        base = (ROOT / "prompts/generated").resolve()
+        ids = {m.id for m in catalog_store.load_catalog().models}
+        mid = model if model in ids else next((m.id for m in catalog_store.load_catalog().models if "intel" in m.suites), None)
+        n_tok = prompt_set if prompt_set in ("128", "2048") else "128"
+        p = (base / (mid or "") / f"intel-random-{n_tok}.jsonl").resolve() if mid else None
+        if not p or not p.is_relative_to(base) or not p.exists():
+            return []
+        lines = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        return [{"id": x["id"], "tokens": x.get("prompt_tokens_expected"), "text": x["prompt"][:1500]} for x in rnd.sample(lines, min(n, len(lines)))]
     if use_case == "translation":
         direction = direction if direction in DIRECTIONS else "en-de"
         size = prompt_set if prompt_set in TEXT_SIZES else "sentence"

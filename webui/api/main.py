@@ -117,8 +117,10 @@ class Wizard(BaseModel):
     test_items: int = 300
     preset: str = "inline_standard"
     directions: list[str] = ["en-de", "de-en", "en-es", "es-en"]     # translation: which language pairs
-    text_size: str = "sentence"                                       # translation: sentence | paragraph
+    text_size: str = "sentence"                                       # translation and embedding: sentence | paragraph
     translation_items: int = 100                                      # translation: items per direction in the quality pass
+    embedding_items: int = 300                                        # embedding: texts in the quality pass
+    intel_io: str = "128/128"                                         # intel: input/output tokens
     depth: str = "quick"                       # quick | full | custom
     requests: int | None = None
     passes: int | None = None
@@ -215,12 +217,14 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         "name": run_slug(w.name) or f"{w.use_case}-{time.strftime('%m%d-%H%M')}", "suite": w.use_case,
         "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": ACCOUNT, "region": REGION,
         "az_id": "use1-az1", "models": w.models, "cells": cells,
-        "prompt_set": w.prompt_set if w.use_case == "standard" else w.text_size if w.use_case == "translation" else "dspm",
+        "prompt_set": (w.prompt_set if w.use_case == "standard" else w.text_size if w.use_case in ("translation", "embedding")
+                       else "intel" if w.use_case == "intel" else "dspm"),
         "sampling": {"temperature": 0.0,
                      "max_new_tokens": (int(w.answer_tokens) if w.use_case == "standard"
                                         else C.TEXT_SIZES.get(w.text_size, C.TEXT_SIZES["sentence"])[2] if w.use_case == "translation"
+                                        else _intel_io(w)[1] if w.use_case == "intel"
                                         else 4),
-                     "ignore_eos": w.use_case == "standard", "seed": 0},
+                     "ignore_eos": w.use_case in ("standard", "intel"), "seed": 0},
         "concurrency": conc, "per_level": {"requests": int(requests)}, "repeats": int(passes), "warmup_requests": 20,
         "quality": {"enabled": w.use_case == "standard"},
         "sla": _sla_for_models(w, cat) | {"max_error_pct": float((w.sla or {}).get("max_error_pct") or 1.0)},
@@ -251,7 +255,23 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
     if w.use_case == "translation":
         run["translation"] = {"directions": [d for d in w.directions if d in C.DIRECTIONS] or list(C.DIRECTIONS),
                               "test_items": int(w.translation_items) if w.translation_items else None}
+    if w.use_case == "embedding":
+        run["embedding"] = {"test_items": int(w.embedding_items) if w.embedding_items else None}
+        run["quality"] = {"enabled": False}
+    if w.use_case == "intel":
+        i, o = _intel_io(w)
+        run["intel"] = {"input_tokens": i, "output_tokens": o}
+        run["quality"] = {"enabled": False}
+        # Intel's pass criteria, unless the wizard set its own: 100 ms per generated token, 3 s to the first token.
+        run["sla"] = {"p50_tpot_ms": 100.0, "p99_ttft_ms": 3000.0, "max_error_pct": 1.0} | {k: v for k, v in run["sla"].items() if v}
+        run["request_timeout_s"] = 600
     return run
+
+
+def _intel_io(w: Wizard) -> tuple[int, int]:
+    io = w.intel_io if w.intel_io in C.INTEL_IO else "128/128"
+    i, o = io.split("/")
+    return int(i), int(o)
 
 
 def _dedupe_cells(run: dict) -> dict:
@@ -369,6 +389,8 @@ def post_plan(w: Wizard):
         problems.append("Pick at least one detection scenario.")
     if w.use_case == "translation" and not [d for d in w.directions if d in C.DIRECTIONS]:
         problems.append("Pick at least one translation direction.")
+    if w.use_case == "intel" and w.request_mode == "batch":
+        problems.append("Intel's benchmark sends one prompt per request; pick single or concurrent requests.")
     if not run["cells"] and w.models and (w.gpu or w.cpus):
         problems.append("No hardware option can serve the chosen model in the chosen number formats.")
     failed = {"ok": False, "problems": problems, "warnings": notes, "series": [], "pairing": [], "estimate": None,
@@ -464,6 +486,12 @@ def _ai_context(w: Wizard) -> dict:
         test["text"] = f"{C.TEXT_SIZES.get(w.text_size, (w.text_size,))[0]}, synthetic EN/DE/ES parallel corpus"
         test["directions"] = ", ".join(C.DIRECTIONS.get(d, (d,))[0] for d in w.directions)
         test["targets"] = ", ".join(f"{k} <= {v}" for k, v in (w.sla or {}).items() if v) or "none"
+    elif w.use_case == "embedding":
+        test["text"] = f"{C.TEXT_SIZES.get(w.text_size, (w.text_size,))[0]} in English, German and Spanish, embedded"
+        test["targets"] = ", ".join(f"{k} <= {v}" for k, v in (w.sla or {}).items() if v) or "none"
+    elif w.use_case == "intel":
+        test["shape"] = f"Intel's benchmark, {C.INTEL_IO.get(w.intel_io, (w.intel_io,))[0]} tokens, random prompts, fixed answer length"
+        test["targets"] = "Intel's: 100 ms per generated token (median), first token within 3 s"
     else:
         test["scenarios"] = "; ".join(C.WORKLOADS.get(x, (x,))[0] for x in w.workloads)
         test["decision deadline"] = C.PRESETS.get(w.preset, (w.preset, "", None))[0]
@@ -1242,13 +1270,15 @@ def wizard_from_run(run: dict, name: str | None = None, source_run_id: str | Non
          "workloads": list(dspm.get("workloads") or ["W1", "W3"]), "test_items": int(dspm.get("test_items") or 300),
          "preset": dspm.get("sla_preset") or "inline_standard",
          "directions": list(trans.get("directions") or list(C.DIRECTIONS)),
-         "text_size": run.get("prompt_set") if suite == "translation" and run.get("prompt_set") in C.TEXT_SIZES else "sentence",
+         "text_size": run.get("prompt_set") if suite in ("translation", "embedding") and run.get("prompt_set") in C.TEXT_SIZES else "sentence",
          "translation_items": int(trans.get("test_items") or 100),
+         "embedding_items": int((run.get("embedding") or {}).get("test_items") or 300),
+         "intel_io": f"{(run.get('intel') or {}).get('input_tokens', 128)}/{(run.get('intel') or {}).get('output_tokens', 128)}",
          "depth": depth, "requests": per if depth == "custom" else None, "passes": reps if depth == "custom" else None,
          "models": models, "precision": "bf16", "gpu": gpu, "cpus": cpus,
          "parallel_targets": bool((run.get("execution") or {}).get("parallel_targets", True)),
          "request_mode": request_mode, "concurrency": conc, "batch_sizes": [int(b) for b in batches] if request_mode == "batch" else [8],
-         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite in ("standard", "translation") else {},
+         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite in ("standard", "translation", "embedding", "intel") else {},
          "purchase": purchase.get("type", "spot"), "spot_fallback": bool(purchase.get("spot_fallback_on_demand", True)),
          "spot_wait_minutes": max(1, int(purchase.get("spot_capacity_window_s", 600)) // 60),
          "launch_attempts": int(purchase.get("max_launch_attempts", 30)),

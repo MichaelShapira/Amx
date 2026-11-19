@@ -27,6 +27,11 @@ ACCURACY_CONC = 16
 TRANSLATION_DIRECTIONS = ("en-de", "de-en", "en-es", "es-en")
 TRANSLATION_SIZES = ("sentence", "paragraph")
 TRANSLATION_ACCURACY_CONC = 8
+# Embedding suite: the translation corpus's texts (all three languages) embedded; one pool per text size.
+EMBEDDING_ACCURACY_CONC = 8
+# Intel suite: random prompts of a fixed token count (tools/build_prompts.py build_intel_sets); Intel's
+# own sweep runs one concurrency at a time up to the point TPOT passes 100 ms.
+INTEL_POOL = "intel-random-{n}"
 DEV_THRESHOLD_SLOTS = {"M3"}
 CATEGORY_WORKLOADS = ("W2", "W4")
 LABELS = {"W1": ["SENSITIVE", "NOT_SENSITIVE"], "W3": ["BLOCK", "ALLOW"],
@@ -37,7 +42,15 @@ LABELS = {"W1": ["SENSITIVE", "NOT_SENSITIVE"], "W3": ["BLOCK", "ALLOW"],
 def api_path(model: ModelSpec, engine: str) -> str:
     if model.type in GENERATIVE:
         return "/v3/completions" if engine == "ovms" else "/v1/completions"
+    if model.type == "embedding":
+        return "/v1/embeddings"
     return "/detect" if model.type == "token-classifier" else "/classify"
+
+
+def api_task(model: ModelSpec) -> str:
+    if model.type in GENERATIVE:
+        return "generate"
+    return {"token-classifier": "detect", "embedding": "embed"}.get(model.type, "classify")
 
 
 def health_path(engine: str) -> str:
@@ -51,6 +64,16 @@ def standard_pool(model: ModelSpec, run: RunConfig) -> str | None:
             return None
         return run.prompt_set
     return CLASSIFIER_SETS.get(run.prompt_set, "short")
+
+
+def embedding_pool(model: ModelSpec, size: str) -> str:
+    """Rendered by tools/build_prompts.py build_embedding_sets: every corpus text of that size, in every
+    language, with the model's document prefix; item_id and language identify the reference."""
+    return f"artifacts/prompts/{model.id}/embed-{size}.jsonl"
+
+
+def intel_pool(model: ModelSpec, input_tokens: int) -> str:
+    return f"artifacts/prompts/{model.id}/{INTEL_POOL.format(n=input_tokens)}.jsonl"
 
 
 def translation_pool(model: ModelSpec, direction: str, size: str) -> str:
@@ -90,8 +113,7 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
     """pool_sizes: S3 key -> number of lines (from the prompt and request manifests)."""
     ck = cell_key(cell.cell_id)
     base = {"run_id": run_id, "cell_key": ck, "api_path": api_path(model, cell.engine),
-            "api_task": "generate" if model.type in GENERATIVE else
-            ("detect" if model.type == "token-classifier" else "classify"),
+            "api_task": api_task(model),
             "health_path": health_path(cell.engine), "request_timeout_s": run.request_timeout_s,
             "max_waves": run.max_waves, "warmup_requests": run.warmup_requests}
     per = run.per_level
@@ -107,6 +129,8 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             size = min(size, run.dspm.test_items)    # request pools are shuffled, so a prefix is a fair sample
         if accuracy and run.suite == "translation" and run.translation and run.translation.test_items:
             size = min(size, run.translation.test_items)
+        if accuracy and run.suite == "embedding" and run.embedding and run.embedding.test_items:
+            size = min(size, run.embedding.test_items)
         lvl = {**base, "level_key": key, "name": name, "conc": conc, "repeat": rep, "batch": batch, "payload": payload,
                "pool": {"bucket": bucket, "key": pool_key, "size": size},
                "accuracy": accuracy, "keep_output": accuracy, "workload": workload, **(extra or {})}
@@ -131,6 +155,33 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             for b in batches:
                 for rep in range(run.repeats):
                     add(name, key, payload, conc, rep, batch=b)
+        return out
+
+    if run.suite == "embedding":
+        assert run.embedding is not None
+        if model.type != "embedding":
+            return []
+        key = embedding_pool(model, run.prompt_set)
+        payload = {"model": model.id}
+        name = f"embed-{run.prompt_set}"
+        add(f"{name}-accuracy", key, payload, EMBEDDING_ACCURACY_CONC, 0, accuracy=True, extra={"text_size": run.prompt_set})
+        batches = run.batch_sizes or (model.embedding.batch_sizes if model.embedding else [1])
+        for conc in run.concurrency:
+            for b in batches:
+                for rep in range(run.repeats):
+                    add(name, key, payload, conc, rep, batch=b, extra={"text_size": run.prompt_set})
+        return out
+
+    if run.suite == "intel":
+        assert run.intel is not None
+        if model.type not in GENERATIVE:
+            return []
+        key = intel_pool(model, run.intel.input_tokens)
+        payload = _gen_payload(model, run)          # max_new_tokens = output_tokens, ignore_eos: true
+        name = INTEL_POOL.format(n=run.intel.input_tokens)
+        for conc in run.concurrency:
+            for rep in range(run.repeats):
+                add(name, key, payload, conc, rep)
         return out
 
     if run.suite == "translation":

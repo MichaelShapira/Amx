@@ -1,0 +1,29 @@
+# Intel's published benchmark, reproduced: Qwen3-1.7B, random 128-token prompts, 128-token answers
+# (ignore_eos), one concurrency at a time, pass at TPOT <= 100 ms and TTFT <= 3 s. Compare per core with
+# config/intel_catalog_benchmarks.json. 50 requests per level is below Intel's num-prompts (3x concurrency).
+run:
+  name: intel-smoke-qwen3-1.7b
+  suite: intel
+  mode: smoke
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m1-qwen3-1.7b]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+  prompt_set: intel
+  intel: {input_tokens: 128, output_tokens: 128}
+  sampling: {temperature: 0.0, max_new_tokens: 128, ignore_eos: true, seed: 0}
+  concurrency: [16, 64, 128]
+  per_level: {requests: 50}
+  repeats: 1
+  warmup_requests: 20
+  request_timeout_s: 600
+  quality: {enabled: false}
+  sla: {p50_tpot_ms: 100, p99_ttft_ms: 3000, max_error_pct: 1.0}
+  capacity: {max_cpu_instances_per_gpu: 4}
+  purchase: {type: spot, spot_fallback_on_demand: true}
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge}
+  alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
+  stop_targets_after_run: true

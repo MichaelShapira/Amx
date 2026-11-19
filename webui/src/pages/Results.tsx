@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
-import { type CompareOut, type ExecSummary, type Group, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, api, fmt } from "../api";
+import { type CompareOut, type ExecSummary, type Group, type IntelReference, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, api, fmt } from "../api";
 import { useCatalog } from "../App";
 import { Badge, Help, Label, Metric, Note, Spinner, Toggle, instanceLine } from "../components/ui";
 import { Curves, InstancesBar, Swatch, UtilizationCurves, UtilizationTimeline, seriesKeys, seriesStyles } from "../components/Charts";
@@ -58,7 +58,7 @@ export default function Results() {
             <tbody>
               {selected.map((id) => { const s = infos[id]; if (!s) return <tr key={id}><td colSpan={8}><Spinner /></td></tr>; const sh = s.shape; return (
                 <tr key={id}><td><b>{id}</b></td><td>{cat?.use_cases[sh.use_case]?.name}</td>
-                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : sh.use_case === "translation" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}: ${(sh.directions ?? []).map((d) => cat?.directions?.[d]?.label ?? d).join(", ")} · corpus ${sh.dataset}` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
+                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : sh.use_case === "translation" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}: ${(sh.directions ?? []).map((d) => cat?.directions?.[d]?.label ?? d).join(", ")} · corpus ${sh.dataset}` : sh.use_case === "embedding" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}, EN/DE/ES, embedded` : sh.use_case === "intel" ? `Intel's benchmark, ${cat?.intel_io?.[sh.io!]?.label ?? sh.io} tokens` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
                   <td>{sh.request_mode}</td><td>{sh.concurrency.join(", ")}</td>
                   <td><Badge kind={sh.grade === "full" ? "ok" : "warn"}>{sh.grade === "full" ? "decision-grade" : "quick check"}</Badge></td>
                   <td className="small">{s.models.map(name).join(", ")}</td><td className="small">{s.instance_types.join(", ")}</td></tr>); })}
@@ -104,6 +104,17 @@ export default function Results() {
                       <button key={k} className={"chip " + (sla?.preset === k ? "on" : "")} onClick={() => setSla({ p99_e2e_ms: p.p99_e2e_ms, max_error_pct: 1, preset: k })}>{p.label} · ≤ {fmt.n(p.p99_e2e_ms)} ms</button>
                     ))}
                   </div>
+                ) : useCase === "embedding" ? (
+                  <div className="grid c3 mt">
+                    <div><Label help="An embedding request returns all its vectors at once: 99 of 100 requests within this many milliseconds. Empty = no limit.">Whole request within (ms)</Label><input type="number" value={(sla?.p99_e2e_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: null, p50_tpot_ms: null, p99_e2e_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>Embeddings generate no words, so the first-word and per-word targets do not apply.</div>
+                  </div>
+                ) : useCase === "intel" ? (
+                  <div className="grid c3 mt">
+                    <div><Label help="Intel's criterion: median time between generated tokens at most 100 ms.">Time per generated token (ms)</Label><input type="number" value={(sla?.p50_tpot_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p50_tpot_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div><Label help="Intel's criterion: first token within 3,000 ms (applied here to 99 of 100 requests).">First token within (ms)</Label><input type="number" value={(sla?.p99_ttft_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div className="small muted" style={{ alignSelf: "end" }}>Intel reports throughput at the highest concurrency that passes both.</div>
+                  </div>
                 ) : useCase === "translation" ? (
                   <div className="grid c3 mt">
                     <div><Label help="Longest acceptable time for the whole translation, 99 of 100 requests. Empty = no limit.">Whole translation within (ms)</Label><input type="number" value={(sla?.p99_e2e_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_e2e_ms: e.target.value ? Number(e.target.value) : null })} /></div>
@@ -135,6 +146,7 @@ export default function Results() {
               </div>
               <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} />
               {out.analysis.groups.map((g) => <GroupView key={g.key} g={g} view={view} series={series} setSeries={setSeries} limit={limit} target={(sla?.[g.units.lat_sla] as number | null | undefined) ?? null} />)}
+              {out.analysis.intel_reference && out.analysis.intel_reference.length > 0 && <IntelReferenceTable rows={out.analysis.intel_reference} groups={out.analysis.groups} />}
               <RunUtilization runIds={selected} />
               {out.analysis.warnings.length > 0 && (
                 <div className="card mt"><h3>Notes from the reports</h3><ul className="muted small">{Array.from(new Set(out.analysis.warnings)).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
@@ -172,11 +184,39 @@ function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_g
       {c.translation && (
         <div className="small mt">Translation quality: chrF <b>{fmt.n(c.translation.chrf)}</b> vs reference <Help text="chrF: character-level similarity (0-100) of this option's translations to the reference text, averaged over the items of the quality pass. A paraphrase lowers it for every option alike, so read it relative to the other options, not as an absolute grade." />{c.translation.chrf_vs_gpu != null ? <> · <b>{fmt.n(c.translation.chrf_vs_gpu)}</b> vs the GPU's translations{c.translation.exact_match_vs_gpu != null ? ` (${fmt.pct(c.translation.exact_match_vs_gpu)} identical)` : ""}</> : null}{c.translation.length_ratio != null ? <> · length {fmt.x(c.translation.length_ratio, 2)} of reference</> : null}{(c.translation.truncated_pct ?? 0) > 0 ? <> · <Badge kind="warn">{fmt.n(c.translation.truncated_pct)}% cut at the token limit</Badge></> : null}{c.translation.flag && <Badge kind="bad">quality loss: {c.translation.flag}</Badge>}</div>
       )}
-      {c.quality_delta != null && !c.translation && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
+      {c.embedding && (
+        <div className="small mt">Embedding quality: {c.embedding.cosine_mean != null ? <>cosine to the GPU's vectors <b>{c.embedding.cosine_mean.toFixed(4)}</b> (worst {c.embedding.cosine_min?.toFixed(4)}) <Help text="Cosine similarity between this option's vector and the GPU's vector for the same text; 1.0000 = identical direction. Differences come from BF16 arithmetic order, not from the model." /> · </> : null}retrieval DE→EN <b>{fmt.pct(c.embedding.recall_de)}</b>, ES→EN <b>{fmt.pct(c.embedding.recall_es)}</b> <Help text="For every German or Spanish text in the pool, is the nearest English text (by cosine) its own translation? A task score with a known answer; the same model on two machines should score alike." />{c.embedding.flag && <Badge kind="bad">quality loss: {c.embedding.flag}</Badge>}</div>
+      )}
+      {c.quality_delta != null && !c.translation && !c.embedding && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
     </div>
   );
 }
 
+function IntelReferenceTable({ rows, groups }: { rows: IntelReference[]; groups: Group[] }) {
+  const cat = useCatalog();
+  const ours = groups.flatMap((g) => g.points.filter((p) => p.meets && p.throughput).map((p) => ({ ...p, label: g.label })));
+  const cores = (t: string) => Math.max(1, Math.floor((cat?.instances[t]?.vcpus ?? 0) / 2));
+  return (
+    <div className="card mt">
+      <h3>Intel's published figures for this model <Help text="Intel's own measurements from its Software Catalog (two-socket Xeon 6 servers, vLLM v0.18, tensor parallel 4), at the highest concurrency that kept TPOT at or below 100 ms and TTFT at or below 3 s. Per core is the honest comparison: an AWS slice has a fraction of a socket's cores and of its memory bandwidth, and Intel's concurrency is several times higher." /></h3>
+      <table className="tbl mt">
+        <thead><tr><th>Source</th><th>System</th><th className="num">Cores</th><th>Memory</th><th className="num">Concurrency</th><th className="num">tok/s</th><th className="num">tok/s per core</th><th className="num">TPOT ms</th><th className="num">TTFT ms</th></tr></thead>
+        <tbody>
+          {ours.filter((p) => p.side === "cpu").sort((a, b) => (b.throughput ?? 0) - (a.throughput ?? 0)).slice(0, 3).map((p, i) => (
+            <tr key={"ours" + i}><td><Badge kind="cpu">this run</Badge></td><td>{p.instance_type} · {p.engine} · {p.precision}</td><td className="num">{cores(p.instance_type)}</td><td>{cat?.instances[p.instance_type]?.memory_gib} GiB</td><td className="num">{p.conc}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num"><b>{(p.throughput! / cores(p.instance_type)).toFixed(1)}</b></td><td className="num">{fmt.n(p.tpot_p50)}</td><td className="num">{fmt.n(p.ttft_p99)} (p99)</td></tr>
+          ))}
+          {ours.filter((p) => p.side === "gpu").sort((a, b) => (b.throughput ?? 0) - (a.throughput ?? 0)).slice(0, 1).map((p, i) => (
+            <tr key={"gpu" + i}><td><Badge kind="gpu">this run</Badge></td><td>{p.instance_type} · {p.engine} · {p.precision}</td><td className="num">—</td><td>{cat?.instances[p.instance_type]?.gpu_memory_gib} GiB GPU</td><td className="num">{p.conc}</td><td className="num">{fmt.n(p.throughput)}</td><td className="num">—</td><td className="num">{fmt.n(p.tpot_p50)}</td><td className="num">{fmt.n(p.ttft_p99)} (p99)</td></tr>
+          ))}
+          {rows.map((r, i) => (
+            <tr key={i}><td><Badge>Intel</Badge> <span className="tiny">{r.tested}</span></td><td>{r.sockets}× {r.cpu_model}</td><td className="num">{r.total_cores}</td><td>{r.memory_gb} GB DDR5-{r.ddr5_mt_s}</td><td className="num">{r.max_concurrency}</td><td className="num">{fmt.n(r.throughput_tok_s)}</td><td className="num"><b>{r.tok_s_per_core?.toFixed(1)}</b></td><td className="num">{fmt.n(r.tpot_ms)}</td><td className="num">{fmt.n(r.ttft_ms)} (mean)</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="tiny muted mt">Intel's TTFT is a mean; this tool's is the 99th percentile, which is stricter. Intel's throughput is at the highest passing concurrency; this run's rows are the measured concurrencies that pass your targets.</div>
+    </div>
+  );
+}
 function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; view: "all" | "one"; series: string | null; setSeries: (s: string | null) => void; limit: number; target: number | null }) {
   const shown = view === "one" ? (series && g.series.includes(series) ? series : g.series[0]) : null;
   const pts = shown ? g.points.filter((p) => p.series === shown) : g.points;
@@ -189,6 +229,9 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
         <SideCard kind="gpu" c={g.best_gpu} other={g.best_cpu} g={g} />
         <SideCard kind="cpu" c={g.best_cpu} other={g.best_gpu} g={g} />
       </div>
+      {g.mechanics?.why && (
+        <div className="note mt"><b>Why it came out this way.</b> {g.mechanics.why} <Help text="Computed from this run: tokens read and written per request, the share of time spent writing, the memory bandwidth each side reached (the model's weights stream once per written token) against what it has (STREAM measured on the CPU host; the vendor figure for the GPU), and the arithmetic rate at the heaviest load against each side's peak. Reading (prefill) is arithmetic, which AMX is built for; writing (decode) is memory bandwidth, where a price-matched CPU slice is furthest behind." /></div>
+      )}
       {g.equivalence.length > 0 && (
         <div className="mt">
           <h3>How many CPU instances replace one GPU? <Help text={`For every CPU measurement that meets your targets: the number of such instances needed to match the best GPU measurement's throughput, and the hourly cost of that many relative to the GPU. The dashed line is your limit of ${limit}.`} /></h3>

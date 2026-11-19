@@ -4,11 +4,13 @@ A benchmark harness that compares small-model inference (at most 4B parameters) 
 NVIDIA GPU instances (g6/g5) with Intel AMX CPU instances (m8i/c8i, m7i as fallback) in
 account `346399954218`, `us-east-1`. It has three parts:
 
-- **Standard suite.** Six models (M1-M6; M6 is Gemma 4 E4B, added 2026-11-19 from Intel's
-  Software Catalog entry for Xeon) on vLLM (GPU and CPU), OpenVINO (OVMS and a thin
-  server) and native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50,
-  P99 latency, throughput, prefill and decode speed, cost from the Price List API, AMX
-  verification and a quality check.
+- **Standard suite.** The catalog (reset 2026-11-19 to the models the comparison is about):
+  Qwen3-1.7B (M1, the model Intel's Software Catalog publishes Xeon benchmarks for), Gemma 4
+  E4B and E2B (M6, M7, from Intel's catalog entries), Flan-T5 XL (M5), RoBERTa-large (M3) and
+  EmbeddingGemma 300M (E1), on vLLM (GPU and CPU), OpenVINO (OVMS and a thin server) and
+  native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50, P99 latency,
+  throughput, prefill and decode speed, cost from the Price List API, AMX verification and a
+  quality check.
 - **DSPM/DLP suite.** Narrow-label classification (`SENSITIVE`/`NOT_SENSITIVE`,
   `ALLOW`/`BLOCK`, one category) on a synthetic dataset built in this repo, plus two
   purpose-built detectors (D1 openai/privacy-filter, D2 Roblox PII classifier v2).
@@ -16,6 +18,19 @@ account `346399954218`, `us-east-1`. It has three parts:
   corpus built in this repo (`tools/translation`): characters translated per second, cost
   per million characters, and translation quality (chrF) against the reference and against
   the GPU's own output. See [Translation suite](#translation-suite).
+- **Embedding suite.** The corpus's texts in all three languages embedded by EmbeddingGemma
+  (vLLM pooling runner on GPU and CPU, PyTorch through the thin server): embeddings per
+  second, cost per million embeddings, cosine agreement with the GPU's vectors and
+  cross-lingual retrieval recall@1 (a German or Spanish text's nearest English neighbour
+  should be its own translation). All prefill, no decode: the CPU's best case.
+- **Intel's benchmark, reproduced.** Intel's Software Catalog method (`vllm bench serve`,
+  random 128-token prompts, 128-token answers with `ignore_eos`, pass at TPOT ≤ 100 ms and
+  TTFT ≤ 3 s) as a suite, with Intel's own published figures for the same model
+  (`config/intel_catalog_benchmarks.json`, 79 rows for Qwen3 1.7B/4B/8B and Llama 3.1 8B on
+  two-socket Xeon 6 servers) shown per core next to the run's. Every results page also
+  carries a computed "why it came out this way" (`bench/mechanics.py`: reading vs writing
+  share, bytes per token, bandwidth reached against bandwidth available, arithmetic against
+  peak), and the executive summary ends with a "Technical details" section built from it.
 - **Migration calculator.** Estimates the engineering effort to move a model from NVIDIA
   to AMX and recommends a target based on capacity.
 

@@ -155,7 +155,7 @@ def derive_spec(found: dict, config: dict, tokenizer_cfg: dict | None, existing:
                                  "weights": "int4-g128", "activations": "bf16-or-int8-dynamic"}
         max_input, max_len = min(4096, max(512, ctx - 512)), min(16384, ctx)
         prompt_format = {"kind": "chat_template"} if has_chat else {"kind": "plain"}
-        suites = ["standard", "dspm", "translation"]
+        suites = ["standard", "dspm", "translation", "intel"]
         if not has_chat:
             notes.append("This model has no chat template, so prompts are sent as plain text; a base (non-instruct) model "
                          "may ramble instead of answering.")
@@ -223,6 +223,9 @@ def build_pools(model: ModelSpec, token: str | None, bucket: str, progress) -> d
     manifest_sets = bp.build_length_sets([model], sentences, out, 100, 0, ["short", "medium", "long"], token)
     progress("Building the 50-item quality set")
     manifest_sets.update(bp.build_quality_sets([model], out, CACHE_DIR / "hf", 0, token))
+    if "intel" in model.suites:
+        progress("Building Intel's random-prompt benchmark pools")
+        manifest_sets.update(bp.build_intel_sets([model], out, token))
     if "translation" in model.suites and (TRANSLATION_DIR / "items.jsonl.gz").exists():
         progress("Rendering the translation corpus through the model's prompt format")
         from tools.translation import build_requests as tr

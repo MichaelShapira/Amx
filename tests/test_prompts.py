@@ -24,11 +24,13 @@ def _tok(model):
 
 
 def test_qwen_chat_render_counts_match(catalog):
-    m = catalog.get("m1-qwen2.5-3b")
+    m = catalog.get("m1-qwen3-1.7b")
     tok = _tok(m)
     r = render(m, tok, "Is this sensitive?", system_text="POLICY")
     assert r["prompt"].startswith("<|im_start|>system\nPOLICY")
-    assert r["prompt"].rstrip().endswith("<|im_start|>assistant")
+    # Qwen3 with enable_thinking=false (prompt_format.template_kwargs): the template closes an empty think block,
+    # so the model answers at once instead of thinking first (Intel's recipe does the same server-side).
+    assert r["prompt"].rstrip().endswith("<|im_start|>assistant\n<think>\n\n</think>")
     assert r["tokens"] == count_tokens(tok, r["prompt"])
     assert not _adds_bos(tok)
 

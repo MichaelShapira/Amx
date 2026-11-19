@@ -6,7 +6,7 @@ run:
   account: "346399954218"
   region: us-east-1
   az_id: use1-az1
-  models: [m1-qwen2.5-3b]
+  models: [m1-qwen3-1.7b]
   cells:
     - {target: t1-g6, precision: bf16}
     - {target: t2-m8i-4xl, precision: bf16}

@@ -57,7 +57,7 @@ def aggregate_level(event: dict, context: Any = None) -> dict:
     summary = metrics.summarize_level(recs, concurrency=int(lvl["conc"]), kind=kind,
                                       ignore_eos=bool(pay.get("ignore_eos")), max_new_tokens=pay.get("max_tokens"))
     summary.update({k: lvl.get(k) for k in ("run_id", "cell_key", "level_key", "name", "conc", "batch", "repeat",
-                                             "workload", "direction", "accuracy", "target_id")})
+                                             "workload", "direction", "text_size", "accuracy", "target_id")})
     if recs:
         start = min(int(r["start_at_ns"]) for r in recs)
         end = max(int(r["wall_send_ns"]) + int(r["send_to_end_ns"]) for r in recs)
@@ -89,6 +89,8 @@ def aggregate_level(event: dict, context: Any = None) -> dict:
                 rows += [{"item_id": i, "error": r["error"]} for i in ids]
             elif len(ids) == 1:
                 rows.append({"item_id": ids[0], "output": outs})
+            elif len(ids) == len(outs):                      # a batched accuracy request (embeddings): one row per input
+                rows += [{"item_id": i, "output": [o]} for i, o in zip(ids, outs, strict=True)]
         name = level_name(lvl)                           # e.g. W1-short-accuracy
         common.put_jsonl_gz(f"runs/{lvl['run_id']}/predictions/{lvl['cell_key']}/{name}.jsonl.gz", rows)
     common.set_status(lvl["run_id"], f"LEVEL#{lvl['level_key']}", "done", n_ok=summary["n_ok"],
@@ -146,7 +148,7 @@ def _dataset_items(resolved: dict, split: str) -> list[dict] | None:
     """Labels for scoring: DSPM test items for every model and dev items for M3's threshold; the
     translation suite's parallel corpus (references) as the test items."""
     suite = resolved["run"].get("suite")
-    if suite == "translation":
+    if suite in ("translation", "embedding"):            # the embedding pools are the translation corpus's texts
         return common.read_jsonl("datasets/translation/v1/items.jsonl.gz") if split == "test" else None
     if suite != "dspm":
         return None

@@ -18,7 +18,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bench import amx, cost, dspm, dspm_scoring, metrics, pairing, quality, translation, utilization
+from bench import (
+    amx,
+    cost,
+    dspm,
+    dspm_scoring,
+    embedding,
+    metrics,
+    pairing,
+    quality,
+    translation,
+    utilization,
+)
 from bench.cellspec import cell_key
 from bench.config import ModelSpec, ResolvedCell, RunConfig, load_targets
 
@@ -217,6 +228,70 @@ def translation_quality(inp: RunInputs, cells: dict[str, ResolvedCell], models, 
     return out
 
 
+def embedding_quality(inp: RunInputs, cells: dict[str, ResolvedCell], models, run: RunConfig) -> dict[str, dict]:
+    """Per cell: cosine agreement with the model's GPU BF16 reference cell and cross-lingual retrieval
+    recall@1 over the pool (predictions/<cell>/embed-<size>-accuracy)."""
+    if run.suite != "embedding":
+        return {}
+    outputs: dict[str, dict[str, list[float]]] = {}
+    for key, rows in inp.predictions.items():
+        ck, name = key.split("/", 1)
+        if not name.startswith("embed-") or ck not in cells:
+            continue
+        for r in rows:
+            if r.get("error") or not r.get("output"):
+                continue
+            vec = (r["output"][0] or {}).get("embedding")
+            if vec:
+                outputs.setdefault(ck, {})[r["item_id"]] = vec
+    by_model_ref: dict[str, str] = {}
+    for ck, c in cells.items():
+        ref = models.get(c.model).quality_reference
+        if ref and c.target == ref.target and c.precision == ref.precision:
+            by_model_ref[c.model] = ck
+    out: dict[str, dict] = {}
+    for ck, outs in sorted(outputs.items()):
+        ref_ck = by_model_ref.get(cells[ck].model)
+        ref = outputs.get(ref_ck) if ref_ck and ref_ck != ck else None
+        sc = embedding.score(outs, ref)
+        if ref_ck and ref_ck != ck:
+            sc["reference_cell"] = ref_ck
+        sc["size"] = run.prompt_set
+        out[ck] = sc
+    floors: dict[str, dict] = {}
+    for ck, sc in out.items():
+        c = cells[ck]
+        if quality.is_bf16(c.precision) and (c.precision == "bf16" or c.model not in floors):
+            floors[c.model] = sc
+    for ck, sc in out.items():
+        c = cells[ck]
+        sc["flag"] = embedding.flag(sc, floors.get(c.model), precision=c.precision)
+        vs = sc.get("vs_reference_cell") or {}
+        sc["quality_delta"] = (1.0 - vs["cosine_mean"]) if vs.get("cosine_mean") is not None else None
+    return out
+
+
+def intel_reference(run: RunConfig, models, config_dir: Path = ROOT / "config") -> list[dict]:
+    """Intel's published rows for this run's models and token shape (config/intel_catalog_benchmarks.json),
+    with per-core figures, for the intel suite's report."""
+    if run.suite != "intel":
+        return []
+    path = config_dir / "intel_catalog_benchmarks.json"
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text())
+    repos = {models.get(m).hf_repo for m in run.models}
+    io = f"{run.intel.input_tokens}/{run.intel.output_tokens}" if run.intel else "128/128"
+    rows = []
+    for r in data["rows"]:
+        if r["model_id"] in repos and r["io"] == io:
+            per_core = (r["throughput_tok_s"] / r["total_cores"]) if r.get("total_cores") else None
+            rows.append({**{k: r.get(k) for k in ("model_id", "cpu_model", "sockets", "total_cores", "memory_gb", "ddr5_mt_s", "io",
+                                                   "max_concurrency", "throughput_tok_s", "tpot_ms", "ttft_ms", "vllm_version", "tested")},
+                         "tok_s_per_core": per_core})
+    return rows
+
+
 def _throughput(row: dict) -> float | None:
     if row.get("direction"):
         return row["chars_s"]
@@ -273,11 +348,14 @@ def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | N
     bucket = name.split("-", 1)[1] if workload and "-" in name else None
     if direction:
         qual = (tq or {}).get(name)        # chrF agreement with the GPU reference cell on this direction
+    if model.type == "embedding" and tq is not None and "retrieval" in tq:
+        qual = tq                          # embedding_quality: one entry per cell
     row = {
         "model": model.id, "slot": model.slot, "license": model.license, "target": target.id,
         "target_label": target.label, "instance_type": target.instance_type, "accelerator": target.accelerator,
         "engine": c.engine, "precision": c.precision, "variant": c.variant, "workload": workload, "bucket": bucket,
-        "direction": direction, "text_size": name[len(direction) + 1:] if direction else None,
+        "direction": direction, "model_type": model.type,
+        "text_size": name[len(direction) + 1:] if direction else m.get("text_size"),
         "chars_s": m.get("chars_per_s"), "chrf": (qual or {}).get("chrf") if direction else None,
         "conc": m["concurrency"], "batch": m.get("batch") or 1, "repeats": m.get("repeats", 1), "kind": m["kind"],
         "n_ok": m["n_ok"], "n_requests": m["n_requests"],
@@ -409,6 +487,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     amx_v = amx_verdicts(inp, cells, targets)
     qual = quality_scores(inp, cells, models)
     tq = translation_quality(inp, cells, models, run)
+    eq = embedding_quality(inp, cells, models, run)
     smoke = bool(res.get("smoke", run.is_smoke))
     rows = []
     for m in pooled_levels(inp):
@@ -418,7 +497,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if actual and actual != t.instance_type:
             t = t.model_copy(update={"instance_type": actual})
         row = make_row(m, c, models.get(c.model), t, prices.get(t.instance_type), amx_v.get(m["cell_key"]),
-                       qual.get(m["cell_key"]), smoke, tq.get(m["cell_key"]))
+                       qual.get(m["cell_key"]), smoke, tq.get(m["cell_key"]) or eq.get(m["cell_key"]))
         sla, preset = sla_for(row, run)
         row["meets_sla"], row["sla_reason"] = meets_sla(row, sla)
         row["sla_preset"] = preset
@@ -433,6 +512,9 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
                 row["meets_sla"], row["sla_reason"] = False, vs["reason"]
     per_model = analyze(rows, run)
     warnings = collect_warnings(rows, cells, models, amx_v, qual, smoke)
+    for ck, sc in sorted(eq.items()):
+        if sc.get("flag"):
+            warnings.append(f"{cells[ck].cell_id}: embedding quality flag: {sc['flag']}")
     for ck, per in sorted(tq.items()):
         for name, sc in sorted(per.items()):
             if sc.get("flag"):
@@ -454,7 +536,8 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if j["fair"] is False:
             warnings.append(f"UNFAIR PAIRING {j['cpu_target']} vs {j['gpu_target']}: {j['reason']}")
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
-            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "translation_quality": tq, "prices": prices,
+            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "translation_quality": tq, "embedding_quality": eq,
+            "intel_reference": intel_reference(run, models, config_dir), "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
             "not_run": not_run, "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
             "provenance": {k: res.get(k) for k in ("run_hash", "models_hash", "targets_hash", "harness_commit",
@@ -508,6 +591,8 @@ def analysis_key(r: dict) -> str:
     key = r["model"]
     if r.get("direction"):
         return f"{key} {r['direction']}-{r['text_size']}"
+    if r.get("model_type") == "embedding":
+        return f"{key} {r.get('text_size') or 'embed'} b{r['batch']}"
     if r["workload"]:
         key += f" {r['workload']}" + (f"-{r['bucket']}" if r["bucket"] else "")
     elif r["kind"] == "classifier":
@@ -571,7 +656,7 @@ def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
 
 # ---------------------------------------------------------------------------- rendering
 
-CSV_COLUMNS = ("model", "slot", "target", "target_label", "instance_type", "engine", "precision", "variant",
+CSV_COLUMNS = ("model", "slot", "model_type", "target", "target_label", "instance_type", "engine", "precision", "variant",
                "workload", "bucket", "direction", "text_size", "chars_s", "usd_per_1m_chars", "chrf",
                "conc", "batch", "repeats", "n_ok", "e2e_p1", "e2e_p50", "e2e_p99", "ttft_p1",
                "ttft_p50", "ttft_p99", "tpot_p50", "prefill_tok_s_p50", "decode_tok_s_p50", "agg_out_tok_s",
@@ -669,6 +754,10 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
         out += dspm_markdown(s)
     if s.get("translation_quality"):
         out += translation_markdown(s)
+    if s.get("embedding_quality"):
+        out += embedding_markdown(s)
+    if s.get("intel_reference"):
+        out += intel_markdown(s)
     if chart_names:
         out += ["## Charts", ""] + [f"![{n}](charts/{n})" for n in chart_names] + [""]
     out += ["## Price source", ""]
@@ -746,6 +835,33 @@ def translation_markdown(s: dict) -> list[str]:
                          _fmt(vs.get("exact_match_rate"), 3), a.get("flag") or "-"])
     out += [_md_table(["Cell", "Direction", "n", "chrF vs reference", "chrF P10", "Length ratio", "Truncated %",
                        "chrF vs GPU BF16", "Identical answers", "Flag"], body), "", MANAGED_MT_PRICES, ""]
+    return out
+
+
+def embedding_markdown(s: dict) -> list[str]:
+    out = ["## Embedding quality", "",
+           "Cosine similarity of each cell's vectors to the GPU BF16 cell's vectors for the same texts (1.0 = "
+           "identical direction), and cross-lingual retrieval: for every German or Spanish text, is the nearest "
+           "English text in the pool its own translation (recall@1)? The retrieval score needs no reference cell.", ""]
+    body = []
+    for ck, a in sorted(s["embedding_quality"].items()):
+        vs = a.get("vs_reference_cell") or {}
+        rt = a.get("retrieval") or {}
+        body.append([ck.replace("__", " "), str(a["n"]), str(a.get("dim")), _fmt(vs.get("cosine_mean"), 4), _fmt(vs.get("cosine_min"), 4),
+                     _fmt((rt.get("de") or {}).get("recall_at_1"), 3), _fmt((rt.get("es") or {}).get("recall_at_1"), 3), a.get("flag") or "-"])
+    out += [_md_table(["Cell", "n", "dim", "cosine vs GPU (mean)", "cosine vs GPU (min)", "DE->EN recall@1", "ES->EN recall@1", "Flag"], body), ""]
+    return out
+
+
+def intel_markdown(s: dict) -> list[str]:
+    out = ["## Intel's published figures for this model", "",
+           "From the Intel Software Catalog (config/intel_catalog_benchmarks.json): Intel's own measurements on two-socket "
+           "Xeon 6 servers, vLLM v0.18, TP=4, at the highest concurrency that keeps TPOT <= 100 ms and TTFT <= 3 s. Compare "
+           "per core: an AWS slice has a fraction of a socket's cores and of its memory bandwidth.", ""]
+    body = [[r["model_id"], f"{r['sockets']}x {r['cpu_model']}", str(r["total_cores"]), f"{r['memory_gb']} GB DDR5-{r['ddr5_mt_s']}",
+             str(r["max_concurrency"]), _fmt(r["throughput_tok_s"], 0), _fmt(r["tok_s_per_core"], 1), _fmt(r["tpot_ms"], 0), _fmt(r["ttft_ms"], 0),
+             r.get("tested") or "-"] for r in s["intel_reference"]]
+    out += [_md_table(["Model", "System", "Cores", "Memory", "Concurrency", "tok/s", "tok/s per core", "TPOT ms", "TTFT ms", "Tested"], body), ""]
     return out
 
 

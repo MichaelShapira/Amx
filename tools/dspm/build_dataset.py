@@ -34,8 +34,8 @@ from tools.dspm.checks import PRIORITY, label_for, top_category  # noqa: E402
 from tools.dspm.generator import Component, derive_seed  # noqa: E402
 from tools.dspm.scan import findings  # noqa: E402
 
-REF_MODEL = "m1-qwen2.5-3b"
-DSPM_MODELS = ("m1-qwen2.5-3b", "m2-qwen3-4b-2507", "m3-roberta-large-mnli", "m4-gemma-2-2b",
+REF_MODEL = "m1-qwen3-1.7b"
+DSPM_MODELS = ("m1-qwen3-1.7b", "m2-qwen3-4b-2507", "m3-roberta-large-mnli", "m4-gemma-2-2b",
                "m5-flan-t5-xl", "d1-privacy-filter", "d2-roblox-pii-v2")
 SEPARATORS = {"S1": "\n\n", "S2": "\n\n", "email": "\n\n---\n\n", "log": "\n", "config": "\n\n",
               "memo": "\n\n", "letter": "\n\n", "chat": "\n"}

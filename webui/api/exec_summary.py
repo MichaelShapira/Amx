@@ -37,8 +37,20 @@ Rules:
   with no comparison and no GPU-vs-CPU verdict. Never present a one-sided result as a comparison.
 - Structure, with these exact headings in Markdown: "## Bottom line", "## What was tested",
   "## Findings", "## Was the hardware the right size?", "## Caveats", "## Recommendation",
-  "## Suggested next step".
-- Bottom line: at most three sentences. Whole summary: at most 520 words.
+  "## Suggested next step", "## Technical details".
+- Bottom line: at most three sentences. Whole summary before "Technical details": at most 520 words.
+- "## Technical details" (120-220 words) explains WHY the CPU did well or badly here, for a reader who is
+  not an engineer, from each finding's "why_it_came_out_this_way" facts. Use this picture: a model answers
+  in two phases, READING the input (all input words processed at once, the model's weights fetched from
+  memory once, limited by arithmetic, which Intel's AMX units are built for) and WRITING the answer (one
+  word at a time, the whole set of weights re-read from memory for every word, limited by memory
+  bandwidth, where a price-matched CPU slice is furthest behind a GPU). State the task's reading/writing
+  shape, quote the bandwidth figures and shares given, say which side ran at its hardware limit, and
+  conclude whether a different setting could change the result (it cannot when both sides sit at their
+  memory limit) and which kinds of work would favor the CPU (reading-heavy: classification, embeddings,
+  extraction, detection). When "intel_published_figures" is present, put the run's per-core throughput
+  next to Intel's per-core figures and explain the difference by core count, memory bandwidth and
+  concurrency, not by software.
 - Say "measurement" or "load setting", never "level"; say "repeated" rather than "passes".
 """
 
@@ -59,6 +71,9 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                 t = c["translation"]
                 out["translation_quality"] = {k: t.get(k) for k in ("chrf", "chrf_vs_gpu", "exact_match_vs_gpu",
                                                                      "length_ratio", "truncated_pct", "flag")}
+            if c.get("embedding"):
+                e = c["embedding"]
+                out["embedding_quality"] = {k: e.get(k) for k in ("cosine_mean", "cosine_min", "recall_de", "recall_es", "flag")}
             return out
         groups.append({"question": g["label"], "units": {k: g["units"][k] for k in ("thr_label", "lat_label", "cost_label")},
                        "verdict": g["verdict"], "best_gpu": card(g["best_gpu"]), "best_cpu": card(g["best_cpu"]),
@@ -73,14 +88,38 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                                                                         "usd_delta_per_hour")}
                                                                    | {"pairing": (v["suggestion"].get("pairing") or {}).get("text")})
                                             if v.get("suggestion") else None}
-                                           for v in g.get("sizing") or []]})
+                                           for v in g.get("sizing") or []],
+                       "why_it_came_out_this_way": _mechanics(g.get("mechanics") or {})})
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
             "comparability": {k: comparability.get(k) for k in ("ok", "blockers", "warnings")},
             "hardware_that_did_not_run": [{k: nr.get(k) for k in ("run_id", "side", "target", "instance_type", "reason")}
                                           for nr in analysis.get("not_run") or []],
             "instance_pairing": analysis.get("pairing"), "findings": groups,
+            "intel_published_figures": [{k: r.get(k) for k in ("model_id", "cpu_model", "sockets", "total_cores", "memory_gb", "max_concurrency",
+                                                               "throughput_tok_s", "tok_s_per_core", "tpot_ms", "ttft_ms")}
+                                        for r in (analysis.get("intel_reference") or [])] or None,
             "notes_from_reports": sorted(set(analysis.get("warnings") or []))[:12]}
+
+
+def _mechanics(m: dict) -> dict | None:
+    """The reading/writing facts of a finding (bench/mechanics.py), rounded for the prompt."""
+    if not m or "shape" not in m:
+        return None
+    def r(x, nd=0):
+        return round(x, nd) if isinstance(x, (int, float)) else x
+    sides = {}
+    for side, v in (m.get("sides") or {}).items():
+        sides[side] = {"instance_type": v.get("instance_type"), "precision": v.get("precision"), "weights_gb": r(v.get("weights_gb"), 1),
+                       "memory_bandwidth_gb_s": r(v.get("bandwidth_gb_s")), "bandwidth_source": v.get("bandwidth_source"),
+                       "bandwidth_reached_gb_s_at_lowest_load": r(v.get("implied_bandwidth_gb_s")),
+                       "share_of_bandwidth_used": r(v.get("bandwidth_utilization"), 2),
+                       "arithmetic_tflops_at_heaviest_load": r(v.get("achieved_tflops"), 1),
+                       "share_of_arithmetic_peak": r(v.get("compute_utilization"), 2), "cpu_cores": v.get("cores")}
+    sh = m["shape"]
+    return {"input_tokens_per_request": r(sh.get("input_tokens")), "output_tokens_per_request": r(sh.get("output_tokens")),
+            "share_of_time_spent_writing": r(sh.get("writing_share"), 2), "generates_text": sh.get("generation"),
+            "sides": sides, "plain_language": m.get("why")}
 
 
 def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> dict:
@@ -96,7 +135,7 @@ def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> d
     t0 = time.time()
     r = rt.converse(modelId=model["call_id"], system=[{"text": SYSTEM}],
                     messages=[{"role": "user", "content": [{"text": prompt}]}],
-                    inferenceConfig={"maxTokens": 2500})
+                    inferenceConfig={"maxTokens": 3200})
     text = "".join(c.get("text", "") for c in r["output"]["message"]["content"])
     return {"markdown": text, "model": model, "usage": r.get("usage"), "seconds": round(time.time() - t0, 1),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}

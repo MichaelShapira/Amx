@@ -14,8 +14,9 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
   const [wl, setWl] = useState<string>(workloads?.[0] ?? "W1");
   const [label, setLabel] = useState("");
   const [hard, setHard] = useState("");
-  const [mid, setMid] = useState(model ?? "m1-qwen2.5-3b");
-  const [ps, setPs] = useState(promptSet ?? (useCase === "translation" ? "sentence" : "short"));
+  const [mid, setMid] = useState(model ?? "m1-qwen3-1.7b");
+  const [ps, setPs] = useState(promptSet ?? (useCase === "translation" || useCase === "embedding" ? "sentence" : useCase === "intel" ? "128" : "short"));
+  const [lang, setLang] = useState<string>("");
   const [dir, setDir] = useState<string>(directions?.[0] ?? "en-de");
 
   // Clear the previous use case's description before loading the next one: rendering the
@@ -24,18 +25,21 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
   useEffect(() => { if (promptSet) setPs(promptSet); }, [promptSet]);
   useEffect(() => { if (workloads && !workloads.includes(wl)) setWl(workloads[0] ?? "W1"); }, [workloads, wl]);
   useEffect(() => { if (directions && !directions.includes(dir)) setDir(directions[0] ?? "en-de"); }, [directions, dir]);
-  useEffect(() => { if (!promptSet) setPs(useCase === "translation" ? "sentence" : "short"); }, [useCase, promptSet]);
+  useEffect(() => { if (!promptSet) setPs(useCase === "translation" || useCase === "embedding" ? "sentence" : useCase === "intel" ? "128" : "short"); }, [useCase, promptSet]);
   useEffect(() => {
     setItems(null);
     const q = useCase === "standard" ? { prompt_set: ps, model: mid, n: compact ? 3 : 5, seed }
       : useCase === "translation" ? { prompt_set: ps, direction: dir, n: compact ? 2 : 4, seed }
+      : useCase === "embedding" ? { prompt_set: ps, direction: lang || undefined, n: compact ? 2 : 3, seed }
+      : useCase === "intel" ? { prompt_set: ps, model: mid, n: compact ? 2 : 3, seed }
       : { workload: wl, label: label || undefined, hard_case: hard || undefined, n: compact ? 3 : 5, seed };
     api.sample(useCase, q).then(setItems).catch(() => setItems([]));
-  }, [useCase, ps, mid, wl, dir, label, hard, seed, compact]);
+  }, [useCase, ps, mid, wl, dir, lang, label, hard, seed, compact]);
 
   if (!info) return <Spinner label="Loading the test data…" />;
   if (!info.available) return <div className="note warn">{info.reason}</div>;
-  const expectedKind = useCase === "standard" ? "prompts" : useCase === "translation" ? "parallel" : "documents";
+  const expectedKind = useCase === "standard" ? "prompts" : useCase === "translation" ? "parallel" : useCase === "embedding" ? "embedding" : useCase === "intel" ? "intel" : "documents";
+  const intelModels = cat?.models.filter((m) => m.use_cases.includes("intel")) ?? [];
   if (info.kind !== expectedKind) return <Spinner label="Loading the test data…" />;
 
   const stdModels = cat?.models.filter((m) => m.use_cases.includes("standard")) ?? [];
@@ -67,6 +71,43 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
               </select>
               <Help text="Prompts are wrapped in each model's own chat template, so the exact text differs slightly per model while the content is the same." />
             </label>
+            <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
+          </div>
+        </>
+      ) : useCase === "embedding" ? (
+        <>
+          {!compact && (
+            <div className="small muted mb">Corpus {info.version}, fingerprint {info.fingerprint} · {info.items} items × 3 languages · prefix on every text: <code>{info.prefix}</code></div>
+          )}
+          <div className="row small mb">
+            {!promptSet && (
+              <label className="row">Text size <select value={ps} onChange={(e) => setPs(e.target.value)}>
+                {Object.entries(info.sizes as Record<string, any>).map(([k, z]) => <option key={k} value={k}>{z.label}</option>)}
+              </select></label>
+            )}
+            <label className="row">Language <select value={lang} onChange={(e) => setLang(e.target.value)}><option value="">all three</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option></select></label>
+            <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
+          </div>
+        </>
+      ) : useCase === "intel" ? (
+        <>
+          {!compact && info.published && (
+            <table className="tbl mb">
+              <thead><tr><th>Model (Intel's figures)</th><th>System</th><th className="num">Cores</th><th>Shape</th><th className="num">Concurrency</th><th className="num">tok/s</th><th className="num">tok/s per core</th><th className="num">TPOT ms</th></tr></thead>
+              <tbody>
+                {Object.entries(info.published as Record<string, any[]>).flatMap(([m, rows]) => rows.filter((r) => r.io === `${ps}/128` || r.io === `${ps}/2048`).slice(0, 6).map((r, i) => (
+                  <tr key={m + i}><td>{i === 0 ? <b>{m}</b> : ""}</td><td className="small">{r.sockets}× {r.cpu_model}</td><td className="num">{r.total_cores}</td><td>{r.io}</td><td className="num">{r.max_concurrency}</td><td className="num">{Math.round(r.throughput_tok_s)}</td><td className="num">{(r.throughput_tok_s / r.total_cores).toFixed(1)}</td><td className="num">{Math.round(r.tpot_ms)}</td></tr>
+                )))}
+              </tbody>
+            </table>
+          )}
+          <div className="row small mb">
+            {!promptSet && (
+              <label className="row">Prompt length <select value={ps} onChange={(e) => setPs(e.target.value)}><option value="128">128 tokens</option><option value="2048">2,048 tokens</option></select></label>
+            )}
+            <label className="row">Tokenizer of <select value={intelModels.some((m) => m.id === mid) ? mid : intelModels[0]?.id ?? mid} onChange={(e) => setMid(e.target.value)}>
+              {intelModels.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select></label>
             <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
           </div>
         </>
@@ -131,6 +172,16 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
             <div><div className="tiny muted">What the model receives</div><pre style={{ marginTop: 4 }}>{x.text}</pre></div>
             <div><div className="tiny muted">Reference translation (scored against)</div><pre style={{ marginTop: 4 }}>{x.reference}</pre></div>
           </div>
+        </details>
+      )) : useCase === "embedding" ? items.map((x) => (
+        <details key={x.id} className="doc" open={compact ? undefined : true}>
+          <summary><span className="hd" style={{ display: "inline-flex" }}><Badge>{{ en: "English", de: "German", es: "Spanish" }[x.lang as string] ?? x.lang}</Badge><span className="muted">{x.id} · {x.domain} · {x.words} words · {x.chars} characters</span></span></summary>
+          <pre style={{ marginTop: 8 }}>{x.text}</pre>
+        </details>
+      )) : useCase === "intel" ? items.map((x) => (
+        <details key={x.id} className="doc">
+          <summary><span className="hd" style={{ display: "inline-flex" }}><Badge>random tokens</Badge><span className="muted">{x.id} · {x.tokens} tokens</span></span></summary>
+          <pre style={{ marginTop: 8 }}>{x.text}</pre>
         </details>
       )) : items.map((x) => (
         <details key={x.id} className="doc">

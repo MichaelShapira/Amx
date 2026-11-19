@@ -81,6 +81,63 @@ class Backend:
             probs = np.exp(z) / np.exp(z).sum(axis=1, keepdims=True)
         return probs.tolist(), enc["attention_mask"].sum(dim=1).tolist()
 
+    # -- embeddings (sentence-transformers layout, without the sentence-transformers package)
+    def embed(self, texts: list[str]) -> tuple[list[list[float]], list[int]]:
+        """Transformer -> pooling (1_Pooling/config.json) -> Dense modules (modules.json) -> L2 normalize,
+        the pipeline the model's modules.json describes; vLLM's pooling runner applies the same files."""
+        enc = self.tok(list(texts), return_tensors="pt", padding=True, truncation=True,
+                       max_length=self.settings.max_input_tokens)
+        with torch.inference_mode():
+            out = self.model(**{k: v.to(self.device) for k, v in enc.items()})
+            hidden = out.last_hidden_state.float()
+            mask = enc["attention_mask"].to(self.device).unsqueeze(-1).float()
+            if self.pooling.get("pooling_mode_cls_token"):
+                pooled = hidden[:, 0]
+            elif self.pooling.get("pooling_mode_lasttoken"):
+                last = enc["attention_mask"].sum(dim=1) - 1
+                pooled = hidden[torch.arange(hidden.shape[0]), last.to(self.device)]
+            else:                                                     # mean over real tokens (the default)
+                pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+            for layer in self.dense:
+                pooled = layer(pooled)
+            if self.normalize:
+                pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+        return pooled.cpu().tolist(), enc["attention_mask"].sum(dim=1).tolist()
+
+    def _load_st_modules(self) -> None:
+        """Read modules.json: pooling settings, Dense projections (weights from each folder's safetensors)
+        and whether the output is normalized. A plain checkpoint without modules.json means mean pooling."""
+        import json as _json
+
+        from safetensors.torch import load_file
+
+        root = Path(self.settings.model_dir)
+        self.pooling = {"pooling_mode_mean_tokens": True}
+        self.dense: list[torch.nn.Module] = []
+        self.normalize = False
+        mods_p = root / "modules.json"
+        if not mods_p.exists():
+            return
+        for mod in _json.loads(mods_p.read_text()):
+            t = mod.get("type", "")
+            folder = root / mod.get("path", "")
+            if t.endswith("Pooling"):
+                self.pooling = _json.loads((folder / "config.json").read_text())
+            elif t.endswith("Dense"):
+                cfg = _json.loads((folder / "config.json").read_text())
+                lin = torch.nn.Linear(cfg["in_features"], cfg["out_features"], bias=bool(cfg.get("bias", True)))
+                weights = load_file(str(folder / "model.safetensors")) if (folder / "model.safetensors").exists() \
+                    else torch.load(folder / "pytorch_model.bin", map_location="cpu")
+                lin.load_state_dict({k.replace("linear.", ""): v for k, v in weights.items()})
+                act = cfg.get("activation_function", "torch.nn.modules.linear.Identity")
+                layer: torch.nn.Module = lin
+                if not act.endswith("Identity"):
+                    name = act.rsplit(".", 1)[-1]
+                    layer = torch.nn.Sequential(lin, getattr(torch.nn, name)())
+                self.dense.append(layer.to(self.device).float().eval())
+            elif t.endswith("Normalize"):
+                self.normalize = True
+
     # -- token classification (D1)
     def detect(self, texts: list[str]) -> tuple[list[dict], list[int]]:
         enc = self.tok(texts, return_tensors="pt", padding=True, truncation=True,
@@ -105,6 +162,7 @@ class Backend:
 class TorchBackend(Backend):
     def _load(self) -> None:
         from transformers import (
+            AutoModel,
             AutoModelForCausalLM,
             AutoModelForSeq2SeqLM,
             AutoModelForSequenceClassification,
@@ -117,7 +175,8 @@ class TorchBackend(Backend):
         if s.device == "cuda" and not torch.cuda.is_available():
             raise SystemExit("THIN_DEVICE=cuda but CUDA is not available")
         cls = {"seq2seq": AutoModelForSeq2SeqLM, "causal": AutoModelForCausalLM,
-               "seq-cls": AutoModelForSequenceClassification, "token-cls": AutoModelForTokenClassification}[s.task]
+               "seq-cls": AutoModelForSequenceClassification, "token-cls": AutoModelForTokenClassification,
+               "embed": AutoModel}[s.task]
         self.tok = AutoTokenizer.from_pretrained(s.model_dir)
         if s.task == "causal":
             self.tok.padding_side = "left"
@@ -125,6 +184,8 @@ class TorchBackend(Backend):
                 self.tok.pad_token = self.tok.eos_token
         self.model = cls.from_pretrained(s.model_dir, dtype=TORCH_DTYPES[s.dtype]).to(s.device).eval()
         self.encoder_decoder = bool(getattr(self.model.config, "is_encoder_decoder", False))
+        if s.task == "embed":
+            self._load_st_modules()
         log.info("torch backend: %s %s on %s, torch %s, threads %d", s.task, s.dtype, s.device,
                  torch.__version__, torch.get_num_threads())
 

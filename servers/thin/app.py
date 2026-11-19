@@ -53,6 +53,9 @@ def create_app(settings: Settings, backend: backends.Backend | None = None) -> F
         if kind == "cls":
             probs, ntok = b.classify(inputs)
             results = [{"probs": p, "tokens": n} for p, n in zip(probs, ntok, strict=True)]
+        elif kind == "emb":
+            vecs, ntok = b.embed(inputs)
+            results = [{"embedding": v, "tokens": n} for v, n in zip(vecs, ntok, strict=True)]
         else:
             dets, ntok = b.detect(inputs)
             results = [{**d, "tokens": n} for d, n in zip(dets, ntok, strict=True)]
@@ -248,6 +251,25 @@ def create_app(settings: Settings, backend: backends.Backend | None = None) -> F
             data.append({"index": i, "label": labels[k] if k < len(labels) else str(k), "probs": probs,
                          "num_classes": len(probs)})
         return {"id": f"classify-{uuid.uuid4().hex}", "object": "list", "created": int(time.time()),
+                "model": settings.model_id, "data": data, "usage": _usage(results)}
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request):
+        """OpenAI-shaped embeddings, the same request and response vLLM's pooling runner serves."""
+        if task() != "embed":
+            return _err(404, f"/v1/embeddings is not available for task {task()}", "not_found")
+        try:
+            inputs = _inputs(await request.json(), allow_pairs=False)
+        except _Rejected as r:
+            return _err(r.status, r.message)
+        except ValueError as e:
+            return _err(400, f"bad request: {e}")
+        try:
+            results = await _batched("emb", inputs)
+        except RuntimeError as e:
+            return _err(500, str(e), "server_error")
+        data = [{"index": i, "object": "embedding", "embedding": r["embedding"]} for i, r in enumerate(results)]
+        return {"id": f"embd-{uuid.uuid4().hex}", "object": "list", "created": int(time.time()),
                 "model": settings.model_id, "data": data, "usage": _usage(results)}
 
     @app.post("/detect")

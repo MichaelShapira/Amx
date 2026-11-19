@@ -49,18 +49,21 @@ def _adds_bos(tok) -> bool:
     return bool(ids) and ids[0] == tok.bos_token_id
 
 
-def render_chat(tok, user_text: str, system_text: str | None = None) -> str:
+def render_chat(tok, user_text: str, system_text: str | None = None, template_kwargs: dict | None = None) -> str:
+    """template_kwargs: extra variables for the template (Qwen3: enable_thinking=False, else the model
+    thinks before every answer and the benchmark measures the thinking, not the task)."""
     messages: list[dict[str, Any]] = []
     if system_text:
         messages.append({"role": "system", "content": system_text})
     messages.append({"role": "user", "content": user_text})
+    kw = dict(template_kwargs or {})
     try:
-        text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kw)
     except Exception:  # noqa: BLE001 - templates without a system role (Gemma 2) raise here
         if not system_text:
             raise
         merged = [{"role": "user", "content": f"{system_text}\n\n{user_text}"}]
-        text = tok.apply_chat_template(merged, tokenize=False, add_generation_prompt=True)
+        text = tok.apply_chat_template(merged, tokenize=False, add_generation_prompt=True, **kw)
     if _adds_bos(tok) and tok.bos_token and text.startswith(tok.bos_token):
         text = text[len(tok.bos_token):]
     return text
@@ -76,7 +79,7 @@ def render(model: ModelSpec, tok, user_text: str, system_text: str | None = None
     """Render one request input for a model; returns {"prompt" | "pair", "tokens"}."""
     kind = model.prompt_format.kind
     if kind == "chat_template":
-        prompt = render_chat(tok, user_text, system_text)
+        prompt = render_chat(tok, user_text, system_text, model.prompt_format.template_kwargs)
         return {"prompt": prompt, "tokens": count_tokens(tok, prompt)}
     if kind == "plain":
         prompt = f"{system_text}\n\n{user_text}" if system_text else user_text

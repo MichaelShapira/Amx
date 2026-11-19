@@ -81,6 +81,8 @@ function StepUseCase({ w, set }: SP) {
   const pick = (uc: UseCase) => {
     const defaults = uc === "dspm" ? { concurrency: [1, 8, 16], sla: {} }
       : uc === "translation" ? { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } }
+      : uc === "embedding" ? { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch" as const, batch_sizes: [1, 8, 32] }
+      : uc === "intel" ? { concurrency: [16, 64, 128], sla: { p50_tpot_ms: 100, p99_ttft_ms: 3000 }, request_mode: "concurrent" as const }
       : { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 } };
     set({ use_case: uc, models: [], ...defaults });
   };
@@ -127,6 +129,24 @@ function StepData({ w, set }: SP) {
           <Label help="How many of the 200 items per direction each option translates once for the quality figures (chrF against the reference and against the GPU's translations). Every option translates the same items.">Items in the quality pass (per direction)</Label>
           <Chips options={[50, 100, 200]} value={[w.translation_items]} onChange={(v) => set({ translation_items: v.find((x) => x !== w.translation_items) ?? w.translation_items })} />
         </>
+      ) : w.use_case === "embedding" ? (
+        <>
+          <p className="muted">The texts of the synthetic EN/DE/ES corpus (every item in all three languages) are turned into embedding vectors, one text per input. Pick the size of the texts. Embedding is all reading: the whole text is processed at once and nothing is generated.</p>
+          <Label help="How long each text is. A paragraph is about five times the tokens of a short message, so it costs about five times the arithmetic.">Text size</Label>
+          <div className="tiles mb">
+            {Object.entries(cat.text_sizes).map(([k, p]) => <Tile key={k} selected={w.text_size === k} onClick={() => set({ text_size: k })} title={p.label} desc={p.help.split(" Dominated")[0]} />)}
+          </div>
+          <Label help="How many of the 600 texts per size (200 items x 3 languages) each option embeds once for the quality figures: cosine similarity to the GPU's vectors and cross-lingual retrieval (does a German or Spanish text's nearest English neighbour turn out to be its own translation?).">Texts in the quality pass</Label>
+          <Chips options={[150, 300, 600]} value={[w.embedding_items]} onChange={(v) => set({ embedding_items: v.find((x) => x !== w.embedding_items) ?? w.embedding_items })} />
+        </>
+      ) : w.use_case === "intel" ? (
+        <>
+          <p className="muted">Intel's published method: prompts of random vocabulary tokens with a fixed length, answers cut at a fixed length, requests sent as fast as the machine accepts them. The text means nothing; the test measures tokens read and written per second. Pick the token shape; Intel's own figures exist for every shape.</p>
+          <div className="tiles mb">
+            {Object.entries(cat.intel_io).map(([k, p]) => <Tile key={k} selected={w.intel_io === k} onClick={() => set({ intel_io: k })} title={p.label} desc={p.help} />)}
+          </div>
+          <Note>Intel's pass criteria are applied automatically: at most 100 ms per generated token (median) and the first token within 3 s. Intel's catalog figures for the same model and shape appear next to yours in the results, per core.</Note>
+        </>
       ) : (
         <>
           <p className="muted">A synthetic dataset of 3,000 documents with known answers. Pick the detection scenarios to run; each uses its own slice of the dataset.</p>
@@ -141,7 +161,7 @@ function StepData({ w, set }: SP) {
       )}
       <div className="hr" />
       <h3>Preview <span className="muted small">— real examples of what the model will see</span></h3>
-      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : w.use_case === "translation" ? w.text_size : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} directions={w.use_case === "translation" ? w.directions : undefined} compact model={w.models[0]} />
+      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : w.use_case === "translation" || w.use_case === "embedding" ? w.text_size : w.use_case === "intel" ? w.intel_io.split("/")[0] : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} directions={w.use_case === "translation" ? w.directions : undefined} compact model={w.models[0]} />
     </div>
   );
 }
@@ -180,7 +200,7 @@ function StepModels({ w, set }: SP) {
   const pick = (id: string) => {
     const m = cat.models.find((x) => x.id === id);
     const generative = !m || m.type === "decoder" || m.type === "encoder-decoder";
-    set({ models: [id], ...(w.use_case === "standard" ? { sla: generative ? { p99_ttft_ms: 2000, p50_tpot_ms: 150 } : { p99_e2e_ms: 1000 } } : w.use_case === "translation" ? { sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } } : {}) });
+    set({ models: [id], ...(w.use_case === "standard" ? { sla: generative ? { p99_ttft_ms: 2000, p50_tpot_ms: 150 } : { p99_e2e_ms: 1000 } } : w.use_case === "translation" ? { sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } } : w.use_case === "embedding" ? { sla: { p99_e2e_ms: 1000 } } : w.use_case === "intel" ? { sla: { p50_tpot_ms: 100, p99_ttft_ms: 3000 } } : {}) });
   };
   return (
     <div>
@@ -458,6 +478,20 @@ function StepLoad({ w, set }: SP) {
             <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
           <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>{chosen[0]?.name ?? "This model"} generates no words, so there is no "first word" or "per word" target to set.</div>
         </div>
+      ) : w.use_case === "embedding" ? (
+        <div className="grid c3">
+          <div><Label help="An embedding request returns all its vectors at once, so this is the one time limit that applies: 99 of 100 requests within this many milliseconds. 1,000 ms suits a search box; empty = no limit.">Whole request within (ms)</Label>
+            <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>Embeddings generate no words, so there is no first-word or per-word target.</div>
+        </div>
+      ) : w.use_case === "intel" ? (
+        <div className="grid c3">
+          <div><Label help="Intel's criterion: the median time between generated tokens must stay at or below 100 ms (10 tokens per second per user). Kept at Intel's value so the figures compare.">Time per generated token (ms)</Label>
+            <input type="number" value={w.sla.p50_tpot_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p50_tpot_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div><Label help="Intel's criterion: the first token within 3,000 ms (Intel uses the mean; this tool applies it to 99 of 100 requests, which is stricter).">First token within (ms)</Label>
+            <input type="number" value={w.sla.p99_ttft_ms ?? ""} onChange={(e) => set({ sla: { ...w.sla, p99_ttft_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div className="small muted" style={{ alignSelf: "end" }}>Intel reports throughput at the highest concurrency that still passes both; pick several concurrencies above to find yours.</div>
+        </div>
       ) : w.use_case === "translation" ? (
         <div className="grid c3">
           <div><Label help="The longest acceptable time for the whole translation, for 99 of 100 requests. A short message should come back in a few seconds; a paragraph in ten or so. Empty = no limit.">Whole translation within (ms)</Label>
@@ -535,12 +569,12 @@ function StepReview({ w, set, onStarted }: SP & { onStarted: (id: string) => voi
         <div className="card soft">
           <h3>What will run</h3>
           <ul className="muted" style={{ lineHeight: 1.8, paddingLeft: 18 }}>
-            <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : w.use_case === "translation" ? ` · ${cat.text_sizes[w.text_size]?.label ?? w.text_size}: ${w.directions.map((d) => cat.directions[d]?.label ?? d).join(", ")} · ${w.translation_items} items per direction in the quality pass` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
+            <li><b>{cat.use_cases[w.use_case].name}</b>{w.use_case === "standard" ? ` · ${cat.prompt_sets[w.prompt_set].label}, ${w.answer_tokens}-token answers` : w.use_case === "translation" ? ` · ${cat.text_sizes[w.text_size]?.label ?? w.text_size}: ${w.directions.map((d) => cat.directions[d]?.label ?? d).join(", ")} · ${w.translation_items} items per direction in the quality pass` : w.use_case === "embedding" ? ` · ${cat.text_sizes[w.text_size]?.label ?? w.text_size} in EN, DE and ES · ${w.embedding_items} texts in the quality pass` : w.use_case === "intel" ? ` · ${cat.intel_io[w.intel_io]?.label ?? w.intel_io} tokens, random prompts, Intel's pass criteria` : ` · ${w.workloads.map((x) => cat.workloads[x].label).join("; ")} · ${w.test_items} documents in the accuracy check`}</li>
             <li>Model: <b>{w.models.map((id) => cat.models.find((m) => m.id === id)?.name).join(", ")}</b></li>
             <li>Hardware: {w.gpu && <Badge kind="gpu">{hwLabel(w.gpu.hardware, w.gpu.instance_type)}</Badge>} {w.cpus.map((c) => <Badge key={c.hardware} kind="cpu">{hwLabel(c.hardware, c.instance_type)}</Badge>)} · {w.parallel_targets ? "in parallel" : "one after another"} · {cat.purchase[w.purchase].label}{w.purchase === "spot" && w.spot_fallback ? `, On-Demand after ${w.spot_wait_minutes} min without Spot` : ""} · gives up on a hardware option after {w.launch_attempts} failed launch attempts</li>
             <li>Load: {loadSentence(w)}</li>
             <li>{depthSentence(w, cat)}</li>
-            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: w.use_case === "translation" ? "whole translation within" : cat.models.find((m) => w.models.includes(m.id) && (m.type === "decoder" || m.type === "encoder-decoder")) ? "whole answer within" : "whole decision within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
+            <li>Targets: {w.use_case === "dspm" ? cat.presets[w.preset].label : Object.entries(w.sla).filter(([, v]) => v).map(([k, v]) => `${{ p99_ttft_ms: "first word within", p50_tpot_ms: "each generated word within", p99_e2e_ms: w.use_case === "translation" ? "whole translation within" : w.use_case === "embedding" ? "whole request within" : cat.models.find((m) => w.models.includes(m.id) && (m.type === "decoder" || m.type === "encoder-decoder")) ? "whole answer within" : "whole decision within" }[k as string] ?? k} ${v} ms`).join(", ") || "none"}</li>
           </ul>
         </div>
         <div className="card soft">

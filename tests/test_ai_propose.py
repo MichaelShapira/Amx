@@ -93,7 +93,7 @@ class FakeBedrock:
 
 def wizard(**over):
     from webui.api import main as M
-    return M.Wizard(**{"models": ["m2-qwen3-4b-2507"], **over})
+    return M.Wizard(**{"models": ["m7-gemma-4-e2b"], **over})
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ def test_prompt_carries_the_model_the_test_every_allowed_size_and_the_fairness_r
     ctx.pop("_module")
     assert ctx["current"] is None and ctx["fair_ratio"] == [0.5, 2.0]
     prompt = A.build_prompt(ctx)
-    for must in ("Qwen3 4B Instruct (Qwen/Qwen3-4B-Instruct-2507)", "4.02 B parameters", "ALLOWED GPU SIZES", "ALLOWED CPU SIZES",
+    for must in ("Gemma 4 E2B Instruct (google/gemma-4-E2B-it)", "5.12 B parameters", "ALLOWED GPU SIZES", "ALLOWED CPU SIZES",
                  "g6.2xlarge: 8 vCPUs", "1x L4 with 22 GiB", "m8i.4xlarge: 16 vCPUs", "FAIRNESS RULE: GPU hourly price / CPU hourly price must be between 0.5 and 2.0",
                  "Short prompts, answers of 128 tokens", "TASK: Propose the GPU size and the CPU size"):
         assert must in prompt, must
@@ -214,7 +214,7 @@ def test_ai_job_lifecycle_through_the_api(monkeypatch):
                 "tool_calls": 1, "seconds": 0.1, "sources": [], "steps": job["steps"], "generated_at": "now"}
 
     monkeypatch.setattr(A, "propose", runner)
-    w = {"models": ["m2-qwen3-4b-2507"]}
+    w = {"models": ["m7-gemma-4-e2b"]}
     r = c.post("/api/propose/ai", json=w).json()
     assert "job_id" in r and "THE TEST" in r["prompt_preview"]
     import time

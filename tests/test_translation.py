@@ -157,14 +157,17 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     with pytest.raises(ValueError, match="needs about 43 GiB.*c8i.4xlarge has 32 GiB"):
         build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
               instance_type="c8i.4xlarge")
-    # A 4B model keeps the target's budget on the 64 GiB host and gets a smaller one on a 32 GiB host.
-    q = MODELS.get("m2-qwen3-4b-2507")
+    # Gemma 4 E2B (9.5 GiB) keeps the target's budget on the 64 GiB host and gets 5 GiB on a 32 GiB host;
+    # Qwen3-1.7B (3.8 GiB) keeps 16 there.
+    q = MODELS.get("m7-gemma-4-e2b")
     assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "m8i.4xlarge", q, "bf16") == 32
-    assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", q, "bf16") == 9
+    assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", q, "bf16") == 5
+    assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", MODELS.get("m1-qwen3-1.7b"), "bf16") == 16
     gpu = build(cells["t1-g6"], m, TMAP["t1-g6"], run, run_id="r", bucket="b", hf_token_secret="s")["container"]["cmd"]
     assert "--limit-mm-per-prompt" in gpu and "--gpu-memory-utilization" in gpu
-    # Other models' commands carry none of these.
-    other = build(cells["t2-m8i-4xl"], q, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s")["container"]["cmd"]
+    # A model without vllm_args carries none of these.
+    other = build(cells["t2-m8i-4xl"], MODELS.get("m1-qwen3-1.7b"), TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b",
+                  hf_token_secret="s")["container"]["cmd"]
     assert "--reasoning-parser" not in other
 
 

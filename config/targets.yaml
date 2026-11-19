@@ -1,7 +1,7 @@
 # Target catalog (Requirement 2). Images are pinned by digest (research.md section 3).
 # built:<name> images are thin-server images built by CDK into the account's ECR repo.
 x-vllm-common: &vllm_common
-  max_num_seqs: 128
+  max_num_seqs: 256          # Intel's recipe value; the intel suite tests concurrency up to 256
   max_num_batched_tokens: 2048
   seed: 0
 
@@ -68,7 +68,7 @@ targets:
     engines:
       ovms:
         image: docker.io/openvino/model_server@sha256:148e3fe802261ed0b5b634de3bbccdefe7176a218ec34a88e382b40704c34a1c
-        args: {max_num_seqs: 128, max_num_batched_tokens: 2048, cache_size_gb: 24}
+        args: {max_num_seqs: 256, max_num_batched_tokens: 2048, cache_size_gb: 24}
       thin-openvino:
         image: built:thin-openvino
         args: {max_batch: 16, max_wait_ms: 5}

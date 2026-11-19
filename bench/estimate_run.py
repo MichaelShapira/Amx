@@ -29,7 +29,7 @@ PRIORS = {
 
 
 def _prior(target: TargetSpec, model_type: str) -> dict:
-    kind = "classifier" if model_type in ("encoder-classifier", "token-classifier") else model_type
+    kind = "classifier" if model_type in ("encoder-classifier", "token-classifier", "embedding") else model_type
     return PRIORS[(target.accelerator, kind)]
 
 

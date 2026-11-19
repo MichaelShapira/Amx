@@ -1,6 +1,6 @@
 """Render the translation request pools per model from the frozen corpus.
 
-    .venv/bin/python -m tools.translation.build_requests [--models m1-qwen2.5-3b ...]
+    .venv/bin/python -m tools.translation.build_requests [--models m1-qwen3-1.7b ...]
 
 Writes prompts/generated/<model>/translate-<direction>-<size>.jsonl: one line per corpus item of
 that size, the source text wrapped in the translation instruction (bench.translation.INSTRUCTION)

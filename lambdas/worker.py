@@ -61,7 +61,7 @@ def send(cl: httpx.Client, ev: dict, lines: list[dict]) -> dict:
         inputs = [s for line in lines for s in _inputs(line)]
         rec, resp = bc.post_json(cl, url, {"model": ev["payload"]["model"], "input": inputs}, timeout_s=timeout)
         if keep and resp:
-            rec["output"] = [{k: d.get(k) for k in ("label", "probs", "spans", "category_max") if k in d}
+            rec["output"] = [{k: d.get(k) for k in ("label", "probs", "spans", "category_max", "embedding") if k in d}
                              for d in resp.get("data", [])]
         rec["n_inputs"] = len(inputs)
     rec["prompt_tokens_expected"] = expected

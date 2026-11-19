@@ -20,8 +20,8 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 BUILT_IMAGE = re.compile(r"^built:[a-z0-9-]+$")
 
-ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder"]
-Suite = Literal["standard", "dspm", "translation"]
+ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder", "embedding"]
+Suite = Literal["standard", "dspm", "translation", "embedding", "intel"]
 TranslationDirection = Literal["en-de", "de-en", "en-es", "es-en"]
 TranslationSize = Literal["sentence", "paragraph"]
 EngineName = Literal["vllm", "ovms", "thin-torch", "thin-openvino"]
@@ -41,6 +41,9 @@ class PromptFormat(Strict):
     kind: Literal["chat_template", "plain", "pair", "prefix", "roblox_chat"]
     template: str | None = None
     prefix: str | None = None
+    # Extra keyword arguments for apply_chat_template, e.g. {enable_thinking: false} for Qwen3, whose
+    # template thinks by default (Intel's recipe passes the same through --default-chat-template-kwargs).
+    template_kwargs: dict[str, Any] | None = None
 
 
 class ClassifierSpec(Strict):
@@ -48,6 +51,15 @@ class ClassifierSpec(Strict):
     labels: list[str] = Field(default_factory=list)
     multi_label: bool = False
     max_length: int = 512
+
+
+class EmbeddingSpec(Strict):
+    """An embedding model (sentence-transformers layout: pooling, Dense projections, normalize).
+    prefix: the text prepended to every input (EmbeddingGemma's document prompt); both engines get it."""
+    batch_sizes: list[int] = Field(default_factory=lambda: [1, 8, 32, 64])
+    max_length: int = 512
+    dim: int
+    prefix: str = ""
 
 
 class QualityReference(Strict):
@@ -92,6 +104,7 @@ class ModelSpec(Strict):
     prompt_format: PromptFormat
     quality_reference: QualityReference | None = None
     classifier: ClassifierSpec | None = None
+    embedding: EmbeddingSpec | None = None
     precisions: dict[str, PrecisionSpec]
     # Extra `vllm serve` arguments this model needs on every vLLM target (a chat template, a
     # tool-call or reasoning parser, multimodal limits), appended verbatim after the harness's own
@@ -323,6 +336,22 @@ class TranslationCfg(Strict):
         return self
 
 
+class EmbeddingCfg(Strict):
+    """Embedding suite: the translation corpus's texts in all three languages, one pool per text size;
+    an accuracy pass keeps the vectors for the agreement and cross-lingual retrieval scores."""
+    languages: list[Literal["en", "de", "es"]] = Field(default_factory=lambda: ["en", "de", "es"])
+    test_items: int | None = None
+
+
+class IntelCfg(Strict):
+    """Intel's published vLLM benchmark method (Intel Software Catalog): random prompts of a fixed
+    token count, a fixed answer length with ignore_eos, request rate unbounded, one concurrency at a
+    time; pass/fail at TPOT <= 100 ms and TTFT <= 3 s. The report shows Intel's figures for the same
+    model next to ours (config/intel_catalog_benchmarks.json)."""
+    input_tokens: Literal[128, 2048] = 128
+    output_tokens: Literal[128, 2048] = 128
+
+
 class ExecutionCfg(Strict):
     """parallel_targets: run every hardware option at the same time (default) or one after
     another (fewer instances up at once; the run takes longer)."""
@@ -361,6 +390,8 @@ class RunConfig(Strict):
     execution: ExecutionCfg = Field(default_factory=ExecutionCfg)
     dspm: DspmCfg | None = None
     translation: TranslationCfg | None = None
+    embedding: EmbeddingCfg | None = None
+    intel: IntelCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20
 
@@ -381,6 +412,18 @@ class RunConfig(Strict):
                 raise ValueError(f"full mode needs >= {FULL_MIN_REPEATS} repeats")
         if self.suite == "dspm" and self.dspm is None:
             self.dspm = DspmCfg()
+        if self.suite == "embedding":
+            if self.embedding is None:
+                self.embedding = EmbeddingCfg()
+            if self.prompt_set not in ("sentence", "paragraph"):
+                raise ValueError("the embedding suite's prompt_set is the text size: sentence or paragraph")
+        if self.suite == "intel":
+            if self.intel is None:
+                self.intel = IntelCfg()
+            if self.prompt_set != "intel":
+                raise ValueError("the intel suite's prompt_set is 'intel' (random prompts of a fixed token count)")
+            if not self.sampling.ignore_eos or self.sampling.max_new_tokens != self.intel.output_tokens:
+                raise ValueError("the intel suite generates exactly intel.output_tokens per answer (ignore_eos: true)")
         if self.suite == "translation":
             if self.translation is None:
                 self.translation = TranslationCfg()

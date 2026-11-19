@@ -27,13 +27,13 @@ def targets():
 
 
 def test_catalogs_load(models, targets):
-    assert {m.slot for m in models.models} >= {"M1", "M2", "M3", "M4", "M5", "D1", "D2"}
+    assert {m.slot for m in models.models} == {"M1", "M3", "M5", "M6", "M7", "E1"}
     resolved = targets.resolved()
     assert resolved["t2-c8i-4xl"].instance_type == "c8i.4xlarge"
     # inherited env survives a partial override
     assert resolved["t2-c8i-4xl"].engines["vllm"].env["VLLM_CPU_NUM_OF_RESERVED_CPU"] == "1"
     assert resolved["t2-c8i-4xl"].engines["vllm"].args["kv_cache_gib"] == 16
-    assert resolved["t2-c8i-4xl"].engines["vllm"].args["max_num_seqs"] == 128
+    assert resolved["t2-c8i-4xl"].engines["vllm"].args["max_num_seqs"] == 256
     assert "amx_fp16" not in resolved["t5-m7i-4xl"].cpu_features
     assert resolved["t5-m7i-4xl"].enabled is False
 
@@ -71,7 +71,7 @@ def test_unpinned_image_rejected():
 
 
 def _run(**over):
-    base = dict(name="t", account="1", models=["m1-qwen2.5-3b"],
+    base = dict(name="t", account="1", models=["m1-qwen3-1.7b"],
                 cells=[{"target": "t1-g6", "precision": "bf16"}],
                 concurrency=[1], per_level={"requests": 50}, repeats=1)
     base.update(over)
@@ -131,7 +131,7 @@ def test_engine_must_exist_on_target(models, targets):
 def test_openvino_bf16_is_its_own_precision(models, targets):
     """BF16 on the OpenVINO option is `bf16-ov` (an FP16 IR run in BF16 by the CPU plugin), kept
     apart from `bf16` so a vLLM-only BF16 cell still cannot land on the OVMS target."""
-    for mid in ("m1-qwen2.5-3b", "m2-qwen3-4b-2507", "m4-gemma-2-2b"):
+    for mid in ("m1-qwen3-1.7b",):
         p = models.get(mid).precisions["bf16-ov"]
         assert p.engines == ["ovms"] and p.export == {"weight_format": "fp16"} and p.inference_precision is None
         assert p.weights == "bf16" and p.activations == "bf16" and p.hf_repo is None
@@ -156,6 +156,6 @@ def test_constrained_variant_only_on_vllm(models, targets):
 
 
 def test_suite_membership(models, targets):
-    run = _run(models=["d1-privacy-filter"], cells=[{"target": "t1-g6", "precision": "bf16"}])
+    run = _run(models=["e1-embeddinggemma-300m"], cells=[{"target": "t1-g6", "precision": "bf16"}])
     with pytest.raises(ValueError, match="standard suite"):
         resolve_cells(run, models, targets)

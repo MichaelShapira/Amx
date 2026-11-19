@@ -58,7 +58,7 @@ def test_calibration_median_and_clamp():
 
 
 def _row(acc, precision, conc, tp, *, meets=True, amx="VERIFIED", itype=None, price=None, e2e=500.0):
-    return {"model": "m1-qwen2.5-3b", "workload": None, "bucket": None, "kind": "generation", "batch": 1,
+    return {"model": "m1-qwen3-1.7b", "workload": None, "bucket": None, "kind": "generation", "batch": 1,
             "accelerator": acc, "target": "t1-g6" if acc == "gpu" else "t2-m8i-4xl", "precision": precision,
             "variant": "default", "conc": conc, "engine": "vllm", "agg_out_tok_s": tp, "cls_s": None, "docs_s": None,
             "instance_type": itype or ("g6.xlarge" if acc == "gpu" else "m8i.4xlarge"),
@@ -74,7 +74,7 @@ def test_go_conditional_nogo():
     gpu = _row("gpu", "bf16", 16, 1000.0)
     go = {"rows": [gpu, _row("cpu", "bf16", 16, 400.0)]}
     r = E.estimate(P([M()], sla=SLA), summary=go)["recommendations"]["chat"]
-    assert r["verdict"] == "Go" and r["proxy"] == "m1-qwen2.5-3b"
+    assert r["verdict"] == "Go" and r["proxy"] == "m1-qwen3-1.7b"
     assert r["capacity_equivalence"]["cpu_instances_per_gpu"] == 3
     # only INT8 meets -> below the requested BF16
     quant = {"rows": [gpu, _row("cpu", "bf16", 16, 400.0, meets=False), _row("cpu", "w8a8", 16, 500.0)]}

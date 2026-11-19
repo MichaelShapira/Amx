@@ -1,8 +1,9 @@
-# Model catalog (Requirement 1). Revisions are the Hugging Face commits pinned on
-# 2026-11-09 (research.md section 2). Nominal size was capped at 4B (Requirement 1.6) for M1-M5;
-# the cap is 8B since M6 (Gemma 4 E4B, 2026-11-19): Google calls it a 4B-class model ("E4B" =
-# 4.5B effective parameters, the per-layer embedding tables excluded), but the checkpoint stores
-# 8.0B parameters and every engine here loads all of them (14.9 GiB in BF16), so that is its size.
+# Model catalog (Requirement 1). Revisions are Hugging Face commits pinned on the date each entry was
+# added. Reset on 2026-11-19 to the models the comparison is about: the Gemma 4 instruct models and the
+# Qwen model Intel's Software Catalog publishes Xeon benchmarks for (chat / generation), Flan-T5 XL
+# (encoder-decoder), RoBERTa-large (classifier) and EmbeddingGemma (embeddings). The size cap is 8B:
+# Gemma 4 E4B stores 8.0B parameters (Google counts 4.5B "effective", the per-layer embedding tables
+# excluded) and every engine here loads all of them.
 size_cap_b: 8.0
 
 # bf16-ov: the uncompressed OpenVINO cell. optimum-cli has no bf16 weight format, so the IR is
@@ -14,59 +15,25 @@ x-ov-int8: &ov_int8 {weight_format: int8}
 x-ov-int4: &ov_int4 {weight_format: int4, group_size: 128, ratio: 1.0, sym: false}
 
 models:
-  - id: m1-qwen2.5-3b
+  # Qwen3-1.7B: the model Intel's catalog describes as "designed for extreme throughput on server
+  # CPUs" and publishes 128/128 benchmarks for (https://swcatalog.intel.com/models/qwen-qwen3-1-7b).
+  # Its chat template thinks by default; the recipe turns that off (--default-chat-template-kwargs
+  # enable_thinking=false), and so does this catalog, client-side, for every engine alike.
+  - id: m1-qwen3-1.7b
     slot: M1
-    hf_repo: Qwen/Qwen2.5-3B-Instruct
-    revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
-    type: decoder
-    license: qwen-research          # non-commercial: research or evaluation only
-    params: 3085938688
-    nominal_size_b: 3
-    suites: [standard, dspm, translation]
-    max_input_tokens: 4096
-    max_model_len: 16384
-    prompt_format: {kind: chat_template}
-    quality_reference: {target: t1-g6, precision: bf16}
-    precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
-      w8a8:
-        engines: [vllm]
-        hf_repo: RedHatAI/Qwen2.5-3B-Instruct-quantized.w8a8
-        revision: cd4a8836f6c1e916f43d7c60c4dc3796b7aca18c
-        weights: int8
-        activations: int8
-      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
-      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
-      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
-      awq-int4:
-        engines: [vllm]
-        hf_repo: Qwen/Qwen2.5-3B-Instruct-AWQ
-        revision: 3559b226e8ce77211e2c1bd7ddfb7686fec4d6dd
-        weights: int4-awq
-        activations: bf16
-        enabled: false
-
-  - id: m2-qwen3-4b-2507
-    slot: M2
-    hf_repo: Qwen/Qwen3-4B-Instruct-2507
-    revision: cdbee75f17c01a7cc42f958dc650907174af0554
+    hf_repo: Qwen/Qwen3-1.7B
+    revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
     type: decoder
     license: apache-2.0
-    params: 4022468096
-    nominal_size_b: 4
-    suites: [standard, dspm, translation]
+    params: 2031739904
+    nominal_size_b: 1.7
+    suites: [standard, dspm, translation, intel]
     max_input_tokens: 4096
     max_model_len: 16384
-    prompt_format: {kind: chat_template}
+    prompt_format: {kind: chat_template, template_kwargs: {enable_thinking: false}}
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
       bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
-      w8a8:
-        engines: [vllm]
-        hf_repo: RedHatAI/Qwen3-4B-Instruct-2507-quantized.w8a8
-        revision: 31ec5013b3319d7ba82b2a354d6e48b376204dd3
-        weights: int8
-        activations: int8
       bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
       int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
       int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
@@ -102,32 +69,6 @@ models:
         weights: int8
         activations: bf16-or-int8-dynamic
 
-  - id: m4-gemma-2-2b
-    slot: M4
-    hf_repo: google/gemma-2-2b-it
-    revision: 299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
-    type: decoder
-    license: gemma
-    gated: true
-    params: 2614341888
-    nominal_size_b: 2.6
-    suites: [standard, dspm, translation]
-    max_input_tokens: 4096
-    max_model_len: 8192
-    prompt_format: {kind: chat_template}   # Gemma 2 has no system role; policy goes into the user turn
-    quality_reference: {target: t1-g6, precision: bf16}
-    precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
-      w8a8:
-        engines: [vllm]
-        hf_repo: RedHatAI/gemma-2-2b-it-quantized.w8a8
-        revision: 9bafbb745168370d51b0e7e2c9356d6bc2fd1a5d
-        weights: int8
-        activations: int8
-      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
-      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
-      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
-
   - id: m5-flan-t5-xl
     slot: M5
     hf_repo: google/flan-t5-xl
@@ -144,10 +85,8 @@ models:
       bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
       # Measured and disabled 2026-11-14 (run flan-bf16-ov-vs-torch-20261114T183728Z, m8i.4xlarge,
       # smoke): OpenVINO BF16 through optimum-intel's generate loop lost to PyTorch eager BF16 on
-      # every metric — C=1 E2E 7.4 s vs 6.4 s, 17 vs 20 tok/s; C=4 59 vs 68 agg tok/s, $4.01 vs
-      # $3.46 per 1M tokens — and as BF16 it can only tie on quality. Both cells were AMX VERIFIED
-      # (OpenVINO chose bf16, 96/96 GEMMs on amx_bf16), so it was a fair comparison. Flip `enabled`
-      # to re-measure; the thin-openvino wrapper is not a serving engine, so expect the same.
+      # every metric. Both cells were AMX VERIFIED, so it was a fair comparison. Flip `enabled` to
+      # re-measure; the thin-openvino wrapper is not a serving engine, so expect the same.
       bf16-ov:
         engines: [thin-openvino]
         export: {weight_format: fp16, task: text2text-generation-with-past}
@@ -180,6 +119,7 @@ models:
   # nothing here. Thinking stays off: the template adds <|think|> only when enable_thinking is set.
   # No INT8 checkpoint exists for vLLM (RedHatAI publishes an FP8 one, GPU-only); OpenVINO/gemma-4-
   # E4B-it-int8-ov is a ready IR, but this harness exports IRs itself, so no OpenVINO cell yet.
+  # Live: vLLM CPU and GPU serve it (translation-smoke-m6-20261119T093236Z; 25 GiB KV on 64 GiB).
   - id: m6-gemma-4-e4b
     slot: M6
     hf_repo: google/gemma-4-E4B-it
@@ -188,7 +128,7 @@ models:
     license: apache-2.0
     params: 7996156490
     nominal_size_b: 8.0
-    suites: [standard, dspm, translation]
+    suites: [standard, dspm, translation, intel]
     max_input_tokens: 4096
     max_model_len: 16384
     prompt_format: {kind: chat_template}
@@ -204,102 +144,57 @@ models:
     notes: >-
       Google's Gemma 4 E4B: 8.0 billion stored parameters (4.5 billion effective), text, image and
       audio upstream, text only here. Apache-2.0. Served with the vLLM flags Intel's Xeon recipe
-      lists; PyTorch through the thin server loads the same checkpoint. Not yet measured live.
+      lists; PyTorch through the thin server loads the same checkpoint.
     precisions:
       bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
 
-  # --- DSPM/DLP detector models (design section 24) ---------------------------------
-  - id: d1-privacy-filter
-    slot: D1
-    hf_repo: openai/privacy-filter
-    revision: 7ffa9a043d54d1be65afb281eddf0ffbe629385b
-    type: token-classifier
-    license: apache-2.0
-    params: 1399486865
-    nominal_size_b: 1.4
-    suites: [dspm]
-    max_input_tokens: 2048
-    prompt_format: {kind: plain}
-    quality_reference: {target: t1-g6, precision: bf16}
-    precisions:
-      bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
-
-  - id: d2-roblox-pii-v2
-    slot: D2
-    hf_repo: Roblox/roblox-pii-classifier-v2
-    revision: 44a84be3eba4859a7e2a1f7b9cee8df61131f28b
-    type: encoder-classifier
-    license: apache-2.0
-    params: 559893507
-    nominal_size_b: 0.56
-    suites: [dspm]
-    max_input_tokens: 512
-    prompt_format: {kind: roblox_chat}
-    classifier:
-      batch_sizes: [1, 8, 32, 64]
-      labels: [privacy_asking_for_pii, privacy_giving_pii, directing_users_off_platform]
-      multi_label: true
-      max_length: 512
-    quality_reference: {target: t1-g6, precision: bf16}
-    precisions:
-      bf16: {engines: [vllm, thin-torch, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
-      fp16:
-        engines: [thin-torch, thin-openvino]
-        inference_precision: f16
-        weights: fp16
-        activations: fp16
-        requires_cpu_flag: amx_fp16
-      int8-ov:
-        engines: [thin-openvino]
-        export: {weight_format: int8, task: text-classification}
-        weights: int8
-        activations: bf16-or-int8-dynamic
-
-  # --- Alternatives inside the cap, disabled by default ------------------------------
-  - id: alt-modernbert-large-zeroshot
-    slot: M3-alt
-    hf_repo: MoritzLaurer/ModernBERT-large-zeroshot-v2.0
-    revision: a51e07b524299e309dd2b88d48b0cfa2bd9ec598
-    type: encoder-classifier
-    license: apache-2.0
-    params: 395833346
-    nominal_size_b: 0.4
-    suites: [standard, dspm]
-    max_input_tokens: 8192
-    prompt_format: {kind: pair}
-    classifier: {labels: [entailment, not_entailment]}
-    enabled: false
-    notes: optimum-intel 2.2.0 refuses ModernBERT export, so no OpenVINO precisions
-    precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
-
-  - id: alt-qwen2.5-1.5b
-    slot: M4-alt
-    hf_repo: Qwen/Qwen2.5-1.5B-Instruct
-    revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+  # Gemma 4 E2B Instruct: the compact member of the family (5.1B stored, 2B effective), from
+  # https://swcatalog.intel.com/models/google-gemma-4-e2b-it. Same serving flags as E4B.
+  - id: m7-gemma-4-e2b
+    slot: M7
+    hf_repo: google/gemma-4-E2B-it
+    revision: 4adf15748de9e1a0097b6274cee9c15836c41c37
     type: decoder
     license: apache-2.0
-    params: 1543714304
-    nominal_size_b: 1.5
-    suites: [standard, dspm]
+    params: 5123178051
+    nominal_size_b: 5.1
+    suites: [standard, dspm, translation, intel]
     max_input_tokens: 4096
     max_model_len: 16384
     prompt_format: {kind: chat_template}
-    enabled: false
+    quality_reference: {target: t1-g6, precision: bf16}
+    vllm_args:
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --reasoning-parser
+      - gemma4
+      - --limit-mm-per-prompt
+      - '{"image": 0, "audio": 0}'
+    notes: >-
+      Google's Gemma 4 E2B: 5.1 billion stored parameters (2 billion effective), text, image and
+      audio upstream, text only here. Apache-2.0. Same vLLM flags as E4B.
     precisions:
       bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
 
-  - id: alt-flan-t5-large
-    slot: M5-alt
-    hf_repo: google/flan-t5-large
-    revision: 0613663d0d48ea86ba8cb3d7a44f0f65dc596a2a
-    type: encoder-decoder
-    license: apache-2.0
-    params: 783150080
-    nominal_size_b: 0.78
-    suites: [standard, dspm]
-    max_input_tokens: 1024
+  # EmbeddingGemma 300M: the embedding model Intel's catalog lists
+  # (https://swcatalog.intel.com/models/redhatai-embeddinggemma-300m; RedHatAI's ungated mirror of
+  # google/embeddinggemma-300m, Gemma-3-based, 768-dimensional, mean pooling + two Dense projections +
+  # normalize in the sentence-transformers layout). Embeddings are all prefill: the whole input is
+  # read once and no token is generated, which is the work AMX is for. The document prompt from the
+  # model card is prepended to every input on every engine.
+  - id: e1-embeddinggemma-300m
+    slot: E1
+    hf_repo: RedHatAI/embeddinggemma-300m
+    revision: b1c4fbe856fc577b2d7acd9f3ed349a7315fdcfd
+    type: embedding
+    license: gemma
+    params: 302863104
+    nominal_size_b: 0.3
+    suites: [embedding]
+    max_input_tokens: 2048
     prompt_format: {kind: plain}
-    enabled: false
+    embedding: {batch_sizes: [1, 8, 32, 64], max_length: 512, dim: 768, prefix: "title: none | text: "}
+    quality_reference: {target: t1-g6, precision: bf16}
     precisions:
-      bf16: {engines: [thin-torch], weights: bf16, activations: bf16}
+      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}

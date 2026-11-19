@@ -42,9 +42,9 @@ def level_metric(ck: str, conc: int, ttft: float, tpot: float, **kw) -> dict:
     return m
 
 
-CELLS = [{"cell_id": "m1-qwen2.5-3b|t1-g6|bf16", "model": "m1-qwen2.5-3b", "target": "t1-g6", "precision": "bf16",
+CELLS = [{"cell_id": "m1-qwen3-1.7b|t1-g6|bf16", "model": "m1-qwen3-1.7b", "target": "t1-g6", "precision": "bf16",
           "engine": "vllm", "variant": "default", "quality_only": False},
-         {"cell_id": "m1-qwen2.5-3b|t2-m8i-4xl|bf16", "model": "m1-qwen2.5-3b", "target": "t2-m8i-4xl",
+         {"cell_id": "m1-qwen3-1.7b|t2-m8i-4xl|bf16", "model": "m1-qwen3-1.7b", "target": "t2-m8i-4xl",
           "precision": "bf16", "engine": "vllm", "variant": "default", "quality_only": False}]
 GPU, CPU = cell_key(CELLS[0]["cell_id"]), cell_key(CELLS[1]["cell_id"])
 
@@ -84,7 +84,7 @@ def test_rows_sla_and_capacity_equivalence():
     assert cpu1["amx"] == "VERIFIED" and cpu1["amx_basis"] == "hardware_counter"
     assert cpu1["meets_sla"]                                   # TTFT 135 ms, TPOT 38 ms
     assert not cpu16["meets_sla"] and "p50_tpot_ms" in cpu16["sla_reason"]   # TPOT 158 ms > 150 ms
-    pm = s["per_model"]["m1-qwen2.5-3b"]
+    pm = s["per_model"]["m1-qwen3-1.7b"]
     assert pm["best_gpu"]["conc"] == 16
     eq = {e["cpu_row"]["conc"]: e for e in pm["capacity_equivalence"]}
     gpu_tp, cpu_tp = gpu16["agg_out_tok_s"], rows[("t2-m8i-4xl", 4)]["agg_out_tok_s"]
@@ -99,7 +99,7 @@ def test_invalid_amx_excludes_cpu_rows_and_warns():
     cpu = [r for r in s["rows"] if r["accelerator"] == "cpu"]
     assert all(r["amx"] == "INVALID" and not r["meets_sla"] for r in cpu)
     assert any("AMX INVALID" in w for w in s["warnings"])
-    assert any("non-commercial" in w for w in s["warnings"]) and any("SMOKE" in w for w in s["warnings"])
+    assert any("SMOKE" in w for w in s["warnings"])          # Qwen3 is Apache-2.0: no license warning any more
 
 
 def test_quality_scored_against_gpu_reference():
@@ -115,11 +115,11 @@ def test_render_csv_markdown_and_charts():
     rows = list(csv.DictReader(io.StringIO(files["summary.csv"].decode())))
     assert len(rows) == 6 and set(report.CSV_COLUMNS) == set(rows[0])
     md = files["summary.md"].decode()
-    for part in ("SMOKE RUN", "## m1-qwen2.5-3b", "**best GPU**", "Capacity equivalence", "## Price source",
+    for part in ("SMOKE RUN", "## m1-qwen3-1.7b", "**best GPU**", "Capacity equivalence", "## Price source",
                  "InsufficientInstanceCapacity", "## Warnings", "TTFT P1/P50/P99"):
         assert part in md, part
     assert any(k.startswith("charts/") and k.endswith(".png") for k in files)
-    assert files["charts/m1-qwen2.5-3b-e2e_p99.png"][:4] == b"\x89PNG"
+    assert files["charts/m1-qwen3-1.7b-e2e_p99.png"][:4] == b"\x89PNG"
 
 
 def test_group_key_strips_only_the_repeat():
@@ -142,7 +142,7 @@ def test_side_that_never_ran_is_named_with_its_reason():
     assert "gave up after at most 30 attempts" in nr[0]["reason"] and "no GPU numbers" in nr[0]["reason"]
     assert any(w.startswith("t1-g6 DID NOT RUN (GPU side)") for w in s["warnings"])
     md = report.render(s, with_charts=False)["summary.md"].decode()
-    assert "**GPU SIDE DID NOT RUN** (t1-g6, g6.xlarge)" in md and md.index("DID NOT RUN") < md.index("## m1-qwen2.5-3b")
+    assert "**GPU SIDE DID NOT RUN** (t1-g6, g6.xlarge)" in md and md.index("DID NOT RUN") < md.index("## m1-qwen3-1.7b")
     # A complete run has nothing to report.
     assert report.build_summary(inputs())["not_run"] == []
     assert report.group_key("m1__t2__bf16__W1-short-accuracy__c16") == "m1__t2__bf16__W1-short-accuracy__c16"

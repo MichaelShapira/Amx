@@ -17,9 +17,10 @@ from bench.config import ModelSpec, ResolvedCell, RunConfig, TargetSpec
 CONTAINER = "bench-engine"
 PORT = 8000
 THIN_TASK = {"decoder": "causal", "encoder-decoder": "seq2seq", "encoder-classifier": "seq-cls",
-             "token-classifier": "token-cls"}
+             "token-classifier": "token-cls", "embedding": "embed"}
 API_TASK = {"decoder": "generate", "encoder-decoder": "generate", "encoder-classifier": "classify",
-            "token-classifier": "detect"}
+            "token-classifier": "detect", "embedding": "embed"}
+POOLING_TYPES = ("encoder-classifier", "token-classifier", "embedding")     # vLLM --runner pooling
 OV_TASK = {"decoder": "text-generation-with-past", "encoder-decoder": "text2text-generation-with-past",
            "encoder-classifier": "text-classification"}
 # Bytes per stored weight by the catalog's `weights` label, for the host-memory check below.
@@ -36,7 +37,7 @@ MIN_KV_GIB = 4
 
 
 def cell_key(cell_id: str) -> str:
-    """Filesystem- and S3-safe form of a cell id (m1-qwen2.5-3b|t2-m8i-4xl|bf16 -> m1-qwen2.5-3b__t2-m8i-4xl__bf16)."""
+    """Filesystem- and S3-safe form of a cell id (m1-qwen3-1.7b|t2-m8i-4xl|bf16 -> m1-qwen3-1.7b__t2-m8i-4xl__bf16)."""
     return re.sub(r"[^A-Za-z0-9._-]", "__", cell_id.replace("|", "__"))
 
 
@@ -126,6 +127,8 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         max_len = model.max_model_len or model.max_input_tokens
         if model.type in ("encoder-classifier", "token-classifier"):
             max_len = (model.classifier.max_length if model.classifier else model.max_input_tokens)
+        if model.type == "embedding":
+            max_len = model.embedding.max_length if model.embedding else model.max_input_tokens
         cmd = ["serve", "{MODEL_DIR}", "--served-model-name", model.id, "--dtype", "bfloat16",
                "--max-model-len", str(max_len), "--max-num-seqs", str(a.get("max_num_seqs", 128)),
                "--max-num-batched-tokens", str(a.get("max_num_batched_tokens", 2048)),
@@ -137,7 +140,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
             kv = cpu_kv_cache_gib(int(a.get("kv_cache_gib", 16)), target, instance_type, model, cell.precision)
             cmd += ["--kv-cache-memory-bytes", str(kv * 2**30),
                     "--block-size", str(a.get("block_size", 128))]
-        if model.type in ("encoder-classifier", "token-classifier"):
+        if model.type in POOLING_TYPES:
             cmd += ["--runner", "pooling"]
         cmd += list(model.vllm_args)          # the model's own serve flags (chat template, parsers, modality limits)
     elif cell.engine == "ovms":
@@ -152,7 +155,8 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
             "THIN_DTYPE": cell.precision if cell.precision in ("bf16", "fp16", "fp32") else "bf16",
             "THIN_DEVICE": "cuda" if gpu else "cpu",
             "THIN_MAX_BATCH": str(a.get("max_batch", 16)), "THIN_MAX_WAIT_MS": str(a.get("max_wait_ms", 5)),
-            "THIN_MAX_INPUT_TOKENS": str(model.classifier.max_length if model.classifier else model.max_input_tokens),
+            "THIN_MAX_INPUT_TOKENS": str(model.classifier.max_length if model.classifier else
+                                         model.embedding.max_length if model.embedding else model.max_input_tokens),
             "THIN_HOST": "0.0.0.0", "THIN_PORT": str(PORT),  # noqa: S104 - in-container bind; published on the private IP only
         }
         if cell.engine == "thin-openvino" and p.inference_precision:
@@ -174,6 +178,8 @@ def health(cell: ResolvedCell, model: ModelSpec) -> dict:
             probe["alt_paths"] = ["/v3/completions"]
     elif task == "classify":
         probe = {"path": "/classify", "body": {"model": model.id, "input": ["hello"]}}
+    elif task == "embed":
+        probe = {"path": "/v1/embeddings", "body": {"model": model.id, "input": ["hello"]}}
     else:
         probe = {"path": "/detect", "body": {"model": model.id, "input": ["hello"]}}
     path = "/v2/health/ready" if cell.engine == "ovms" else "/health"

@@ -115,10 +115,10 @@ def test_a_valid_access_token_reads_and_the_operator_group_writes(gated, monkeyp
     # A reader may not change anything: 403 with the reason, before the route runs.
     r = c.delete("/api/runs/does-not-matter", headers=reader)
     assert r.status_code == 403 and "operators" in r.json()["detail"]
-    r = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen2.5-3b"]}, headers=reader)
+    r = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen3-1.7b"]}, headers=reader)
     assert r.status_code == 403
     # An operator reaches the route (the plan runs and answers normally).
-    r = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen2.5-3b"],
+    r = c.post("/api/plan", json={"use_case": "standard", "models": ["m1-qwen3-1.7b"],
                                   "gpu": {"hardware": "t1-g6", "instance_type": "g6.xlarge", "precisions": ["bf16"]},
                                   "cpus": []}, headers=operator)
     assert r.status_code == 200 and "series" in r.json()

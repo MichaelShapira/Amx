@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-TASKS = ("seq2seq", "causal", "seq-cls", "token-cls")
+TASKS = ("seq2seq", "causal", "seq-cls", "token-cls", "embed")
 DTYPES = ("bf16", "fp16", "fp32")
 
 
@@ -42,7 +42,7 @@ class Settings:
             raise ValueError(f"THIN_DTYPE must be one of {DTYPES}, got {self.dtype!r}")
         if self.backend not in ("torch", "openvino"):
             raise ValueError("THIN_BACKEND must be torch or openvino")
-        if self.backend == "openvino" and self.task in ("causal", "token-cls"):
+        if self.backend == "openvino" and self.task in ("causal", "token-cls", "embed"):
             raise ValueError("the openvino backend serves seq2seq and seq-cls only (design 7.4, 24.5)")
         if self.max_batch < 1 or self.max_wait_ms < 0:
             raise ValueError("max_batch must be >= 1 and max_wait_ms >= 0")
