@@ -180,8 +180,8 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
     chat model whose BF16 runs only on vLLM must not kill the plan."""
     cat = get_catalog()
     depth = C.DEPTHS.get(w.depth)
-    requests = w.requests if w.depth == "custom" else (depth[2] if depth else 50)
-    passes = w.passes if w.depth == "custom" else (depth[3] if depth else 1)
+    requests = (w.requests or 50) if w.depth == "custom" else (depth[2] if depth else 50)
+    passes = (w.passes or 1) if w.depth == "custom" else (depth[3] if depth else 1)
     conc = [1] if w.request_mode == "single" else sorted(set(int(c) for c in w.concurrency)) or [1]
     sides = ([w.gpu] if w.gpu else []) + list(w.cpus)
     hw = {h["id"]: h for h in cat["hardware"]}
@@ -449,7 +449,9 @@ def post_plan(w: Wizard):
         if ms.license == "qwen-research":
             warnings.append(f"{C.model_name(m)} has a research-only license; its results are for evaluation, not a commercial decision.")
     if unfair and not w.allow_unfair:
-        problems.append("Unfair pairing: " + " ".join(p["reason"] for p in unfair) + " Pick comparable sizes or allow it explicitly.")
+        # Two CPU options on the same instance type share one reason: say it once.
+        reasons = list(dict.fromkeys(p["reason"].rstrip(".") for p in unfair))
+        problems.append("Unfair pairing: " + ". ".join(reasons) + ". Pick comparable sizes, or allow the pairing explicitly below.")
     return {"ok": not problems and not missing, "problems": problems + missing, "warnings": warnings, "series": series,
             "pairing": pairs, "estimate": est, "grade": "quick" if rc.is_smoke else "full",
             "yaml": yaml.safe_dump({"run": run}, sort_keys=False), "run": run,
@@ -471,8 +473,8 @@ def _ai_context(w: Wizard) -> dict:
     hw = {h["id"]: h for h in cat["hardware"]}
     instances = cat["instances"]
     depth = C.DEPTHS.get(w.depth)
-    requests = w.requests if w.depth == "custom" else (depth[2] if depth else 50)
-    passes = w.passes if w.depth == "custom" else (depth[3] if depth else 1)
+    requests = (w.requests or 50) if w.depth == "custom" else (depth[2] if depth else 50)
+    passes = (w.passes or 1) if w.depth == "custom" else (depth[3] if depth else 1)
     test = {"use case": C.USE_CASES[w.use_case]["name"] if w.use_case in C.USE_CASES else w.use_case,
             "request shape": C.REQUEST_MODES.get(w.request_mode, (w.request_mode,))[0],
             "requests at a time (each measured separately)": ", ".join(map(str, sorted(set(int(c) for c in w.concurrency)))) if w.request_mode != "single" else "1",
@@ -1243,8 +1245,11 @@ def wizard_from_run(run: dict, name: str | None = None, source_run_id: str | Non
     cat = get_catalog()
     hw = {h["id"]: h for h in cat["hardware"]}
     suite = run.get("suite", "standard")
-    per = (run.get("per_level") or {}).get("requests")
-    reps = run.get("repeats")
+    # run.yaml is written without defaults: a run with one repeat has no `repeats` key (and an older run
+    # may lack per_level). Fill the RunConfig defaults, else the draft is 'custom' with passes=None and
+    # /api/plan dies on int(None) (the Estimate panel then spun forever: 2026-11-19).
+    per = (run.get("per_level") or {}).get("requests") or 50
+    reps = run.get("repeats") or 1
     depth = next((k for k, d in C.DEPTHS.items() if d[2] == per and d[3] == reps), "custom")
     conc = sorted({int(c) for c in run.get("concurrency") or [1]})
     batches = run.get("batch_sizes") or [1]
@@ -1365,6 +1370,15 @@ def run_as_wizard_recommended(run_id: str):
                            "Every hardware option of this run was already the right size for its load; the sizes are unchanged.")
     if notes:
         w["recommendation"] += " " + " ".join(notes)
+    # Each side is sized for its own load, so the pair can leave the fair price band (a mostly idle CPU
+    # shrinks to m8i.xlarge while the GPU keeps its smallest size). Say so here; the plan will refuse it
+    # until the pairing is allowed explicitly or one side is changed.
+    if changes and w.get("gpu") and new_cpus:
+        unfair = [pairing.judge(c["instance_type"], w["gpu"]["instance_type"]) for c in new_cpus if c.get("instance_type")]
+        unfair = list(dict.fromkeys(p["reason"].rstrip(".") for p in unfair if p.get("fair") is False))
+        if unfair:
+            w["recommendation"] += (" Note: the recommended sizes are not a fair pair (" + "; ".join(unfair) +
+                                    "). The plan will ask you to confirm, or pick a GPU size closer in price.")
     w["changes"] = changes
     return w
 

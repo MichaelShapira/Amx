@@ -171,9 +171,12 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error("Your session has ended; signing you in again.");
   }
   if (!r.ok) {
-    let msg = r.statusText;
+    // CloudFront forwards a 500 with an empty statusText and a non-JSON body; an empty message read as
+    // "no error" downstream (the Estimate panel spun forever), so always name the status.
+    let msg: unknown = r.statusText;
     try { msg = (await r.json()).detail ?? msg; } catch { /* keep statusText */ }
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    const text = typeof msg === "string" ? msg : JSON.stringify(msg);
+    throw new Error(text && text !== "undefined" ? `${text} (HTTP ${r.status})` : `The server answered HTTP ${r.status} without a reason; check the API log.`);
   }
   return r.json();
 }

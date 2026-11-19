@@ -696,3 +696,25 @@ def test_technical_details_list_gemma_4_serving_flags():
     g = flags["m6-gemma-4-e4b"]
     assert g["engine"] == "vllm" and "--reasoning-parser" in g["args"] and "gemma4" in g["args"] and "--chat-template" not in g["args"]
     assert g["hf_repo"] == "google/gemma-4-E4B-it" and g["name"] == "Gemma 4 E4B Instruct"
+
+
+def test_a_stored_run_without_repeats_still_plans(monkeypatch):
+    """run.yaml omits defaults, so a one-repeat run has no `repeats` key. The draft 'Re-run with recommended
+    sizes' builds from it must plan (2026-11-19: depth 'custom' with passes=None made /api/plan raise on
+    int(None) and the Estimate panel spun forever)."""
+    from webui.api import main
+    run = {"name": "embedding-smoke-e1", "suite": "embedding", "mode": "smoke", "models": ["e1-embeddinggemma-300m"],
+           "cells": [{"target": "t1-g6", "precision": "bf16"}, {"target": "t2-m8i-4xl", "precision": "bf16"}],
+           "prompt_set": "sentence", "embedding": {"test_items": 300}, "concurrency": [1, 8, 32], "batch_sizes": [1, 8, 32],
+           "per_level": {"requests": 50}, "quality": {"enabled": False}, "sla": {"p99_e2e_ms": 1000, "max_error_pct": 1.0},
+           "purchase": {"type": "spot", "spot_fallback_on_demand": True},
+           "instance_types": {"t1-g6": "g6.xlarge", "t2-m8i-4xl": "m8i.4xlarge"}}
+    w = main.wizard_from_run(run)
+    assert w["depth"] == "quick" and w["requests"] is None and w["passes"] is None
+    pl = c.post("/api/plan", json={**w, "name": "again"}).json()
+    assert pl["ok"], pl.get("problems")
+    assert pl["run"]["repeats"] == 1 and pl["run"]["per_level"] == {"requests": 50}
+    # And a hand-made custom draft with the counts missing falls back to the defaults instead of failing.
+    pl2 = c.post("/api/plan", json={**w, "name": "again", "depth": "custom", "requests": None, "passes": None}).json()
+    assert pl2["ok"], pl2.get("problems")
+    assert pl2["run"]["repeats"] == 1 and pl2["run"]["per_level"] == {"requests": 50}
