@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api, type Catalog, type AwsStatus } from "./api";
 import Home from "./pages/Home";
@@ -13,6 +13,9 @@ import AuthGate, { useSession } from "./components/AuthGate";
 
 export const CatalogCtx = createContext<Catalog | null>(null);
 export const useCatalog = () => useContext(CatalogCtx);
+/** Re-fetch the catalog (models added in Setup or by a deploy since this tab was opened). */
+export const CatalogRefreshCtx = createContext<() => Promise<void>>(async () => {});
+export const useCatalogRefresh = () => useContext(CatalogRefreshCtx);
 
 type Theme = "light" | "dark";
 
@@ -28,6 +31,7 @@ function Shell() {
   const [aws, setAws] = useState<AwsStatus | null>(null);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
+  const refreshCatalog = useCallback(() => api.catalog().then(setCatalog).catch(() => {}), []);
   useEffect(() => { api.catalog().then(setCatalog).catch(() => setCatalog(null)); }, []);
   // The operator's AWS session lasts about an hour. Re-check every 30 s so the pill turns red with
   // the reason when it expires, and green again once fresh credentials are in place (no restart).
@@ -37,7 +41,7 @@ function Shell() {
   }, []);
 
   return (
-    <CatalogCtx.Provider value={catalog}>
+    <CatalogCtx.Provider value={catalog}><CatalogRefreshCtx.Provider value={refreshCatalog}>
       <div className="app">
         <aside className="sidebar">
           <div className="brand">
@@ -86,6 +90,6 @@ function Shell() {
           </ErrorBoundary>
         </main>
       </div>
-    </CatalogCtx.Provider>
+    </CatalogRefreshCtx.Provider></CatalogCtx.Provider>
   );
 }

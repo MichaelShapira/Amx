@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
 import { api, defaultWizard, fmt, type AiJob, type AiProposal, type AiStep, type Catalog, type Hardware, type ModelInfo, type Plan, type Side, type UseCase, type Wizard } from "../api";
-import { useCatalog } from "../App";
+import { useCatalog, useCatalogRefresh } from "../App";
 import DataPreview from "../components/DataPreview";
 import { Badge, Chips, Help, Label, Note, Spinner, Tile, Toggle, instanceLine } from "../components/ui";
 
@@ -10,6 +10,7 @@ const STEPS = ["Use case", "Test data", "Depth", "Models", "Hardware", "Load & t
 
 export default function NewRun() {
   const cat = useCatalog();
+  const refreshCatalog = useCatalogRefresh();
   const nav = useNavigate();
   const loc = useLocation();
   const [step, setStep] = useState<number>(() => Math.min(STEPS.length - 1, Math.max(0, Number((loc.state as any)?.step ?? 0) || 0)));
@@ -18,6 +19,17 @@ export default function NewRun() {
   });
   useEffect(() => { sessionStorage.setItem("wizard", JSON.stringify(w)); }, [w]);
   const set = (patch: Partial<Wizard>) => setW((p) => ({ ...p, ...patch }));
+  // A draft can name a model this tab's catalog predates (a model added in Setup from another tab, or
+  // shipped by a deploy after the page was opened, e.g. the embedding model behind "Re-run with
+  // recommended sizes"): fetch the catalog again once before the hardware step judges anything.
+  const unknownModels = cat ? w.models.filter((id) => !cat.models.some((m) => m.id === id)) : [];
+  const [refreshedFor, setRefreshedFor] = useState<string>("");
+  useEffect(() => {
+    const key = unknownModels.join(",");
+    if (!cat || !key || refreshedFor === key) return;
+    setRefreshedFor(key);
+    void refreshCatalog();
+  }, [cat, unknownModels.join(","), refreshedFor]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!cat) return;
     const known = new Set(cat.hardware.map((h) => h.id));
@@ -322,7 +334,9 @@ function StepHardware({ w, set }: SP) {
             {(kind === "gpu" ? gpuTypes : cpuTypes).map((s) => <option key={s.type} value={s.type}>{s.type} · {instanceLine(s, true)}</option>)}
           </select>
           <Label help="Number formats to test on this hardware. BF16 is the like-for-like baseline; compressed formats (INT8, INT4) are faster and cheaper on CPUs and the report shows what they cost in answer quality.">Number formats</Label>
-          {precsFor(hw.id).length === 0 && <Note kind="warn">This serving software cannot run {model?.name ?? "the chosen model"} at all. Untick it, or pick another model.</Note>}
+          {precsFor(hw.id).length === 0 && (chosenModels.length === 0
+            ? <Note kind="warn">{w.models.length ? <>The chosen model ({w.models.join(", ")}) is not in this page's catalog. Reload the page; if it is still missing, the model was removed in Setup.</> : <>No model is chosen yet: go back to step 4.</>}</Note>
+            : <Note kind="warn">This serving software cannot run {model.name} at all. Untick it, or pick another model.</Note>)}
           <Chips options={precsFor(hw.id)} value={side.precisions.filter((p) => precsFor(hw.id).includes(p))} onChange={(v) => setSide(hw.id, { precisions: v.length ? v : defaultPrecs(hw.id) })} labels={(p) => cat.precisions[p]?.label ?? p} blocked={blockedFor(hw.id)} />
           {blockedFor(hw.id).map((b) => <div key={b.option} className="muted small" style={{ marginTop: 6 }}>{b.reason}</div>)}
         </div>
