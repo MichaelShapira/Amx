@@ -388,6 +388,15 @@ def post_plan(w: Wizard):
             n = len(levels_for_cell(rc, c, models.get(c.model), run_id="ui", bucket="ui", pool_sizes=sizes))
         except ValueError as e:
             n, missing = 0, missing + [f"{c.cell_id}: {e}"]
+        if c.engine == "vllm" and tmap[c.target].accelerator == "cpu":
+            # The host must hold the model with its KV cache (bench/cellspec.py); the pre-check would refuse it too.
+            from bench import cellspec
+            eng = tmap[c.target].engines["vllm"]
+            try:
+                cellspec.cpu_kv_cache_gib(int(eng.args.get("kv_cache_gib", 16)), tmap[c.target], rtypes[c.target],
+                                          models.get(c.model), c.precision)
+            except ValueError as e:
+                problems.append(str(e))
         if n == 0 and not c.quality_only and not missing:
             problems.append(f"{C.model_name(c.model)} has no measurements for this choice (for example a 512-token model "
                             f"with long prompts); drop it or change the input length.")

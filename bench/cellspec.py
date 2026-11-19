@@ -24,7 +24,14 @@ OV_TASK = {"decoder": "text-generation-with-past", "encoder-decoder": "text2text
            "encoder-classifier": "text-classification"}
 # Bytes per stored weight by the catalog's `weights` label, for the host-memory check below.
 BYTES_PER_WEIGHT = {"bf16": 2, "fp16": 2, "fp32": 4, "int8": 1}
-HOST_HEADROOM_GIB = 6          # OS, the engine process, activations and the page cache on a vLLM CPU host
+# What a vLLM CPU host holds besides the KV cache, as a multiple of the checkpoint size: measured on
+# Gemma 4 E4B (14.89 GiB checkpoint) on m8i.4xlarge, 2026-11-19 (tools/gemma4_cpu_probe.py): the worker
+# reported "Model loading took 22.42 GiB" and the host had 32 GiB in use before the KV cache was
+# counted (engine core, API server, inductor compile workers) -> 2.15x. The first live run gave that
+# model the target's 32 GiB KV budget and the 64 GiB host hung (SSM and the CloudWatch agent went
+# silent five minutes after the container started).
+NON_KV_FACTOR = 2.2
+HOST_HEADROOM_GIB = 6          # OS, agents, docker and the page cache the sync of the next model needs
 MIN_KV_GIB = 4
 
 
@@ -78,15 +85,22 @@ def weights_gib(model: ModelSpec, precision: str) -> float:
 def cpu_kv_cache_gib(default_kv: int, target: TargetSpec, instance_type: str | None, model: ModelSpec,
                      precision: str) -> int:
     """The vLLM CPU KV-cache budget: the target's figure scaled to the instance size, then capped so
-    that weights, KV cache and HOST_HEADROOM_GIB fit the host's memory. The 4B models never hit the
-    cap (c8i.4xlarge: 32 GiB host, 8 GiB weights, 16 GiB KV); an 8B checkpoint on the same host
-    does (15 GiB weights leave 9 GiB), where the target's 16 GiB would be refused by vLLM at start."""
+    that NON_KV_FACTOR x checkpoint + KV cache + HOST_HEADROOM_GIB fit the host's memory. A 4B model
+    on a 64 GiB host keeps the target's 32 GiB; Gemma 4 E4B (15 GiB) gets 25 GiB there, and a host
+    that cannot hold even MIN_KV_GIB is refused with the size it needs (the plan and the pre-check
+    both show the message) instead of starting an engine the kernel will kill."""
     from bench.pairing import scale_kv_cache, spec
 
     kv = scale_kv_cache(default_kv, target.instance_type, instance_type)
     host = spec(instance_type or target.instance_type or "") or {}
     if host.get("memory_gib"):
-        room = int(host["memory_gib"] - weights_gib(model, precision) * 1.1 - HOST_HEADROOM_GIB)
+        need = weights_gib(model, precision) * NON_KV_FACTOR + HOST_HEADROOM_GIB
+        room = int(host["memory_gib"] - need)
+        if room < MIN_KV_GIB:
+            raise ValueError(f"{model.id} needs about {need + MIN_KV_GIB:.0f} GiB of host memory on vLLM CPU "
+                             f"({weights_gib(model, precision):.1f} GiB of weights x {NON_KV_FACTOR:g} for the engine, "
+                             f"{HOST_HEADROOM_GIB} GiB for the host, {MIN_KV_GIB} GiB of KV cache); "
+                             f"{instance_type or target.instance_type} has {host['memory_gib']:.0f} GiB. Pick a larger size.")
         kv = min(kv, room)
     return max(MIN_KV_GIB, kv)
 

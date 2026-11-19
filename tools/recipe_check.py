@@ -41,15 +41,17 @@ CONCURRENCY = ((1, 8), (16, 64), (64, 192), (128, 256))      # (max concurrency,
 
 REMOTE = r"""#!/bin/bash
 set -uo pipefail
-MODEL="__MODEL__"; BUCKET="__BUCKET__"; PREFIX="__PREFIX__"; KV_OURS_BYTES=__KV_OURS__
+MODELS="__MODELS__"; CONFIGS="__CONFIGS__"; BUCKET="__BUCKET__"; PREFIX="__PREFIX__"; KV_OURS_BYTES=__KV_OURS__
 OURS="__OURS_IMAGE__"; INTEL="__INTEL_IMAGE__"
 HF=/opt/models/hfcache; OUT=/var/lib/bench/recipe-check; mkdir -p "$HF" "$OUT"
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 lscpu > "$OUT/lscpu.txt"; nproc > "$OUT/nproc.txt"; free -g > "$OUT/free.txt"
 log "pulling images"; docker pull -q "$OURS" >/dev/null; docker pull -q "$INTEL" >/dev/null
-log "downloading $MODEL"
-docker run --rm -v "$HF:/root/.cache/huggingface" --entrypoint python3 "$OURS" -c \
-  "from huggingface_hub import snapshot_download; print(snapshot_download('$MODEL'))" >"$OUT/download.txt" 2>&1 || { cat "$OUT/download.txt"; exit 1; }
+for MODEL in $MODELS; do
+  log "downloading $MODEL"
+  docker run --rm -v "$HF:/root/.cache/huggingface" --entrypoint python3 "$OURS" -c \
+    "from huggingface_hub import snapshot_download; print(snapshot_download('$MODEL'))" >>"$OUT/download.txt" 2>&1 || { cat "$OUT/download.txt"; exit 1; }
+done
 COMMON_ENV=(-e VLLM_RPC_TIMEOUT=100000 -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 -e VLLM_ENGINE_ITERATION_TIMEOUT_S=120)
 start_server() {   # name image <docker opts...> -- <cmd...>
   local name=$1; shift; local image=$1; shift; local opts=() ; while [[ "$1" != "--" ]]; do opts+=("$1"); shift; done; shift
@@ -88,12 +90,15 @@ run_config() {   # name image opts... -- cmd...
   fi
   docker rm -f bench-engine >/dev/null 2>&1 || true
 }
-run_config intel_v023 "$INTEL" --privileged --shm-size 4g "${COMMON_ENV[@]}" -e VLLM_CPU_SGL_KERNEL=1 -e VLLM_CPU_KVCACHE_SPACE=40 --entrypoint /bin/bash -- -lc \
+for MODEL in $MODELS; do
+TAG=$(echo "$MODEL" | tr '/' '_' | tr 'A-Z' 'a-z')
+[[ " $CONFIGS " == *" intel_v023 "* ]] && run_config "intel_v023.$TAG" "$INTEL" --privileged --shm-size 4g "${COMMON_ENV[@]}" -e VLLM_CPU_SGL_KERNEL=1 -e VLLM_CPU_KVCACHE_SPACE=40 --entrypoint /bin/bash -- -lc \
   "python -m vllm.entrypoints.openai.api_server --model $MODEL --dtype bfloat16 --distributed-executor-backend mp --trust-remote-code --disable-log-stats --tensor-parallel-size 1 --block-size 128 --enable-chunked-prefill --max-num-batched-tokens 2048 --max-num-seqs 256"
-run_config ours_v033 "$OURS" --shm-size 4g --cap-add SYS_NICE --security-opt seccomp=/opt/bench/seccomp-vllm.json -e VLLM_CPU_OMP_THREADS_BIND=auto -e VLLM_CPU_NUM_OF_RESERVED_CPU=1 --entrypoint vllm -- \
+[[ " $CONFIGS " == *" ours_v033 "* ]] && run_config "ours_v033.$TAG" "$OURS" --shm-size 4g --cap-add SYS_NICE --security-opt seccomp=/opt/bench/seccomp-vllm.json -e VLLM_CPU_OMP_THREADS_BIND=auto -e VLLM_CPU_NUM_OF_RESERVED_CPU=1 --entrypoint vllm -- \
   serve "$MODEL" --served-model-name "$MODEL" --dtype bfloat16 --max-model-len 16384 --max-num-seqs 128 --max-num-batched-tokens 2048 --no-enable-prefix-caching --seed 0 --host 0.0.0.0 --port 8000 --kv-cache-memory-bytes "$KV_OURS_BYTES" --block-size 128
-run_config intel_v033 "$OURS" --privileged --shm-size 4g "${COMMON_ENV[@]}" -e VLLM_CPU_SGL_KERNEL=1 -e VLLM_CPU_KVCACHE_SPACE=40 --entrypoint vllm -- \
+[[ " $CONFIGS " == *" intel_v033 "* ]] && run_config "intel_v033.$TAG" "$OURS" --privileged --shm-size 4g "${COMMON_ENV[@]}" -e VLLM_CPU_SGL_KERNEL=1 -e VLLM_CPU_KVCACHE_SPACE=40 --entrypoint vllm -- \
   serve "$MODEL" --dtype bfloat16 --distributed-executor-backend mp --trust-remote-code --disable-log-stats --tensor-parallel-size 1 --block-size 128 --enable-chunked-prefill --max-num-batched-tokens 2048 --max-num-seqs 256 --host 0.0.0.0 --port 8000
+done
 log "uploading"; aws s3 cp --only-show-errors --recursive "$OUT" "s3://$BUCKET/$PREFIX/" && log "done: s3://$BUCKET/$PREFIX/"
 """
 
@@ -166,19 +171,20 @@ def summarize(bucket: str, prefix: str) -> None:
     for k in sorted(keys):
         if k.endswith(".json") and ".c" in k:
             d = json.loads(s3.get_object(Bucket=bucket, Key=k)["Body"].read())
-            name = k.rsplit("/", 1)[1].split(".c")[0]
+            name = k.rsplit("/", 1)[1].rsplit(".c", 1)[0]
             rows.append((name, d.get("max_concurrency"), d.get("output_throughput"), d.get("request_throughput"),
                          d.get("median_ttft_ms"), d.get("median_tpot_ms"), d.get("p99_e2el_ms"), d.get("completed")))
-    print(f"\n{'config':12} {'conc':>5} {'out tok/s':>10} {'req/s':>7} {'ttft p50':>9} {'tpot p50':>9} {'e2e p99':>9} {'n':>4}")
+    print(f"\n{'config':34} {'conc':>5} {'out tok/s':>10} {'req/s':>7} {'ttft p50':>9} {'tpot p50':>9} {'e2e p99':>9} {'n':>4}")
     for r in sorted(rows, key=lambda x: (x[0], x[1] or 0)):
-        print(f"{r[0]:12} {r[1]!s:>5} {r[2] or 0:10.1f} {r[3] or 0:7.2f} {r[4] or 0:9.0f} {r[5] or 0:9.1f} {r[6] or 0:9.0f} {r[7]!s:>4}")
+        print(f"{r[0]:34} {r[1]!s:>5} {r[2] or 0:10.1f} {r[3] or 0:7.2f} {r[4] or 0:9.0f} {r[5] or 0:9.1f} {r[6] or 0:9.0f} {r[7]!s:>4}")
     print(f"\nartifacts: s3://{bucket}/{prefix}/ (server logs: <config>.server.log)")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--instance-type", default="m8i.4xlarge")
-    ap.add_argument("--model", default="Qwen/Qwen3-4B")
+    ap.add_argument("--models", default="Qwen/Qwen3-4B", help="space-separated Hugging Face ids")
+    ap.add_argument("--configs", default="intel_v023 ours_v033 intel_v033", help="space-separated subset")
     ap.add_argument("--kv-ours-gib", type=int, default=32, help="what cellspec gives the t2 target on this size")
     ap.add_argument("--bucket", default="amx-gpu-bench-346399954218-us-east-1")
     ap.add_argument("--instance-id", default=None, help="reuse a running instance instead of launching")
@@ -200,7 +206,8 @@ def main(argv=None) -> int:
     try:
         wait_ssm(iid)
         wait_boot(iid)
-        script = (REMOTE.replace("__MODEL__", args.model).replace("__BUCKET__", args.bucket).replace("__PREFIX__", prefix)
+        script = (REMOTE.replace("__MODELS__", args.models).replace("__CONFIGS__", args.configs)
+                  .replace("__BUCKET__", args.bucket).replace("__PREFIX__", prefix)
                   .replace("__KV_OURS__", str(args.kv_ours_gib * 2**30)).replace("__OURS_IMAGE__", OURS_IMAGE)
                   .replace("__INTEL_IMAGE__", INTEL_IMAGE))
         status = run_remote(iid, script, args.bucket, prefix)

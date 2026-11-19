@@ -150,15 +150,17 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     assert "--chat-template" not in cmd
     assert json.loads(cmd[cmd.index("--limit-mm-per-prompt") + 1]) == {"image": 0, "audio": 0}
     assert cmd.index("--limit-mm-per-prompt") > cmd.index("--block-size")      # appended after the harness's own flags
-    # 64 GiB host: the target's 32 GiB KV budget stands; 32 GiB host: 15 GiB of weights leave 9 GiB, not the scaled 16.
-    assert cmd[cmd.index("--kv-cache-memory-bytes") + 1] == str(32 * 2**30)
-    small = build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
-                  instance_type="c8i.4xlarge")["container"]["cmd"]
-    assert small[small.index("--kv-cache-memory-bytes") + 1] == str(9 * 2**30)
-    # The 4B models keep their budgets on the same hosts (nothing changed for them).
+    # 64 GiB host: the engine holds 2.2 x 14.9 GiB (measured 2.15x, tools/gemma4_cpu_probe.py) plus 6 GiB
+    # of headroom, which leaves 25 GiB for the KV cache, not the target's 32 (the budget that hung the
+    # first live host). A 32 GiB host cannot hold the model at all and is refused with the size it needs.
+    assert cmd[cmd.index("--kv-cache-memory-bytes") + 1] == str(25 * 2**30)
+    with pytest.raises(ValueError, match="needs about 43 GiB.*c8i.4xlarge has 32 GiB"):
+        build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
+              instance_type="c8i.4xlarge")
+    # A 4B model keeps the target's budget on the 64 GiB host and gets a smaller one on a 32 GiB host.
     q = MODELS.get("m2-qwen3-4b-2507")
-    assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", q, "bf16") == 16
     assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "m8i.4xlarge", q, "bf16") == 32
+    assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", q, "bf16") == 9
     gpu = build(cells["t1-g6"], m, TMAP["t1-g6"], run, run_id="r", bucket="b", hf_token_secret="s")["container"]["cmd"]
     assert "--limit-mm-per-prompt" in gpu and "--gpu-memory-utilization" in gpu
     # Other models' commands carry none of these.
