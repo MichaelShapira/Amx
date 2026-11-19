@@ -103,15 +103,17 @@ log "uploading"; aws s3 cp --only-show-errors --recursive "$OUT" "s3://$BUCKET/$
 """
 
 
-def launch(ec2, instance_type: str) -> str:
+def launch(ec2, instance_type: str, shutdown_behavior: str | None = None) -> str:
+    """shutdown_behavior: 'terminate' makes a `shutdown -h` on the host terminate it (the template's default is stop)."""
     ssm = boto3.client("ssm", region_name=REGION)
     template = ssm.get_parameter(Name="/amx-gpu-bench/targets/t2-m8i-4xl/launch-template")["Parameter"]["Value"]
     tags = [{"Key": "bench:managed", "Value": "false"}, {"Key": "bench:target", "Value": "recipe-check"},
             {"Key": "bench:run", "Value": "recipe-check"}, {"Key": "Name", "Value": "amx-gpu-bench-recipe-check"},
             {"Key": "project", "Value": "amx-gpu-bench"}, {"Key": "owner", "Value": "operator"},
             {"Key": "purpose", "Value": "cpu-amx-vs-gpu-benchmark"}]
+    extra = {"InstanceInitiatedShutdownBehavior": shutdown_behavior} if shutdown_behavior else {}
     r = ec2.run_instances(LaunchTemplate={"LaunchTemplateId": template, "Version": "$Latest"}, MinCount=1, MaxCount=1,
-                          InstanceType=instance_type,
+                          InstanceType=instance_type, **extra,
                           TagSpecifications=[{"ResourceType": "instance", "Tags": tags}, {"ResourceType": "volume", "Tags": tags}])
     iid = r["Instances"][0]["InstanceId"]
     ec2.create_tags(Resources=[iid], Tags=[{"Key": "bench:managed", "Value": "false"}])    # the template says true; we win
