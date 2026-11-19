@@ -456,6 +456,15 @@ Chat models (M1, M2, M4, M6) and Flan-T5 (M5) take part; classifiers do not.
   managed translation services bill by (Amazon Translate $15, Google $20 per million
   characters, list prices); the report prints that context, not as like-for-like.
 
+## Is the CPU side configured right?
+
+Checked against Intel's published vLLM Xeon recipe on 2026-11-19 (`tools/recipe_check.py`, same
+instance, same client): the harness's configuration ties the recipe at low concurrency and is 30%
+ahead at 64–128 concurrent requests (the gap is the vLLM version, 0.33 vs 0.23); single-stream
+decode runs at ~70% of the slice's measured memory bandwidth; per-core throughput sits inside the
+range Intel publishes for whole two-socket servers. Findings, numbers and what was actually wrong
+(W8A8 cells wrongly judged AMX INVALID, now fixed): [docs/recipe-check-2026-11-19.md](docs/recipe-check-2026-11-19.md).
+
 ## Reading the reports
 
 | Label | Meaning |
