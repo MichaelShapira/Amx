@@ -85,7 +85,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
 .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--bg-2);
   border: 1px solid var(--line); font-size: 13px; color: var(--fg-2); }
-.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.status-pill, .sidebar .tiny { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+/* a tooltip in the sidebar opens to the right, so it is not clipped by the panel edge */
+.sidebar .help .tip { left: 0; transform: none; width: 260px; }
 .status-pill.off .dot { background: var(--bad); }
 
 /* cards and misc */
@@ -140,6 +143,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   color: var(--bg); padding: 10px 12px; border-radius: 10px; font-size: 13px; font-weight: 450; line-height: 1.45; z-index: 50; text-align: left;
   box-shadow: var(--shadow); }
 .help:hover .tip { display: block; }
+/* inside an uppercase table header the tooltip keeps normal text; in the first columns it opens to the right so it is not clipped */
+.help .tip { text-transform: none; letter-spacing: normal; font-weight: 450; }
+.tbl th .help .tip { left: 0; transform: none; }
+details > summary { list-style: revert; }
 .label { display: flex; align-items: center; font-weight: 600; margin-bottom: 6px; }
 
 /* choice tiles */

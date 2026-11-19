@@ -17,9 +17,12 @@ FONT_FILES = "https://fonts.gstatic.com"
 
 
 def csp(extra_connect: list[str]) -> str:
+    """blob: in img-src: the architecture diagram sits behind the signed-in API, so the page fetches it with the
+    token and shows it from an object URL (an <img src="/api/..."> cannot carry the token and got 401). An <img>
+    never runs script, and only this origin's code can mint a blob URL for it."""
     connect = " ".join(["'self'", *extra_connect])
     return (f"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' {FONT_CSS}; "
-            f"font-src 'self' {FONT_FILES}; img-src 'self' data:; connect-src {connect}; "
+            f"font-src 'self' {FONT_FILES}; img-src 'self' data: blob:; connect-src {connect}; "
             f"form-action 'self' {' '.join(extra_connect)}; frame-ancestors 'none'; base-uri 'self'; "
             "object-src 'none'")
 

@@ -156,7 +156,15 @@ function ModelTable({ title, models, canEdit, removing, onRemove, empty }: {
       <div className="label">{title}</div>
       {models.length === 0 ? <div className="tiny">{empty}</div> : (
         <table className="tbl">
-          <thead><tr><th>Model</th><th>Kind</th><th>Size</th><th>License</th><th>Serving software</th><th>Suites</th><th /></tr></thead>
+          <thead><tr>
+            <th>Model<Help text="The model's name, its Hugging Face repository and the exact version (revision) every run uses, so results stay comparable over time. 'gated' = Hugging Face requires an accepted license and a token to download it." /></th>
+            <th>Kind<Help text="What the model does: a chat model writes text; a classifier gives a label; a detector marks words; an embedding model turns text into vectors for search. The kind decides which use cases and targets apply." /></th>
+            <th>Size<Help text="Billions of parameters. Size drives memory needs and speed: a 4 B model needs about 8 GB in BF16 and is read from memory for every generated word." /></th>
+            <th>License<Help text="The model's license. A research-only license means its results are for evaluation, not for a commercial decision." /></th>
+            <th>Serving software<Help text="The engines that can run this model here (vLLM, OpenVINO, PyTorch). 'proven in a run' = a benchmark with this model on that engine has finished in this deployment, so it is known to load and answer. 'not yet run' = expected to work from the model's family, but not yet demonstrated here; the first run is the test, and the run page names the cause if the engine refuses the model. This is shown so you know which combinations carry that first-run risk." /></th>
+            <th>Suites<Help text="The use cases this model can be benchmarked in (chat and classification, sensitive-data detection, translation, embeddings, Intel's published benchmark)." /></th>
+            <th />
+          </tr></thead>
           <tbody>
             {models.map((m) => (
               <tr key={m.id}>
@@ -166,7 +174,7 @@ function ModelTable({ title, models, canEdit, removing, onRemove, empty }: {
                 <td>{m.license}</td>
                 <td>
                   <div className="row" style={{ gap: 6 }}>
-                    {m.engines.map((e) => <Badge key={e.id} kind={e.proven ? "ok" : undefined}>{e.label}{e.proven ? " · proven in a run" : " · not yet run"}</Badge>)}
+                    {m.engines.map((e) => <span key={e.id} title={e.proven ? `${e.label} has served this model in a finished benchmark here.` : `${e.label} is expected to run this model (its family is supported) but has not done so in a finished benchmark here yet; the first run is the test.`}><Badge kind={e.proven ? "ok" : undefined}>{e.label}{e.proven ? " · proven in a run" : " · not yet run"}</Badge></span>)}
                   </div>
                   {m.notes && <div className="tiny mt" style={{ marginTop: 4 }}>{m.notes}</div>}
                 </td>

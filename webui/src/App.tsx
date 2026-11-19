@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, type Catalog, type AwsStatus } from "./api";
+import { api, type Catalog, type AwsStatus, type ApiError } from "./api";
 import Home from "./pages/Home";
 import NewRun from "./pages/NewRun";
 import Runs from "./pages/Runs";
@@ -10,6 +10,7 @@ import Setup from "./pages/Setup";
 import Technical from "./pages/Technical";
 import ErrorBoundary from "./components/ErrorBoundary";
 import AuthGate, { useSession } from "./components/AuthGate";
+import { Help } from "./components/ui";
 
 export const CatalogCtx = createContext<Catalog | null>(null);
 export const useCatalog = () => useContext(CatalogCtx);
@@ -36,7 +37,13 @@ function Shell() {
   // The operator's AWS session lasts about an hour. Re-check every 30 s so the pill turns red with
   // the reason when it expires, and green again once fresh credentials are in place (no restart).
   useEffect(() => {
-    const check = () => api.aws().then(setAws).catch(() => setAws({ ok: false, error: "API not reachable" }));
+    const check = () => api.aws().then(setAws).catch((e: unknown) => {
+      const status = (e as ApiError).status;
+      // 401 is handled in the client (it starts the sign-in); 5xx/0 is the service restarting after a deploy.
+      setAws({ ok: false, error: status === 401 ? "Your session has ended; taking you to the sign-in page." :
+        status >= 500 || status === 0 ? "The service is restarting (a deployment is in progress); this checks again every 30 s." :
+        (e as Error).message });
+    });
     check(); const t = setInterval(check, 30000); return () => clearInterval(t);
   }, []);
 
@@ -58,8 +65,11 @@ function Shell() {
             <NavLink to="/technical"><span className="ico">🧩</span> Technical details</NavLink>
           </nav>
           <div className="spacer" />
-          <div className={"status-pill " + (aws?.ok ? "" : "off")} title={aws?.ok ? `Credentials: ${aws.credentials ?? ""}` : aws?.error ?? ""}>
-            <span className="dot" /> {aws == null ? "Checking AWS…" : aws.ok ? `AWS ${aws.account} · ${aws.identity}` : aws.expired ? "AWS session expired" : "AWS not reachable"}
+          <div className={"status-pill " + (aws?.ok ? "" : "off")} title={aws?.ok ? `The application calls AWS as ${aws.identity} (${aws.credentials ?? "task role"}) in account ${aws.account}.` : aws?.error ?? ""}>
+            <span className="dot" /> {aws == null ? "Checking AWS…" : aws.ok ? `AWS account ${aws.account}` : aws.expired ? "AWS credentials expired" : "AWS not reachable"}
+            <Help text={aws?.ok
+              ? `The application's own connection to AWS, used to start runs and read results. Green means it works. It calls AWS as "${aws.identity}" in account ${aws.account}; that is the application's role, not your login.`
+              : "The application's own connection to AWS, used to start runs and read results. Red means the API or AWS did not answer; the reason is below. Your sign-in is separate (bottom of this panel)."} />
           </div>
           {aws && !aws.ok && aws.error && <div className="tiny" style={{ marginTop: 6, color: "var(--bad)" }}>{aws.error}</div>}
           <button className="btn sm" style={{ marginTop: 10 }} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>

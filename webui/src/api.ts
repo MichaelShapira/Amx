@@ -160,23 +160,40 @@ export interface CompareOut {
   runs: { run_id: string; shape: Shape; smoke: boolean }[];
 }
 
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+/** An HTTP failure with its status, so callers can tell "signed out" (401) from "service restarting" (5xx) from "no network" (status 0). */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) { super(message); this.status = status; }
+}
+async function authed(url: string, init?: RequestInit): Promise<Response> {
+  const headers: Record<string, string> = {};
   const token = await accessToken();                       // null locally (no sign-in)
   if (token) headers.Authorization = `Bearer ${token}`;
-  const r = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } });
+  let r: Response;
+  try { r = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } }); }
+  catch (e) { throw new ApiError(`The service did not answer (${(e as Error).message}).`, 0); }
   if (r.status === 401 && authEnabled()) {
     // The session is gone (expired refresh token, signed out elsewhere): back through the hosted login.
     void signIn();
-    throw new Error("Your session has ended; signing you in again.");
+    throw new ApiError("Your session has ended; taking you to the sign-in page.", 401);
   }
+  return r;
+}
+/** A file behind the API (the architecture diagram), fetched with the sign-in token: an <img src> or a plain link cannot carry it. */
+export async function fetchBlob(url: string): Promise<Blob> {
+  const r = await authed(url);
+  if (!r.ok) throw new ApiError(`HTTP ${r.status}`, r.status);
+  return r.blob();
+}
+async function j<T>(url: string, init?: RequestInit): Promise<T> {
+  const r = await authed(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers as Record<string, string> | undefined) } });
   if (!r.ok) {
     // CloudFront forwards a 500 with an empty statusText and a non-JSON body; an empty message read as
     // "no error" downstream (the Estimate panel spun forever), so always name the status.
     let msg: unknown = r.statusText;
     try { msg = (await r.json()).detail ?? msg; } catch { /* keep statusText */ }
     const text = typeof msg === "string" ? msg : JSON.stringify(msg);
-    throw new Error(text && text !== "undefined" ? `${text} (HTTP ${r.status})` : `The server answered HTTP ${r.status} without a reason; check the API log.`);
+    throw new ApiError(text && text !== "undefined" ? `${text} (HTTP ${r.status})` : `The server answered HTTP ${r.status} without a reason; check the API log.`, r.status);
   }
   return r.json();
 }

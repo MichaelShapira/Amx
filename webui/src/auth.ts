@@ -36,6 +36,12 @@ function userManager(): UserManager {
     userStore: new WebStorageStateStore({ store: window.sessionStorage }),
     revokeTokensOnSignout: false,
   });
+  // When the access token expires and the refresh fails (refresh token expired, user signed out elsewhere,
+  // pool client changed), stop pretending: go back through the hosted sign-in instead of letting every
+  // API call fail with 401 behind a red "not reachable" pill.
+  manager.events.addSilentRenewError(() => { void signIn(); });
+  manager.events.addAccessTokenExpired(() => { void manager!.getUser().then((u) => { if (!u || u.expired) void signIn(); }); });
+  manager.events.addUserSignedOut(() => { void signIn(); });
   return manager;
 }
 
