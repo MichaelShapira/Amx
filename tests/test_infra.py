@@ -99,7 +99,7 @@ def test_bucket_private_tls_only_encrypted(templates):
 def test_worker_reserved_concurrency_and_vpc(templates):
     core = templates["core"]
     core.has_resource_properties("AWS::Lambda::Function", {
-        "FunctionName": "amx-gpu-bench-worker", "ReservedConcurrentExecutions": 80, "MemorySize": 1769,
+        "FunctionName": "amx-gpu-bench-worker", "ReservedConcurrentExecutions": 272, "MemorySize": 1769,
         "Architectures": ["arm64"], "VpcConfig": Match.object_like({"SecurityGroupIds": Match.any_value()})})
 
 

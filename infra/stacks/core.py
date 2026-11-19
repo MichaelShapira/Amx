@@ -27,7 +27,7 @@ from infra.stacks.network import NetworkStack
 
 ROOT = Path(__file__).resolve().parents[2]
 HF_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:346399954218:secret:amx-gpu-bench/hf-token-naqygX"  # noqa: S105 - an ARN, not a value
-WORKER_RESERVED = 80          # highest level (64) plus the accuracy level's 16 headroom
+WORKER_RESERVED = 272         # Intel's benchmark sweeps to 256 concurrent requests (one worker each) plus headroom
 def _built_images() -> dict[str, tuple[str, dict]]:
     """name -> (Dockerfile, build args) for every engine image this project builds, from
     config/images.yaml (the web app's Technical details page shows the same file)."""
