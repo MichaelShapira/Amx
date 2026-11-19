@@ -133,9 +133,22 @@ def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> d
     prompt = ("FINDINGS JSON:\n" + json.dumps(payload, indent=1, default=str) +
               "\n\nWrite the executive summary now.")
     t0 = time.time()
-    r = rt.converse(modelId=model["call_id"], system=[{"text": SYSTEM}],
-                    messages=[{"role": "user", "content": [{"text": prompt}]}],
-                    inferenceConfig={"maxTokens": 3200})
-    text = "".join(c.get("text", "") for c in r["output"]["message"]["content"])
+    # The budget covers the model's reasoning as well as the visible text: the newest Opus spent ~2,000 of a
+    # 3,200-token budget thinking and the summary was cut mid-sentence in "Technical details" (2026-11-19,
+    # outputTokens == maxTokens, 4,089 characters of text). Start high and go higher once if it still hits
+    # the limit; a truncated result is marked so the caller does not cache it.
+    for max_tokens in (8000, 16000):
+        r = rt.converse(modelId=model["call_id"], system=[{"text": SYSTEM}],
+                        messages=[{"role": "user", "content": [{"text": prompt}]}],
+                        inferenceConfig={"maxTokens": max_tokens})
+        if r.get("stopReason") != "max_tokens":
+            break
+    content = r["output"]["message"]["content"]
+    text = "".join(c.get("text", "") for c in content)
+    truncated = r.get("stopReason") == "max_tokens"
+    if truncated:
+        text += ("\n\n> The summary was cut at the model's output limit before it finished. Press Rewrite to generate "
+                 "it again; if it happens twice, choose a smaller comparison (fewer runs or models).")
     return {"markdown": text, "model": model, "usage": r.get("usage"), "seconds": round(time.time() - t0, 1),
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "stop_reason": r.get("stopReason"),
+            "truncated": truncated, "reasoning_blocks": sum(1 for c in content if "reasoningContent" in c)}

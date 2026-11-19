@@ -1642,7 +1642,8 @@ def exec_summary_post(c: SummaryIn):
         res = exec_summary.write(out["analysis"], out["comparability"], out["sla"], out["runs"])
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Bedrock call failed: {str(e)[:300]}") from e
-    _CACHE[key] = res
+    if not res.get("truncated"):            # a cut summary is shown once, never served again from the cache
+        _CACHE[key] = res
     return res
 
 
