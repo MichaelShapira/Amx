@@ -330,8 +330,9 @@ def meets_sla(row: dict, sla: dict) -> tuple[bool, str]:
             return False, f"{key} {val:.0f} > {lim:.0f}"
     if (row.get("error_pct") or 0) > sla.get("max_error_pct", 1.0):
         return False, f"error {row['error_pct']:.2f}% > {sla['max_error_pct']}%"
-    if row.get("quality_flag"):
-        return False, "quality flagged"
+    # A quality flag (`quality_flag`) is a warning, not an exclusion (owner decision 2026-11-19): the generation
+    # flag measures divergence from the GPU's text (two BF16 cells of the same weights agree only 0.73-0.76),
+    # not a loss, so the row stays in the rankings and the flag travels with it.
     if row["accelerator"] == "cpu" and row.get("amx") != "VERIFIED":
         return False, "AMX not verified"
     return True, "meets SLA"
@@ -646,7 +647,7 @@ def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
             w.append(f"{cells[ck].cell_id}: {v['precision_flag']}")
     for ck, q in sorted(qual.items()):
         if q.get("flag"):
-            w.append(f"{cells[ck].cell_id}: quality flag: {q['flag']}")
+            w.append(f"{cells[ck].cell_id}: quality flag: {q['flag']} (warning only; the row stays in the rankings)")
     for r in rows:
         for f in (r["flags"] or "").split(";"):
             if f.startswith(("prompt_token_mismatch", "cv_", "output_length_mismatch", "effective_concurrency", "short_window")):

@@ -568,6 +568,18 @@ def test_classifier_runs_are_judged_on_the_whole_decision_only():
     assert report.meets_sla(gen_row, {"p99_ttft_ms": 2000, "max_error_pct": 1.0}) == (False, "p99_ttft_ms not measured")
 
 
+def test_quality_flag_is_a_warning_not_an_exclusion():
+    """Owner decision 2026-11-19: a flagged row keeps its SLA verdict and stays in the rankings; the flag travels
+    with it on the compare card/point and in the report notes."""
+    from bench import report
+    row = {"kind": "generation", "accelerator": "cpu", "amx": "VERIFIED", "ttft_p99": 500.0, "tpot_p50": 50.0,
+           "e2e_p99": 3000.0, "error_pct": 0, "quality_flag": "rouge_l_mean 0.503 < CPU BF16 0.731 - 0.1"}
+    assert report.meets_sla(row, {"p99_ttft_ms": 2000, "p50_tpot_ms": 150, "max_error_pct": 1.0}) == (True, "meets SLA")
+    src = open("webui/api/compare.py").read()
+    assert src.count('"quality_flag": r.get("quality_flag")') == 2      # card and point
+    assert 'warning only; the row stays in the rankings' in open("bench/report.py").read()
+
+
 def test_a_rejected_first_request_names_the_servers_answer_or_says_it_was_not_kept():
     from webui.api.main import cell_error_text as failure_sentence
     old = ("bring-up of m5-flan-t5-xl|t1-g6|bf16 failed (Failed): ...credentials-store 2026-11-18T07:28:13Z stage: syncing google/flan-t5-xl "

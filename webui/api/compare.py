@@ -342,8 +342,8 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             return {"series": _series_name(r), "instance_type": r["instance_type"], "engine": r["engine"],
                     "precision": r["precision"], "conc": r["conc"], "batch": r.get("batch", 1), "usd_per_hour": r["usd_per_hour"],
                     "throughput": r.get(u["thr"]), "latency": r.get(u["lat"]), "cost": r.get(u["cost"]),
-                    "quality_delta": r.get("quality_delta"), "amx": r.get("amx"), "accuracy": r.get("accuracy"),
-                    "translation": r.get("translation"), "embedding": r.get("embedding"),
+                    "quality_delta": r.get("quality_delta"), "quality_flag": r.get("quality_flag"), "amx": r.get("amx"),
+                    "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"),
                     "run_id": r["run_id"], "ttft_p50": r.get("ttft_p50"), "tpot_p50": r.get("tpot_p50"),
                     "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99")}
 
@@ -385,8 +385,9 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                    "instance_type": r["instance_type"], "precision": r["precision"], "engine": r["engine"],
                    "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99"), "ttft_p99": r.get("ttft_p99"),
                    "tpot_p50": r.get("tpot_p50"), "req_s": r.get("req_s"), "error_pct": r.get("error_pct"),
-                   "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "accuracy": r.get("accuracy"),
-                   "translation": r.get("translation"), "embedding": r.get("embedding"), "util": _util_point(r)}
+                   "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "quality_flag": r.get("quality_flag"),
+                   "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"),
+                   "util": _util_point(r)}
                   for r in grows]
         sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t), pairing.load_catalog()["instances"])
         for z in sizing:

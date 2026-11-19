@@ -489,7 +489,8 @@ range Intel publishes for whole two-socket servers. Findings, numbers and what w
 | FP16 relabeled | The row was configured as FP16 but ran in BF16; it is relabeled and flagged. |
 | `Conditional` | The CPU row qualifies but needs more CPU instances per GPU than `max_cpu_instances_per_gpu`. |
 | `below floors` | A DSPM model misses the absolute recall or FPR floor (model fitness, not a CPU-vs-GPU verdict). |
-| Flags | Prompt-token mismatch, output length mismatch, CV above 10%, late workers, effective concurrency below 0.9 x C, quality delta, non-commercial license (M1). |
+| Flags | Prompt-token mismatch, output length mismatch, CV above 10%, late workers, effective concurrency below 0.9 x C, short window (a worker ran fewer than 3 requests at C > 1), quality delta, non-commercial license (M1). |
+| Quality flag | Warning only. A compressed format whose answers diverge from the BF16 floor (ROUGE-L for chat, chrF for translation, cosine/recall@1 for embeddings, label agreement for classifiers) is flagged on its card and in the report notes but stays in the SLA and cost rankings: for chat the flag measures different wording against the GPU's text, not a measured loss (two BF16 cells of the same weights agree only 0.73-0.76). |
 
 ## Teardown
 

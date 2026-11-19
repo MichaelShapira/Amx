@@ -97,7 +97,11 @@ pairs with a g6.xlarge keeps up with it, and on these measurements it does not.
    engine's own footprint (2.15x the checkpoint, measured), which hung a 64 GiB host under
    Gemma 4 E4B; the budget now comes from the measured footprint and too-small hosts are refused.
 
-## Open: the quality flag excludes the compressed formats on divergence, not on measured loss
+## Resolved 2026-11-19: the quality flag is a warning, not an exclusion
+Owner decision: **warning only**. `report.meets_sla` no longer fails a row for `quality_flag`; the flag is shown on
+the option's card and listed in the report notes, and the row keeps its place in the capacity and cost verdict.
+The reasoning that led there:
+
 
 The standard suite scores answer quality as ROUGE-L of a cell's greedy 256-token answers against the
 GPU's, and flags a compressed format when its mean falls more than 0.10 below the CPU BF16 cell's.
