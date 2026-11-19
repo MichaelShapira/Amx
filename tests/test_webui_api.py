@@ -682,5 +682,5 @@ def test_technical_details_list_gemma_4_serving_flags():
     flags = {m["model"]: m for m in t["model_flags"]}
     assert set(flags) == {"m6-gemma-4-e4b"}
     g = flags["m6-gemma-4-e4b"]
-    assert g["engine"] == "vllm" and "--reasoning-parser" in g["args"] and "gemma4" in g["args"]
+    assert g["engine"] == "vllm" and "--reasoning-parser" in g["args"] and "gemma4" in g["args"] and "--chat-template" not in g["args"]
     assert g["hf_repo"] == "google/gemma-4-E4B-it" and g["name"] == "Gemma 4 E4B Instruct"

@@ -169,11 +169,15 @@ models:
   # https://swcatalog.intel.com/models/google-gemma-4-e4b-it (validated on Xeon with vLLM's CPU
   # backend) and the vLLM recipe https://recipes.vllm.ai/Google/gemma-4-E4B-it?hardware=xeon6.
   # Multimodal (text, image, audio) upstream; served text-only here. vllm_args are the recipe's
-  # serve flags: the tool-call template and the gemma4 tool-call and reasoning parsers configure
-  # the chat endpoint (the benchmark measures /v1/completions with the client-rendered chat
-  # template, so they do not change the measured path); the modality limits skip the image and
-  # audio profiling at start, which is what frees the GPU memory an 8B checkpoint needs on an L4.
-  # Thinking stays off: the chat template adds <|think|> only when enable_thinking is set.
+  # serve flags: the gemma4 tool-call and reasoning parsers configure the chat endpoint (the
+  # benchmark measures /v1/completions with the client-rendered chat template, so they do not
+  # change the measured path); the modality limits skip the image and audio profiling at start,
+  # which is what frees the GPU memory an 8B checkpoint needs on an L4. The recipe's
+  # `--chat-template examples/tool_chat_template_gemma4.jinja` is NOT passed: that file ships in
+  # the vLLM CPU image's working directory but not in the AWS DLC GPU image (run
+  # translation-smoke-m6-20261119T081428Z: "appears path-like, but doesn't exist"), and the model's
+  # own chat_template.jinja already carries the tool-call format, so the server-side template adds
+  # nothing here. Thinking stays off: the template adds <|think|> only when enable_thinking is set.
   # No INT8 checkpoint exists for vLLM (RedHatAI publishes an FP8 one, GPU-only); OpenVINO/gemma-4-
   # E4B-it-int8-ov is a ready IR, but this harness exports IRs itself, so no OpenVINO cell yet.
   - id: m6-gemma-4-e4b
@@ -193,8 +197,6 @@ models:
       - --enable-auto-tool-choice
       - --tool-call-parser
       - gemma4
-      - --chat-template
-      - examples/tool_chat_template_gemma4.jinja
       - --reasoning-parser
       - gemma4
       - --limit-mm-per-prompt

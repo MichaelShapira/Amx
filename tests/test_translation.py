@@ -142,10 +142,12 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     cpu = build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
                 instance_type="m8i.4xlarge")
     cmd = cpu["container"]["cmd"]
-    for flag in ("--enable-auto-tool-choice", "--tool-call-parser", "--chat-template", "--reasoning-parser", "--limit-mm-per-prompt"):
+    for flag in ("--enable-auto-tool-choice", "--tool-call-parser", "--reasoning-parser", "--limit-mm-per-prompt"):
         assert flag in cmd
     assert cmd[cmd.index("--tool-call-parser") + 1] == "gemma4" and cmd[cmd.index("--reasoning-parser") + 1] == "gemma4"
-    assert cmd[cmd.index("--chat-template") + 1] == "examples/tool_chat_template_gemma4.jinja"
+    # The recipe's example template file exists only in the CPU image's working directory (the GPU
+    # DLC refused it on 2026-11-19); the model's own chat template carries the tool format.
+    assert "--chat-template" not in cmd
     assert json.loads(cmd[cmd.index("--limit-mm-per-prompt") + 1]) == {"image": 0, "audio": 0}
     assert cmd.index("--limit-mm-per-prompt") > cmd.index("--block-size")      # appended after the harness's own flags
     # 64 GiB host: the target's 32 GiB KV budget stands; 32 GiB host: 15 GiB of weights leave 9 GiB, not the scaled 16.
