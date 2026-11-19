@@ -107,7 +107,7 @@ def amx_probe(event: dict, context: Any = None) -> dict:
     if cell["engine"] in ("vllm", "thin-torch"):
         raw = common.get_bytes(f"{prefix}/trace.log.gz")
         text = gzip.decompress(raw).decode(errors="replace") if raw else ""
-        ev["trace"] = amx.parse_onednn_verbose(text)
+        ev["trace"] = amx.parse_onednn_verbose(text, set(ev["flags"]))
         ev["dispatch"] = amx.parse_vllm_dispatch(text)
     else:
         ev["trace"] = amx.parse_ov_probe(common.get_bytes(f"{prefix}/probe_ov.json").decode())

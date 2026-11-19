@@ -221,6 +221,7 @@ class CoreStack(Stack):
         agg_run.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         preflight.add_to_role_policy(s3_list)
         preflight.add_to_role_policy(s3_get("runs/*", "hosts/*", "artifacts/*", "datasets/dspm/v1/manifest.json",
+                                            "datasets/translation/v1/manifest.json",
                                             "config/models.yaml"))
         preflight.add_to_role_policy(s3_put("runs/*"))
         preflight.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))

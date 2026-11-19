@@ -13,7 +13,16 @@ from dataclasses import dataclass, field
 
 REQUIRED_FLAGS = {"amx_bf16", "amx_int8", "amx_tile"}
 COUNTER_RATIO_MIN = 1e-4
-GEMM_KINDS = {"matmul", "inner_product", "convolution"}
+GEMM_KINDS = {"matmul", "inner_product", "convolution", "brgemm"}
+# oneDNN's brgemm micro-kernel (`onednn_verbose,v1,ukernel,exec,cpu,brgemm,,undef,src:u8 ...`) is how
+# vLLM's SGL kernels (csrc/cpu/sgl-kernels, through at::native::cpublas::brgemm) run their GEMMs: the
+# W8A8 path and the small BF16 projections never appear as oneDNN primitives, so a W8A8 cell showed
+# `gemm_total: 0` and was INVALID on every run through 2026-11-18. The ukernel line carries no ISA
+# name; PyTorch's gate (aten/native/CPUBlas.cpp device_check) admits u8 sources only when the
+# effective ISA is avx512_core_amx, so a u8/s8 brgemm ukernel IS the AMX INT8 path. A bf16 ukernel
+# needs only avx512_core there and is counted as AMX when the host has amx_bf16 (oneDNN picks the
+# highest ISA the CPU offers; the primitive lines of the same trace say brg:avx512_core_amx).
+UKERNEL_IMPL = "ukernel:brgemm"
 OV_GEMM_TYPES = {"FullyConnected", "MatMul", "Convolution", "FullyConnectedCompressed"}
 
 
@@ -53,15 +62,19 @@ def _exec_fields(line: str) -> tuple[str, str] | None:
     for i, tok in enumerate(parts[:-3]):
         if tok == "exec" and parts[i + 1] == "cpu":
             kind, impl = parts[i + 2], parts[i + 3]
+            if kind == "brgemm" and not impl and "ukernel" in parts[:i]:
+                return kind, UKERNEL_IMPL
             return (kind, impl) if kind and impl else None
     return None
 
 
-def parse_onednn_verbose(text: str) -> dict:
-    """Count executed GEMM-like primitives by implementation name."""
+def parse_onednn_verbose(text: str, cpu_flags: set[str] | None = None) -> dict:
+    """Count executed GEMM-like primitives and brgemm micro-kernels by implementation name.
+    cpu_flags: the host's flags, which decide whether bf16 micro-kernel calls count as AMX."""
     impls: Counter[str] = Counter()
     fp16_amx = 0
     int8_amx = 0
+    ukernel_u8s8 = ukernel_bf16 = ukernel_other = 0
     for line in text.splitlines():
         if "onednn_verbose" not in line or ",exec," not in line:
             continue
@@ -72,14 +85,29 @@ def parse_onednn_verbose(text: str) -> dict:
         if kind not in GEMM_KINDS:
             continue
         impls[impl] += 1
+        if impl == UKERNEL_IMPL:
+            if re.search(r"src:[su]8", line):
+                ukernel_u8s8 += 1
+            elif re.search(r"src:bf16", line):
+                ukernel_bf16 += 1
+            else:
+                ukernel_other += 1
+            continue
         if "amx" in impl:
             if "amx_fp16" in impl or re.search(r"src:f16", line):
                 fp16_amx += 1
             if re.search(r"src:[su]8", line):
                 int8_amx += 1
     amx = sum(v for k, v in impls.items() if "amx" in k)
+    amx += ukernel_u8s8                                   # u8 sources pass PyTorch's gate only on avx512_core_amx
+    int8_amx += ukernel_u8s8
+    bf16_ukernel_is_amx = bool(cpu_flags is None or "amx_bf16" in cpu_flags)
+    if bf16_ukernel_is_amx:
+        amx += ukernel_bf16
     return {"gemm_total": sum(impls.values()), "gemm_amx": amx, "fp16_amx": fp16_amx,
-            "int8_amx": int8_amx, "impls": dict(impls.most_common(10))}
+            "int8_amx": int8_amx, "impls": dict(impls.most_common(10)),
+            "ukernel": {"u8s8": ukernel_u8s8, "bf16": ukernel_bf16, "other": ukernel_other,
+                        "bf16_counted_as_amx": bf16_ukernel_is_amx}}
 
 
 _DISPATCH = re.compile(r"CPU unquantized GEMM dispatch: using (.+)")
@@ -163,8 +191,10 @@ def verdict(ev: Evidence, *, precision: str, engine: str) -> dict:
             result["reason"] = f"exe.amx_busy/cycles = {ratio:.2e} below {COUNTER_RATIO_MIN:g}"
             return result
     elif trace_amx:
+        uk = (ev.trace.get("ukernel") or {}).get("u8s8", 0)
+        via = (f" ({uk} oneDNN brgemm micro-kernel calls with u8/s8 inputs, the AMX INT8 path)" if uk else "")
         result.update(verdict="VERIFIED", basis="engine_trace",
-                      reason=f"{ev.trace['gemm_amx']}/{ev.trace['gemm_total']} GEMMs ran AMX kernels")
+                      reason=f"{ev.trace['gemm_amx']}/{ev.trace['gemm_total']} GEMMs ran AMX kernels{via}")
     else:
         note = (ev.trace or {}).get("note")
         result["reason"] = ("hardware counter unavailable and " + (note if note else "engine trace shows no AMX GEMMs"))

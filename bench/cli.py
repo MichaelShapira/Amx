@@ -205,6 +205,46 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_rejudge(args) -> int:
+    """Re-parse the AMX traces of a finished run with the current parser, rewrite its evidence.json
+    files and re-render the report (the AggregateRun Lambda). Needed once for the runs whose W8A8
+    cells were INVALID because the brgemm micro-kernel lines were not recognized (2026-11-19)."""
+    import gzip
+
+    import boto3
+
+    from bench import amx
+
+    bucket = _resolve(args, "BucketName", "bucket")
+    s3 = boto3.client("s3", region_name=REGION)
+    prefix = f"runs/{args.run_id}/amx/"
+    changed = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for o in page.get("Contents", []):
+            if not o["Key"].endswith("/trace.log.gz"):
+                continue
+            cell = o["Key"][len(prefix):].split("/")[0]
+            ev_key = f"{prefix}{cell}/evidence.json"
+            ev = json.loads(s3.get_object(Bucket=bucket, Key=ev_key)["Body"].read())
+            text = gzip.decompress(s3.get_object(Bucket=bucket, Key=o["Key"])["Body"].read()).decode(errors="replace")
+            before = ev.get("trace") or {}
+            ev["trace"] = amx.parse_onednn_verbose(text, set(ev.get("flags") or []))
+            if ev["trace"] != before:
+                s3.put_object(Bucket=bucket, Key=ev_key, Body=json.dumps(ev, indent=1, sort_keys=True).encode(),
+                              ContentType="application/json")
+                changed.append((cell, before.get("gemm_amx"), before.get("gemm_total"), ev["trace"]["gemm_amx"], ev["trace"]["gemm_total"]))
+    for c in changed:
+        print(f"{c[0]}: AMX GEMMs {c[1]}/{c[2]} -> {c[3]}/{c[4]}")
+    if not changed:
+        print("no evidence changed")
+    if args.render:
+        lam = boto3.client("lambda", region_name=REGION)
+        r = lam.invoke(FunctionName="amx-gpu-bench-aggregate-run", Payload=json.dumps({"run_id": args.run_id}).encode())
+        body = r["Payload"].read().decode()
+        print("report re-rendered:" if r.get("FunctionError") is None else "re-render FAILED:", body[:400])
+    return 0
+
+
 def cmd_report(args) -> int:
     import boto3
 
@@ -274,6 +314,10 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("run_id")
     rp.add_argument("--out", default="reports")
     rp.add_argument("--bucket")
+    rj = sub.add_parser("rejudge-amx", help="re-parse a finished run's AMX traces and re-render its report")
+    rj.add_argument("run_id")
+    rj.add_argument("--bucket")
+    rj.add_argument("--render", action="store_true", help="invoke the AggregateRun Lambda afterwards")
     sp = sub.add_parser("stop")
     sp.add_argument("run_id")
     sp.add_argument("--yes", action="store_true")
@@ -284,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     es.add_argument("--journal")
     args = ap.parse_args(argv)
     return {"validate": cmd_validate, "plan": cmd_plan, "upload-artifacts": cmd_upload, "run": cmd_run, "pair": cmd_pair,
+            "rejudge-amx": cmd_rejudge,
             "status": cmd_status, "report": cmd_report, "stop": cmd_stop, "estimate": cmd_estimate}[args.cmd](args)
 
 

@@ -134,3 +134,29 @@ def test_openvino_bf16_cell_is_relabeled_when_the_plugin_did_not_run_bf16():
     assert f16["verdict"] == "VERIFIED" and f16["effective_precision"] == "f16" and "ran f16" in f16["precision_flag"]
     # The plain vLLM bf16 cell is untouched by this check (its trace carries no inference_precision).
     assert amx.verdict(amx.Evidence(cpu_flags=flags, trace=trace("f16")), precision="bf16", engine="vllm")["precision_flag"] is None
+
+
+UKERNEL_INT8 = """onednn_verbose,v1,info,oneDNN v3.13.0
+onednn_verbose,v1,ukernel,exec,cpu,brgemm,,undef,src:u8::blocked:ab::f0 wei:s8::blocked:ab::f0 dst:s32::blocked:ab::f0,,bs:1 beta:0,32x2048:2048x32,0.00219727
+onednn_verbose,v1,ukernel,exec,cpu,brgemm,,undef,src:u8::blocked:ab::f0 wei:s8::blocked:ab::f0 dst:s32::blocked:ab::f0,,bs:1 beta:0,32x2048:2048x32,0.000976562
+onednn_verbose,v1,ukernel,exec,cpu,brgemm,,undef,src:bf16::blocked:ab::f0 wei:bf16::blocked:ab::f0 dst:f32::blocked:ab::f0,,bs:1 beta:0,32x256:256x32,0.001
+"""
+
+
+def test_w8a8_through_the_brgemm_micro_kernel_is_amx_verified():
+    """The vLLM SGL INT8 path runs oneDNN's brgemm micro-kernel: no primitive lines, so the cell read
+    `gemm_total: 0` and was INVALID on every run through 2026-11-18 (run qwen-2-5-20261115T102048Z)."""
+    flags = {"amx_bf16", "amx_int8", "amx_tile", "avx512_bf16"}
+    tr = amx.parse_onednn_verbose(UKERNEL_INT8, flags)
+    assert tr["gemm_total"] == 3 and tr["gemm_amx"] == 3 and tr["int8_amx"] == 2
+    assert tr["impls"] == {"ukernel:brgemm": 3} and tr["ukernel"] == {"u8s8": 2, "bf16": 1, "other": 0, "bf16_counted_as_amx": True}
+    ev = amx.Evidence(cpu_flags=flags, counter={"exe.amx_busy": None, "cycles": None}, trace=tr,
+                      dispatch={"dispatch": {}, "int8_amx_lines": 0})
+    v = amx.verdict(ev, precision="w8a8", engine="vllm")
+    assert v["verdict"] == "VERIFIED" and v["basis"] == "engine_trace" and v["precision_flag"] is None
+    assert "u8/s8 inputs" in v["reason"]
+    # Without amx_bf16 on the host a bf16 micro-kernel call is not counted as AMX (u8 still is).
+    tr2 = amx.parse_onednn_verbose(UKERNEL_INT8, {"avx512_bf16", "avx512_vnni"})
+    assert tr2["gemm_amx"] == 2 and tr2["ukernel"]["bf16_counted_as_amx"] is False
+    # The old parse of the same lines saw nothing: the regression this guards against.
+    assert amx.parse_onednn_verbose(UKERNEL_INT8.replace(",ukernel,", ",primitive,"), flags)["gemm_total"] == 0
