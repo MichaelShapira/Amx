@@ -1,0 +1,32 @@
+# Compressed formats on the CPU, full grade: Qwen3-1.7B on the GPU (vLLM BF16) against vLLM BF16 and OpenVINO
+# BF16-OV / INT8 / INT4 on m8i.4xlarge. INT8 halves the bytes streamed per generated token and doubles the AMX
+# arithmetic rate; the quality pass (ROUGE-L against the GPU's answers) travels with the rows as a warning.
+# 200 requests x 3 repeats; concurrency to 64, where the CPU side is at its bandwidth limit.
+run:
+  name: qwen-int8-full
+  suite: standard
+  mode: full
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m1-qwen3-1.7b]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+    - {target: t3-m8i-4xl-ov, precision: bf16-ov}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov}
+    - {target: t3-m8i-4xl-ov, precision: int4-ov}
+  prompt_set: medium
+  sampling: {temperature: 0.0, max_new_tokens: 256, ignore_eos: true, seed: 0}
+  concurrency: [1, 4, 16, 64]
+  per_level: {requests: 200}
+  repeats: 3
+  warmup_requests: 20
+  request_timeout_s: 600
+  quality: {enabled: true, prompt_set: quality-50, max_new_tokens: 256}
+  sla: {p99_ttft_ms: 2000, p50_tpot_ms: 150, max_error_pct: 1.0}
+  capacity: {max_cpu_instances_per_gpu: 4}
+  purchase: {type: spot, spot_fallback_on_demand: true}
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge, t3-m8i-4xl-ov: m8i.4xlarge}
+  alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
+  stop_targets_after_run: true

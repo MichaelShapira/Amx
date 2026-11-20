@@ -26,7 +26,6 @@ run:
     - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m5-flan-t5-xl}
     # FP16 on the CPU targets is gone: the EC2 hosts do not expose amx_fp16 (config/targets.yaml).
     - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m3-roberta-large-mnli}
-    # Native PyTorch
   prompt_set: medium
   sampling: {temperature: 0.0, max_new_tokens: 256, ignore_eos: true, seed: 0}
   concurrency: [1, 4, 8, 16, 32, 64]

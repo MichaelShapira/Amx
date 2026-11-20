@@ -1,0 +1,29 @@
+# The classifier, full grade: RoBERTa-large MNLI on the GPU (vLLM BF16) against vLLM BF16 and OpenVINO INT8
+# on m8i.4xlarge. All reading, no writing: the AMX case. Batched requests of 1, 8 and 32 pairs, 1 to 32 at a time.
+run:
+  name: roberta-int8-full
+  suite: standard
+  mode: full
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [m3-roberta-large-mnli]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+    - {target: t3-m8i-4xl-ov, precision: bf16}
+    - {target: t3-m8i-4xl-ov, precision: int8-ov}
+  prompt_set: medium
+  concurrency: [1, 8, 32]
+  batch_sizes: [1, 8, 32]
+  per_level: {requests: 200}
+  repeats: 3
+  warmup_requests: 20
+  request_timeout_s: 120
+  quality: {enabled: true, prompt_set: quality-50}
+  sla: {p99_e2e_ms: 1000, max_error_pct: 1.0}
+  capacity: {max_cpu_instances_per_gpu: 4}
+  purchase: {type: spot, spot_fallback_on_demand: true}
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge, t3-m8i-4xl-ov: m8i.4xlarge}
+  alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
+  stop_targets_after_run: true

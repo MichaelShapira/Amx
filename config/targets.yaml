@@ -77,6 +77,22 @@ targets:
         image: built:thin-openvino
         args: {max_batch: 16, max_wait_ms: 5}
 
+  # Retired 2026-11-20 (see the note at the top): kept, disabled, so the runs that measured it still render and
+  # their rows keep their instance type; no new run can select it (resolve_cells refuses disabled targets) and
+  # the Core stack builds no launch template or image for it.
+  - id: t4-m8i-4xl-torch
+    label: T4
+    instance_type: m8i.4xlarge
+    ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
+    accelerator: cpu
+    cpu_features: *amx_8i
+    enabled: false
+    engines:
+      thin-torch:
+        image: built:thin-torch-cpu
+        env: {OMP_NUM_THREADS: "8", OMP_PROC_BIND: close, OMP_PLACES: cores, ONEDNN_PRIMITIVE_CACHE_CAPACITY: "4096"}
+        args: {max_batch: 16, max_wait_ms: 5}
+
   - id: t5-m7i-4xl
     label: T5
     instance_type: m7i.4xlarge
