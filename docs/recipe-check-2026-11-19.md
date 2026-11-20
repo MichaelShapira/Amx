@@ -97,6 +97,24 @@ pairs with a g6.xlarge keeps up with it, and on these measurements it does not.
    engine's own footprint (2.15x the checkpoint, measured), which hung a 64 GiB host under
    Gemma 4 E4B; the budget now comes from the measured footprint and too-small hosts are refused.
 
+## Result 4: `VLLM_CPU_ATTN_SPLIT_KV=0` changes nothing for Gemma 4 E4B
+
+Intel's Xeon recipe sets `VLLM_CPU_ATTN_SPLIT_KV=0` for Gemma 4 (vLLM's own CPU serving benchmarks
+set it for the 26B model). `tools/gemma4_splitkv_ab.py` ran the harness's exact server command for
+google/gemma-4-E4B-it twice on one m8i.4xlarge (default, then `=0`), same `vllm bench serve` sweep:
+
+| input/output | conc | default tok/s (TPOT) | `=0` tok/s (TPOT) | delta |
+|---|---|---|---|---|
+| 128/128 | 1 | 8.6 (115.6) | 8.6 (115.4) | +0.1% |
+| 128/128 | 16 | 107.3 (131.5) | 106.8 (132.0) | -0.4% |
+| 128/128 | 64 | 222.8 (251.5) | 222.0 (253.1) | -0.4% |
+| 2048/128 | 16 | 36.7 (378.5) | 36.7 (378.6) | +0.0% |
+
+Noise level in every cell, including the long-input point where an attention-kernel choice would
+show. The variable stays unset. (Artifacts: `runs/gemma4-splitkv-ab-20261119T142617Z/`.) The single-
+stream figure is itself the bandwidth story again: E4B reads ~9 GB of effective weights per token,
+8.6 tok/s = ~77 GB/s of the slice's 110 GB/s.
+
 ## Resolved 2026-11-19: the quality flag is a warning, not an exclusion
 Owner decision: **warning only**. `report.meets_sla` no longer fails a row for `quality_flag`; the flag is shown on
 the option's card and listed in the report notes, and the row keeps its place in the capacity and cost verdict.
