@@ -480,6 +480,29 @@ decode runs at ~70% of the slice's measured memory bandwidth; per-core throughpu
 range Intel publishes for whole two-socket servers. Findings, numbers and what was actually wrong
 (W8A8 cells wrongly judged AMX INVALID, now fixed): [docs/recipe-check-2026-11-19.md](docs/recipe-check-2026-11-19.md).
 
+## What the CPU can and cannot win
+
+On AWS On-Demand pricing a GPU instance beats a price-matched Intel AMX CPU instance on **peak
+throughput** for every workload measured here, including the ones built for AMX (embeddings,
+classifiers): at the same hourly price one L4 (g6.xlarge, $0.80/h) carries about 7.5x the matrix
+arithmetic and 2.7x the memory bandwidth of eight Xeon 6 cores (m8i.4xlarge, $0.85/h), and the CPU
+side runs at 70-80% of its own limits with AMX verified. "How many CPU instances replace one GPU"
+therefore always favours the GPU (3-5x on embeddings, 4x on chat); the Results page says so up front.
+
+The question the CPU can win is **the cheapest option that meets your targets at your load**. The
+Results page takes the load to serve (requests per minute, with typical figures to start from) and
+the prices to use (On-Demand, a Compute or EC2 Instance Savings Plan at 1 or 3 years with real
+published rates, or your own hourly rate per side; 0 for capacity already paid for). Every group
+gets an "At your load" card: each option's capacity is the highest measured request rate that still
+met the targets, instances = load / capacity rounded up, cost at the chosen prices, the cheapest per
+side, the crossover load above which the GPU is cheaper, and a cost-vs-load chart. Smaller sizes of
+the measured CPU family are offered as **estimates** (capacity scaled by core count, memory checked
+against the model) and marked as such; one run at that size confirms them. Example, EmbeddingGemma
+at 600 requests/minute of single sentences: one m8i.large (estimated, $0.08/h) against one
+g6.2xlarge ($0.80/h); the GPU becomes cheaper above ~26,000 requests/minute. The executive summary
+is written around the same frame (`bench/demand.py`, `webui/api/compare.py`). Savings Plan rates
+come from the Savings Plans API via `tools/refresh_instance_catalog.py`.
+
 ## Reading the reports
 
 | Label | Meaning |
