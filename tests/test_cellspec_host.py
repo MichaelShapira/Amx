@@ -16,8 +16,7 @@ from bench.config import load_models, load_run, load_targets, resolve_cells
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = sorted((ROOT / "config/runs").glob("*.yaml"))
-TAGS = {"thin-torch-cpu": "thin-torch-cpu-abc123", "thin-torch-cuda": "thin-torch-cuda-abc123",
-        "thin-openvino": "thin-openvino-abc123", "export": "export-abc123"}
+TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123", "thin-openvino": "thin-openvino-abc123", "export": "export-abc123"}
 ECR = "346399954218.dkr.ecr.us-east-1.amazonaws.com/amx-gpu-bench"
 
 
@@ -100,7 +99,7 @@ def _pick(engine: str, target_prefix: str = ""):
 
 
 @pytest.mark.parametrize("engine,target", [("vllm", "t2-"), ("vllm", "t1-"), ("ovms", "t3-"),
-                                           ("thin-openvino", "t3-"), ("thin-torch", "t4-")])
+                                           ("thin-openvino", "t3-"), ("thin-torch", "t1-")])
 def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path):
     spec = _pick(engine, target)
     f = tmp_path / "cell.json"

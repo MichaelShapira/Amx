@@ -110,7 +110,11 @@ def aggregate_run(event: dict, context: Any = None) -> dict:
         metrics=[common.get_json(k) for k in common.list_keys(f"{prefix}/metrics/") if k.endswith(".json")],
         evidence={k.split("/")[-2]: common.get_json(k) for k in common.list_keys(f"{prefix}/amx/")
                   if k.endswith("evidence.json")},
-        bringup={k.split("/")[-1][:-5]: common.get_json(k) for k in common.list_keys(f"{prefix}/bringup/")},
+        # bringup/ holds one JSON per cell and, since 2026-11-18, the failed server's whole log as
+        # <cell>.container.log.gz next to it; reading that as JSON killed the report (UnicodeDecodeError on
+        # the gzip magic) and left the run 'running' forever (dspm-1119-2241-20261120T053131Z).
+        bringup={k.split("/")[-1][:-5]: common.get_json(k) for k in common.list_keys(f"{prefix}/bringup/")
+                 if k.endswith(".json")},
         quality={k.split("/")[-2]: common.read_jsonl(k) for k in common.list_keys(f"{prefix}/quality/")
                  if k.endswith("outputs.jsonl.gz")},
         predictions={"/".join(k.split("/")[-2:]): common.read_jsonl(k)

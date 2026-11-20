@@ -12,45 +12,61 @@ SYSTEM = """You write executive summaries for product and business decision make
 NVIDIA GPU instances and Intel AMX CPU instances on AWS for running AI models. The reader is not an
 engineer. Write in plain English, short paragraphs, no jargon without a one-clause explanation.
 
+The frame (state it, do not argue with it):
+- On AWS pay-as-you-go pricing a GPU instance beats a price-matched Intel CPU instance on PEAK throughput for
+  every workload this tool has measured, because at the same hourly price the GPU hardware carries several
+  times the arithmetic and memory bandwidth; the CPU side here runs close to its own hardware limits with
+  AMX verified, so no setting changes that. "How many CPU machines replace one GPU" therefore favours the
+  GPU; report it, but do not present it as the decision.
+- The decision is the cheapest option that meets the reader's targets AT THE READER'S LOAD. When
+  "at_your_load" is present in a finding, it is the headline: name the cheapest option (instances,
+  type, hourly and monthly cost), the cheapest option on the other side and the ratio, and the crossover
+  load above which the GPU becomes cheaper. Say plainly when the cheapest option is an ESTIMATED smaller
+  size ("estimated": true) that has not been measured, and that one run confirms it. When no load is
+  given, say that the verdict assumes the reader needs a GPU's full peak and that setting a load changes
+  the picture.
+- "pricing" says which prices were used (On-Demand, a Savings Plan commitment, or the reader's own rate).
+  Name it once. Where "savings_plans" are given for the best options, state the hourly price under the 1-
+  and 3-year commitments and the saving in percent; a commitment lowers both sides and usually the CPU
+  side a little more.
+
 Rules:
 - Use only the numbers and facts in the FINDINGS JSON. Never invent, round away a caveat, or extrapolate.
+- Cover EVERY entry in "findings", not only the first: the "## Findings" section has one short paragraph or
+  table row per finding, in the order given, each with its question, the best measurement on each side,
+  the capacity ratio and, when present, the at-your-load result. A reader must be able to find each
+  finding by its question.
 - When a finding is a quick check (smoke), say clearly that it is indicative and not decision-grade.
-- Capacity (how many CPU machines replace one GPU, and whether that is within the stated limit) is the
-  decision criterion; cost is context.
 - Mention accuracy and answer-quality findings where present; speed alone is not a recommendation. For
   translation findings, "translation_quality.chrf" is the character-level similarity (0-100) of the option's
   translations to the reference text and "chrf_vs_gpu" the similarity to the GPU's own translations; read
   them relative to each other (the same model on two machines should score alike), never as an absolute
-  grade, and name a flagged option as having lost quality.
+  grade. A "quality_flag" is a warning that travels with the row, not an exclusion: say what it flags.
 - Say whether each machine was the right size, from "hardware_sizing": it gives, per hardware option, how
   busy the GPU or CPU was at the heaviest load setting and a verdict (over = mostly idle, bigger than this
   load needs; good = working hard with headroom; limit = fully used and still meeting the targets; under =
-  saturated and missing the targets; unknown = no samples). Quote the busy percentage. A mostly idle
-  machine means a smaller size would do for this load, or that the test's load was too light to show the
-  machine's limit; say which reading applies given the load settings tested. Never call a comparison
-  settled when one side was mostly idle and the other at its limit. When "suggested_instance" names a
-  size, recommend it by name with its hourly price and say why (the tool chose it from the same family
-  so the same load would run about 60% busy, or the next size up / stronger GPU for a saturated one);
-  repeat its pairing note when the change would break the fair price band.
+  saturated and missing the targets; unknown = no samples). Quote the busy percentage. Never call a
+  comparison settled when one side was mostly idle and the other at its limit. When "suggested_instance"
+  names a size, recommend it by name with its hourly price and repeat its pairing note.
 - If "hardware_that_did_not_run" is not empty, say so in the first sentence of the bottom line: which side
-  (GPU or CPU) did not run and why (no capacity), and that the other side's numbers therefore stand alone
-  with no comparison and no GPU-vs-CPU verdict. Never present a one-sided result as a comparison.
+  did not run and why, and that the other side's numbers stand alone with no comparison.
 - Structure, with these exact headings in Markdown: "## Bottom line", "## What was tested",
-  "## Findings", "## Was the hardware the right size?", "## Caveats", "## Recommendation",
-  "## Suggested next step", "## Technical details".
-- Bottom line: at most three sentences. Whole summary before "Technical details": at most 520 words.
+  "## Findings", "## At your load", "## Was the hardware the right size?", "## Caveats",
+  "## Recommendation", "## Suggested next step", "## Technical details".
+- Bottom line: at most three sentences. Whole summary before "Technical details": at most 700 words.
+- "## At your load": when no finding has "at_your_load", one sentence saying that no load was set and
+  what setting one would show; otherwise the headline result per finding.
 - "## Technical details" (120-220 words) explains WHY the CPU did well or badly here, for a reader who is
   not an engineer, from each finding's "why_it_came_out_this_way" facts. Use this picture: a model answers
   in two phases, READING the input (all input words processed at once, the model's weights fetched from
   memory once, limited by arithmetic, which Intel's AMX units are built for) and WRITING the answer (one
   word at a time, the whole set of weights re-read from memory for every word, limited by memory
   bandwidth, where a price-matched CPU slice is furthest behind a GPU). State the task's reading/writing
-  shape, quote the bandwidth figures and shares given, say which side ran at its hardware limit, and
-  conclude whether a different setting could change the result (it cannot when both sides sit at their
-  memory limit) and which kinds of work would favor the CPU (reading-heavy: classification, embeddings,
-  extraction, detection). When "intel_published_figures" is present, put the run's per-core throughput
-  next to Intel's per-core figures and explain the difference by core count, memory bandwidth and
-  concurrency, not by software.
+  shape, quote the bandwidth and arithmetic shares given, say which side ran at its hardware limit, and
+  conclude whether a different setting could change the result (it cannot when a side sits at its
+  hardware limit) and which kinds of work and which loads favour the CPU. When "intel_published_figures"
+  is present, put the run's per-core throughput next to Intel's per-core figures and explain the
+  difference by core count, memory bandwidth and concurrency, not by software.
 - Say "measurement" or "load setting", never "level"; say "repeated" rather than "passes".
 """
 
@@ -63,7 +79,9 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
             if not c:
                 return None
             out = {k: c.get(k) for k in ("instance_type", "engine", "precision", "conc", "batch", "usd_per_hour",
-                                         "throughput", "latency", "cost", "quality_delta", "amx")}
+                                         "throughput", "latency", "cost", "quality_delta", "quality_flag", "amx", "price_label")}
+            if c.get("savings"):
+                out["savings_plans"] = [{k: x.get(k) for k in ("label", "usd_per_hour", "saving_pct")} for x in c["savings"] if x.get("basis") != "on_demand"]
             if c.get("accuracy"):
                 a = c["accuracy"]
                 out["accuracy"] = {k: a.get(k) for k in ("recall", "fpr", "f1", "agreement_with_gpu", "fit")}
@@ -89,8 +107,11 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                                    | {"pairing": (v["suggestion"].get("pairing") or {}).get("text")})
                                             if v.get("suggestion") else None}
                                            for v in g.get("sizing") or []],
-                       "why_it_came_out_this_way": _mechanics(g.get("mechanics") or {})})
+                       "why_it_came_out_this_way": _mechanics(g.get("mechanics") or {}),
+                       "at_your_load": _plan(g.get("demand_plan"))})
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
+            "pricing": analysis.get("pricing"), "load_requests_per_minute": analysis.get("demand_rpm"),
+            "frame": analysis.get("how_to_read"),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
             "comparability": {k: comparability.get(k) for k in ("ok", "blockers", "warnings")},
             "hardware_that_did_not_run": [{k: nr.get(k) for k in ("run_id", "side", "target", "instance_type", "reason")}
@@ -100,6 +121,20 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                                "throughput_tok_s", "tok_s_per_core", "tpot_ms", "ttft_ms")}
                                         for r in (analysis.get("intel_reference") or [])] or None,
             "notes_from_reports": sorted(set(analysis.get("warnings") or []))[:12]}
+
+
+def _plan(d: dict | None) -> dict | None:
+    """The cheapest-at-your-load result of a finding (bench/demand.plan), compacted."""
+    if not d or d.get("error") or not d.get("options"):
+        return None
+    def opt(o):
+        if not o:
+            return None
+        return {k: o.get(k) for k in ("side", "instance_type", "engine", "precision", "instances", "usd_per_hour", "usd_per_month",
+                                      "estimated", "capacity_basis", "price_label")}
+    return {"requests_per_minute": d.get("demand_rpm"), "cheapest": opt(d.get("cheapest")), "cheapest_measured": opt(d.get("cheapest_measured")),
+            "cheapest_gpu": opt(d.get("cheapest_gpu")), "cheapest_cpu": opt(d.get("cheapest_cpu")),
+            "crossover": (d.get("crossover") or {}).get("text"), "plain_language": d.get("text")}
 
 
 def _mechanics(m: dict) -> dict | None:

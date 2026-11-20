@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import catalog_store, pairing, report, utilization  # noqa: E402
+from bench import catalog_store, demand, pairing, report, utilization  # noqa: E402
 from bench.config import RunConfig, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import GENERATIVE, levels_for_cell  # noqa: E402
@@ -883,9 +883,11 @@ def cell_error_text(raw: str, stderr: str = "") -> str:
             said = "; ".join(f"{path} answered HTTP {code}: {body.strip()[:200]}" for path, code, body in answers[:3])
             return ("The serving software started and reported healthy, but rejected the first real request. " + said +
                     (f" Cause: {cause}" if cause else ". The whole server log is kept under bringup/ in the run's folder."))
-        return ("The serving software started and reported healthy, but rejected the first real request, and this run (before "
-                "2026-11-18) kept neither the server's answer nor its log, so the cause is not recorded. Runs since then keep both. "
-                "Details: " + tail[-240:])
+        if cause:
+            return ("The serving software started and reported healthy, but rejected the first real request. Cause: " + cause +
+                    ". The whole server log is kept under bringup/ in the run's folder.")
+        return ("The serving software started and reported healthy, but rejected the first real request; its answer was not "
+                "kept (runs since 2026-11-18 keep the server's answers and its whole log under bringup/). Details: " + tail[-240:])
     if "bring-up of" in s and not tail:
         return ("The instance was taken away while the model was loading, and the run gave up after its replacements were "
                 "taken away too (before 2026-11-13 runs shared one instance per hardware option; every run now gets its own). "
@@ -1588,18 +1590,29 @@ class CompareIn(BaseModel):
     limit: int = 4
     models: list[str] | None = None            # restrict to these model ids
     series: list[str] | None = None            # restrict to these series names (hardware / precision)
+    pricing: dict | None = None                # {basis: on_demand|compute_1y|compute_3y|ec2_instance_1y|ec2_instance_3y, cpu_usd_per_hour, gpu_usd_per_hour}
+    demand_rpm: float | None = None            # the load to size for, requests per minute
 
 
 @app.post("/api/compare")
 def post_compare(c: CompareIn):
     if not c.run_ids:
         raise HTTPException(400, "pick at least one run")
+    if c.pricing:
+        if (c.pricing.get("basis") or "on_demand") not in demand.PRICING_BASES:
+            raise HTTPException(400, f"unknown pricing basis {c.pricing.get('basis')!r}")
+        for k in ("cpu_usd_per_hour", "gpu_usd_per_hour"):
+            v = c.pricing.get(k)
+            if v is not None and (not isinstance(v, (int, float)) or v < 0 or v > 1000):
+                raise HTTPException(400, f"{k} must be a price per hour between 0 and 1000")
+    if c.demand_rpm is not None and not (0 < c.demand_rpm <= 1e8):
+        raise HTTPException(400, "demand_rpm must be between 0 and 100,000,000 requests per minute")
     sums = [_summary(r) for r in c.run_ids]
     comp = compare.comparability(sums)
     sla = c.sla or compare.default_sla(sums)
     if c.models:
         sums = [{**s, "rows": [r for r in s["rows"] if r["model"] in c.models]} for s in sums]
-    analysis = compare.analyze(sums, {k: v for k, v in sla.items() if k != "preset"}, c.limit) if comp["ok"] else None
+    analysis = compare.analyze(sums, {k: v for k, v in sla.items() if k != "preset"}, c.limit, c.pricing, c.demand_rpm) if comp["ok"] else None
     if analysis and c.series:
         for g in analysis["groups"]:
             g["points"] = [p for p in g["points"] if p["series"] in c.series]
@@ -1628,14 +1641,15 @@ def exec_summary_post(c: SummaryIn):
     Cached per (runs, targets, limit, models) so re-rendering the page does not re-bill."""
     from webui.api import exec_summary
 
-    out = post_compare(CompareIn(run_ids=c.run_ids, sla=c.sla, limit=c.limit, models=c.models))
+    out = post_compare(CompareIn(run_ids=c.run_ids, sla=c.sla, limit=c.limit, models=c.models, pricing=c.pricing, demand_rpm=c.demand_rpm))
     if not out["analysis"]:
         raise HTTPException(400, "the selected runs are not comparable; fix that first")
     # Keyed on the findings themselves (not only the selection), so a re-judged analysis (new targets, utilization
     # read anew, a redeployed rule) never serves the summary of an earlier analysis.
     findings = hashlib.sha256(json.dumps(exec_summary._compact(out["analysis"], out["comparability"], out["sla"], out["runs"]),
                                          sort_keys=True, default=str).encode()).hexdigest()[:16]
-    key = "exec:" + json.dumps({"r": sorted(c.run_ids), "s": out["sla"], "l": c.limit, "m": c.models, "f": findings}, sort_keys=True, default=str)
+    key = "exec:" + json.dumps({"r": sorted(c.run_ids), "s": out["sla"], "l": c.limit, "m": c.models, "p": c.pricing, "d": c.demand_rpm,
+                                "f": findings}, sort_keys=True, default=str)
     if key in _CACHE and not c.force:
         return _CACHE[key]
     try:

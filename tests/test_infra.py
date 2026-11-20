@@ -58,7 +58,7 @@ def test_launch_templates_private_imdsv2_encrypted_tagged(templates):
         assert tags["bench:managed"] == "true" and tags["bench:target"] == name
         for k, v in PROJECT_TAGS.items():
             assert tags[k] == v
-    assert n == 6
+    assert n == 5          # t4-m8i-4xl-torch removed 2026-11-20
 
 
 def test_control_launch_is_scoped(templates):

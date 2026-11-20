@@ -9,8 +9,9 @@ in a fair price band. Anything else is reported as a blocker or a warning, in wo
 from __future__ import annotations
 
 import math
+import re
 
-from bench import mechanics, pairing, report, utilization
+from bench import demand, mechanics, pairing, report, utilization
 from webui.api.catalog import (
     DIRECTIONS,
     INTEL_IO,
@@ -165,8 +166,12 @@ def _group_key(r: dict) -> tuple[str, str]:
         label += f" ({TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]})"
         return key, label
     if r.get("model_type") == "embedding":
-        key += "|embed|" + str(r.get("text_size")) + (f"|b{r['batch']}" if r.get("batch", 1) > 1 else "")
-        label += f" · embeddings, {TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]}"
+        size = r.get("text_size")
+        if not size:                      # reports rendered before 2026-11-20 lost it when repeats were pooled
+            m = re.search(r"__embed-([a-z]+)", r.get("level_group") or "")
+            size = m.group(1) if m else None
+        key += "|embed|" + str(size) + (f"|b{r['batch']}" if r.get("batch", 1) > 1 else "")
+        label += " · embeddings" + (f", {TEXT_SIZES.get(size, (size,))[0]}" if size else "")
         if r.get("batch", 1) > 1:
             label += f" · batch of {r['batch']}"
         return key, label
@@ -306,8 +311,33 @@ def not_run(summary: dict) -> list[dict]:
     return out
 
 
-def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
-    """Rows from every run, re-judged against the given targets, grouped by question."""
+COST_KEYS = ("usd_per_1m_tokens", "usd_per_1k_requests", "usd_per_1m_items", "usd_per_1m_docs", "usd_per_1m_chars")
+
+
+def reprice(r: dict, pricing: dict | None, catalog: dict) -> dict:
+    """The row under the chosen pricing basis (bench/demand.price_per_hour): hourly price and every
+    per-unit cost scaled by the same factor. The report's own numbers are On-Demand; they stay in
+    usd_per_hour_on_demand."""
+    pr = demand.price_per_hour(r["instance_type"], r["accelerator"], pricing, catalog)
+    od = r.get("usd_per_hour")
+    r["usd_per_hour_on_demand"] = od
+    r["price_label"] = pr["label"]
+    if pr["usd_per_hour"] is None or not od:
+        return r
+    factor = pr["usd_per_hour"] / od
+    r["usd_per_hour"] = pr["usd_per_hour"]
+    for k in COST_KEYS:
+        if r.get(k) is not None:
+            r[k] = r[k] * factor
+    return r
+
+
+def analyze(summaries: list[dict], sla: dict, limit: int = 4, pricing: dict | None = None,
+            demand_rpm: float | None = None) -> dict:
+    """Rows from every run, re-judged against the given targets, grouped by question. pricing: the basis
+    (On-Demand, a Savings Plan, or per-side overrides) applied to every price and cost; demand_rpm: the
+    required load in requests per minute, for the cheapest-option-at-your-load plan per group."""
+    catalog = pairing.load_catalog()
     rows = []
     for s in summaries:
         for r in s["rows"]:
@@ -317,6 +347,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             r["accuracy"] = _acc(s, r)
             r["translation"] = _tq(s, r)
             r["embedding"] = _eq(s, r)
+            reprice(r, pricing, catalog)
             rows.append(r)
     missing = [nr for s in summaries for nr in not_run(s)]
     # A side counts as missing only when NO selected run measured it.
@@ -341,6 +372,8 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
                 return None
             return {"series": _series_name(r), "instance_type": r["instance_type"], "engine": r["engine"],
                     "precision": r["precision"], "conc": r["conc"], "batch": r.get("batch", 1), "usd_per_hour": r["usd_per_hour"],
+                    "usd_per_hour_on_demand": r.get("usd_per_hour_on_demand"), "price_label": r.get("price_label"),
+                    "savings": demand.savings_options(r["instance_type"], catalog),
                     "throughput": r.get(u["thr"]), "latency": r.get(u["lat"]), "cost": r.get(u["cost"]),
                     "quality_delta": r.get("quality_delta"), "quality_flag": r.get("quality_flag"), "amx": r.get("amx"),
                     "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"),
@@ -361,10 +394,13 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
         if best_gpu and best_cpu:
             n = math.ceil(best_gpu[u["thr"]] / best_cpu[u["thr"]])
             ratio = n * best_cpu["usd_per_hour"] / best_gpu["usd_per_hour"]
+            basis = (pricing or {}).get("basis") or "on_demand"
+            basis_note = "" if basis == "on_demand" and not any((pricing or {}).get(k) is not None for k in ("cpu_usd_per_hour", "gpu_usd_per_hour")) \
+                else f" (prices: {best_cpu.get('price_label')} for the CPU, {best_gpu.get('price_label')} for the GPU)"
             verdict = {"instances_per_gpu": n, "hourly_cost_ratio": ratio, "within_limit": n <= limit, "limit": limit,
-                       "text": (f"To match one {best_gpu['instance_type']} you need {n} × {best_cpu['instance_type']}, costing "
-                                f"{ratio:.1f}x as much per hour, " + ("within your limit: the CPU side is a viable alternative."
-                                                                     if n <= limit else f"above your limit of {limit}: conditional."))}
+                       "text": (f"To match one {best_gpu['instance_type']}'s peak throughput you need {n} × {best_cpu['instance_type']}, costing "
+                                f"{ratio:.1f}x as much per hour{basis_note}, " + ("within your limit: the CPU side is a viable alternative."
+                                                                                  if n <= limit else f"above your limit of {limit}: conditional."))}
         elif missing_side.get("gpu") and not gpu_rows:
             verdict = {"text": "The GPU side did not run (no capacity), so there is nothing to compare the CPU numbers "
                                "with. The CPU figures below stand alone; no verdict is possible.", "within_limit": None,
@@ -404,8 +440,14 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
             mech = mechanics.explain_group(grows, *mech_ctx)
         except Exception as e:  # noqa: BLE001 - an explanation never blocks the results
             mech = {"error": str(e)[:200]}
+        try:
+            dplan = demand.plan(grows, (demand_rpm or 0) / 60 or None, pricing, catalog, _series_name,
+                                params=mech_ctx[0].get(grows[0]["model"]))
+        except Exception as e:  # noqa: BLE001 - the plan never blocks the results
+            dplan = {"error": str(e)[:200]}
         out_groups.append({"key": g["key"], "label": g["label"], "units": u, "best_gpu": card(best_gpu), "best_cpu": card(best_cpu),
                            "verdict": verdict, "equivalence": equivalence, "points": points, "sizing": sizing, "mechanics": mech,
+                           "demand_plan": dplan,
                            "missing": {"gpu": (missing_side.get("gpu") or {}).get("reason") if not gpu_rows else None,
                                        "cpu": (missing_side.get("cpu") or {}).get("reason") if not cpu_rows else None},
                            "series": sorted({_series_name(r) for r in grows})})
@@ -420,9 +462,24 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4) -> dict:
     intel_ref = [r for s in summaries for r in (s.get("intel_reference") or [])]
     seen = set()
     intel_ref = [r for r in intel_ref if not (tuple(sorted(r.items())) in seen or seen.add(tuple(sorted(r.items()))))]
+    basis = (pricing or {}).get("basis") or "on_demand"
     return {"groups": out_groups, "pairing": cross, "run_pairing": pairs, "not_run": missing,
             "warnings": [w for s in summaries for w in (s.get("warnings") or [])],
-            "smoke": any(s.get("smoke") for s in summaries), "intel_reference": intel_ref}
+            "smoke": any(s.get("smoke") for s in summaries), "intel_reference": intel_ref,
+            "pricing": {"basis": basis, "label": demand.PRICING_BASES.get(basis, ("On-Demand",))[0],
+                        "cpu_usd_per_hour": (pricing or {}).get("cpu_usd_per_hour"), "gpu_usd_per_hour": (pricing or {}).get("gpu_usd_per_hour"),
+                        "snapshot": catalog.get("price_snapshot")},
+            "demand_rpm": demand_rpm, "typical_loads": demand.TYPICAL_LOADS,
+            "how_to_read": HOW_TO_READ}
+
+
+HOW_TO_READ = (
+    "On AWS On-Demand pricing a GPU instance beats a price-matched Intel AMX CPU instance on peak throughput for every "
+    "workload this tool has measured: at the same hourly price one L4 carries about 7.5x the matrix arithmetic and 2.7x the "
+    "memory bandwidth of eight Xeon 6 cores, and the CPU side here runs at 70-80% of its own hardware limits with AMX "
+    "verified. 'How many CPUs replace one GPU' therefore always favours the GPU. The CPU case is a different question: "
+    "the cheapest option that meets your targets at the load you actually have (a small CPU slice costs a quarter of the "
+    "smallest GPU instance), capacity you already pay for, or no GPU available. Set your load and prices above to see it.")
 
 
 def default_sla(summaries: list[dict]) -> dict:

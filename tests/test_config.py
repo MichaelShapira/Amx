@@ -150,7 +150,7 @@ def test_openvino_bf16_is_its_own_precision(models, targets):
 
 def test_constrained_variant_only_on_vllm(models, targets):
     run = _run(models=["m5-flan-t5-xl"],
-               cells=[{"target": "t4-m8i-4xl-torch", "precision": "bf16", "variant": "constrained"}])
+               cells=[{"target": "t3-m8i-4xl-ov", "precision": "int8-ov", "variant": "constrained"}])
     with pytest.raises(ValueError, match="constrained"):
         resolve_cells(run, models, targets)
 

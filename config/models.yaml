@@ -33,7 +33,7 @@ models:
     prompt_format: {kind: chat_template, template_kwargs: {enable_thinking: false}}
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      bf16: {engines: [vllm], weights: bf16, activations: bf16}
       bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
       int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
       int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
@@ -53,16 +53,14 @@ models:
     quality_reference:
       target: t1-g6
       precision: bf16
-      fp32_anchor: {target: t4-m8i-4xl-torch, precision: fp32}
     precisions:
-      bf16: {engines: [vllm, thin-torch, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
+      bf16: {engines: [vllm, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
       fp16:
-        engines: [thin-torch, thin-openvino]
+        engines: [vllm, thin-openvino]      # vLLM serves it on the GPU (--dtype float16); no AWS Intel host has AMX-FP16
         inference_precision: f16
         weights: fp16
         activations: fp16
         requires_cpu_flag: amx_fp16
-      fp32: {engines: [thin-torch], inference_precision: f32, weights: fp32, activations: fp32, quality_only: true}
       int8-ov:
         engines: [thin-openvino]
         export: {weight_format: int8, task: text-classification}
@@ -146,7 +144,7 @@ models:
       audio upstream, text only here. Apache-2.0. Served with the vLLM flags Intel's Xeon recipe
       lists; PyTorch through the thin server loads the same checkpoint.
     precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      bf16: {engines: [vllm], weights: bf16, activations: bf16}
 
   # Gemma 4 E2B Instruct: the compact member of the family (5.1B stored, 2B effective), from
   # https://swcatalog.intel.com/models/google-gemma-4-e2b-it. Same serving flags as E4B.
@@ -175,7 +173,7 @@ models:
       Google's Gemma 4 E2B: 5.1 billion stored parameters (2 billion effective), text, image and
       audio upstream, text only here. Apache-2.0. Same vLLM flags as E4B.
     precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      bf16: {engines: [vllm], weights: bf16, activations: bf16}
 
   # EmbeddingGemma 300M: the embedding model Intel's catalog lists
   # (https://swcatalog.intel.com/models/redhatai-embeddinggemma-300m; RedHatAI's ungated mirror of
@@ -197,4 +195,4 @@ models:
     embedding: {batch_sizes: [1, 8, 32, 64], max_length: 512, dim: 768, prefix: "title: none | text: "}
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
-      bf16: {engines: [vllm, thin-torch], weights: bf16, activations: bf16}
+      bf16: {engines: [vllm], weights: bf16, activations: bf16}

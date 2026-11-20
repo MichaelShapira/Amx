@@ -154,7 +154,7 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   `runs/<id>/capacity/` and listed in the report; the report rows carry the type that ran. The whole deployment is
   pinned to one AZ (`use1-az1`) so workers and targets share it; when EC2 says the type is
   available in another AZ, that is a redeploy of the network stack, not a run option.
-- More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`, `t4-m8i-4xl-torch`) are
+- More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`) are
   separate stacks; deploy them after the smoke reports are reviewed.
 
 ## Instance types and fair pairing

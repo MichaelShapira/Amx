@@ -105,7 +105,8 @@ MODEL_KIND = {"decoder": "Chat / generation", "encoder-decoder": "Instruction mo
 ENGINES = {"vllm": ("vLLM", "The most common open-source serving software for chat models, on GPUs and Intel CPUs."),
            "ovms": ("OpenVINO", "Intel's optimized CPU serving stack (OpenVINO Model Server)."),
            "thin-openvino": ("OpenVINO", "OpenVINO through a small serving wrapper, for models the model server does not host."),
-           "thin-torch": ("PyTorch", "Plain PyTorch through a small serving wrapper: the simplest, least optimized way to serve.")}
+           "thin-torch": ("PyTorch", "Plain PyTorch through a small serving wrapper, used on the GPU side only for Flan-T5, which vLLM does not serve. "
+                                     "The CPU PyTorch option was removed on 2026-11-20: 3-10x below vLLM on the same instance, it compared engines, not CPU with GPU.")}
 
 PRECISIONS = {
     "bf16": ("BF16 (standard)", "Full-quality number format on GPUs and AMX CPUs. The like-for-like baseline."),
@@ -195,7 +196,10 @@ def hardware_options() -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        engines = list(dict.fromkeys(ENGINES[e][0] for e in t.engines))
+        # The GPU option is named for vLLM alone: its PyTorch engine serves only Flan-T5 (which vLLM has no
+        # API for) and is not an option the reader chooses, so it stays out of the label and the sentences.
+        named = [e for e in t.engines if not (e == "thin-torch" and "vllm" in t.engines)]
+        engines = list(dict.fromkeys(ENGINES[e][0] for e in named))
         spec = pairing.spec(t.instance_type) or {}
         out.append({
             "id": tid, "accelerator": t.accelerator, "cpu_features": sorted(t.cpu_features),

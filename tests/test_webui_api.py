@@ -123,7 +123,7 @@ def test_analysis_verdict_and_equivalence():
     g = out["groups"][0]
     assert g["best_gpu"]["instance_type"] == "g6.xlarge" and g["best_cpu"]["conc"] == 16
     assert g["verdict"]["instances_per_gpu"] == 3 and g["verdict"]["within_limit"] is True
-    assert "To match one g6.xlarge you need 3 × m8i.4xlarge" in g["verdict"]["text"]
+    assert "To match one g6.xlarge's peak throughput you need 3 × m8i.4xlarge" in g["verdict"]["text"]
     assert [e["instances_per_gpu"] for e in g["equivalence"]] == [3, 10]
     strict = compare.analyze([s], {"p99_ttft_ms": 1000, "max_error_pct": 1.0}, limit=4)["groups"][0]
     assert strict["best_cpu"]["conc"] == 4 and strict["verdict"]["instances_per_gpu"] == 10 and strict["verdict"]["within_limit"] is False
@@ -327,15 +327,15 @@ def test_refusals_read_as_sentences_with_names():
     and the other pre-check messages, as the reader sees them."""
     from webui.api.main import refusal_sentences
 
-    old = refusal_sentences(["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: host facts of t4-m8i-4xl-torch lack amx_fp16"])[0]
-    assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · PyTorch in FP16 (half precision): the FP16")
+    old = refusal_sentences(["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: host facts of t3-m8i-4xl-ov lack amx_fp16"])[0]
+    assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): the FP16")
     # 2026-11-15: the sentence told the reader to "pick an m8i, c8i or r8i size" for a run that was
     # already on c8i.4xlarge. No size has AMX-FP16 on EC2; the sentence must say so and never
     # recommend a size.
     assert "AMX-FP16" in old and "do not expose" in old and "No instance size changes this" in old
     assert "m8i, c8i or r8i size" not in old and "Pick an" not in old and "greys FP16 out" in old
     gpu = refusal_sentences(["m3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16"])[0]
-    assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM + PyTorch in FP16 (half precision): refused by mistake.")
+    assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM in FP16 (half precision): refused by mistake.")
     assert "Start the run again" in gpu
     new = refusal_sentences(["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
     assert new.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): the FP16")
@@ -392,10 +392,10 @@ def test_fp16_is_blocked_for_cpu_options_at_selection_and_in_the_plan(monkeypatc
     assert note.startswith("CPU · Intel Xeon with AMX · OpenVINO: RoBERTa-large (classifier) in FP16 (half precision) needs the AMX-FP16")
     assert "c8i" in note_fp16 and "Pick an" not in note
     assert "fp16" not in {cell["precision"] for cell in pl["run"]["cells"] if cell["target"] != "t1-g6"}
-    # The same for the PyTorch option and for any size: the feature is per family on EC2, not per size.
+    # The same for any size: the feature is per family on EC2, not per size.
     for itype in ("m8i.4xlarge", "m8i.8xlarge", "c8i.4xlarge", "m7i.4xlarge"):
-        pl2 = c.post("/api/plan", json={**w, "cpus": [{"hardware": "t4-m8i-4xl-torch", "instance_type": itype, "precisions": ["fp16"]}]}).json()
-        assert ("t4-m8i-4xl-torch", "FP16 (half precision)") not in {(s_["hardware"], s_["precision"]) for s_ in pl2["series"]}
+        pl2 = c.post("/api/plan", json={**w, "cpus": [{"hardware": "t3-m8i-4xl-ov", "instance_type": itype, "precisions": ["fp16"]}]}).json()
+        assert ("t3-m8i-4xl-ov", "FP16 (half precision)") not in {(s_["hardware"], s_["precision"]) for s_ in pl2["series"]}
         assert any("runs nothing in this plan" in x for x in pl2["warnings"]), (itype, pl2["warnings"])
 
 
@@ -585,7 +585,7 @@ def test_a_rejected_first_request_names_the_servers_answer_or_says_it_was_not_ke
     old = ("bring-up of m5-flan-t5-xl|t1-g6|bf16 failed (Failed): ...credentials-store 2026-11-18T07:28:13Z stage: syncing google/flan-t5-xl "
            "from the S3 cache 2026-11-18T07:31:30Z ERROR: first request failed on every API path failed to run commands: exit status 1")
     t = failure_sentence(old, None)
-    assert t.startswith("The serving software started and reported healthy, but rejected the first real request") and "not recorded" in t
+    assert t.startswith("The serving software started and reported healthy, but rejected the first real request") and "was not kept" in t
     new = ("bring-up of m5 failed (Failed): 2026-11-19T07:31:20Z first request to /v1/completions -> HTTP 500: "
            '{"error":{"message":"CUDA error: device-side assert triggered","type":"server_error","code":500}} '
            "2026-11-19T07:31:30Z ERROR: first request failed on every API path (the server's answers are above; its log is in bringup/)")
@@ -597,14 +597,14 @@ def test_a_rejected_first_request_names_the_servers_answer_or_says_it_was_not_ke
 def test_technical_details_describe_this_build():
     t = c.get("/api/technical").json()
     ids = {h["id"] for h in t["hardware"]}
-    assert {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov", "t4-m8i-4xl-torch"} <= ids
+    assert {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov"} <= ids and "t4-m8i-4xl-torch" not in ids   # PyTorch CPU option removed 2026-11-20
     g6 = next(h for h in t["hardware"] if h["id"] == "t1-g6")
     assert g6["accelerator"] == "gpu" and {e["engine"] for e in g6["engines"]} == {"vllm", "thin-torch"}
     torch = next(e for e in g6["engines"] if e["engine"] == "thin-torch")
     assert torch["built"] and torch["dockerfile"] == "servers/thin/Dockerfile.torch" and torch["image"] == "built:thin-torch-cuda"
     vllm = next(e for e in g6["engines"] if e["engine"] == "vllm")
     assert not vllm["built"] and "@sha256:" in vllm["image"]
-    assert {im["name"] for im in t["images"]} >= {"thin-torch-cpu", "thin-torch-cuda", "thin-openvino", "export"}
+    assert {im["name"] for im in t["images"]} >= {"thin-torch-cuda", "thin-openvino", "export"} and "thin-torch-cpu" not in {im["name"] for im in t["images"]}
     assert t["files"]["host/serve.sh"]["present"] and "first_request" in t["files"]["host/serve.sh"]["text"]
     assert t["files"]["servers/export/Dockerfile"]["present"] and t["thin_tasks"]["encoder-decoder"] == "seq2seq"
     assert t["export_presets"]["x-ov-int4"]["group_size"] == 128 and t["diagram"]["svg"] == "/api/technical/architecture.svg"
@@ -621,7 +621,7 @@ def test_catalog_offers_the_translation_use_case_and_gemma_4():
     assert trans == {"m1-qwen3-1.7b", "m7-gemma-4-e2b", "m5-flan-t5-xl", "m6-gemma-4-e4b"}
     g = next(m for m in cat["models"] if m["id"] == "m6-gemma-4-e4b")
     assert g["name"] == "Gemma 4 E4B Instruct" and g["params_b"] == 8.0 and g["commercial_ok"] and g["license"] == "apache-2.0"
-    assert set(g["precisions"]) == {"bf16"} and set(g["precisions"]["bf16"]["engines"]) == {"vllm", "thin-torch"}
+    assert set(g["precisions"]) == {"bf16"} and set(g["precisions"]["bf16"]["engines"]) == {"vllm"}
 
 
 @pytest.mark.skipif(not (ROOT / "data/translation/v1/items.jsonl.gz").exists(), reason="corpus not built")

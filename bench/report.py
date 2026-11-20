@@ -356,7 +356,8 @@ def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | N
         "target_label": target.label, "instance_type": target.instance_type, "accelerator": target.accelerator,
         "engine": c.engine, "precision": c.precision, "variant": c.variant, "workload": workload, "bucket": bucket,
         "direction": direction, "model_type": model.type,
-        "text_size": name[len(direction) + 1:] if direction else m.get("text_size"),
+        "text_size": (name[len(direction) + 1:] if direction else
+                      m.get("text_size") or (name.split("-", 1)[1] if model.type == "embedding" and name.startswith("embed-") else None)),
         "chars_s": m.get("chars_per_s"), "chrf": (qual or {}).get("chrf") if direction else None,
         "conc": m["concurrency"], "batch": m.get("batch") or 1, "repeats": m.get("repeats", 1), "kind": m["kind"],
         "n_ok": m["n_ok"], "n_requests": m["n_requests"],
@@ -407,7 +408,9 @@ def pooled_levels(inp: RunInputs) -> list[dict]:
         else:
             recs = [r for m in per for r in inp.raw_loader(ck, m["level_key"])]
             pooled = metrics.combine_repeats(per, recs, concurrency=per[0]["concurrency"], kind=per[0]["kind"])
-            for k in ("cell_key", "level_key", "batch", "workload", "direction", "name"):
+            # text_size was missing here, so a repeated (full-grade) embedding run lost it and its groups read
+            # "embeddings, None" while the one-repeat smoke run kept it (2026-11-20).
+            for k in ("cell_key", "level_key", "batch", "workload", "direction", "name", "text_size", "accuracy", "target_id"):
                 pooled[k] = per[0].get(k)
             pooled["resources"] = utilization.merge_stats([m.get("resources") or {} for m in per]) or None
         out.append(pooled)

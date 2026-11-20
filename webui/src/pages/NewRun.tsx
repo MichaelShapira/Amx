@@ -88,14 +88,22 @@ export default function NewRun() {
 
 type SP = { w: Wizard; set: (p: Partial<Wizard>) => void };
 
+/** The typical test for a use case: the load settings and targets a first benchmark should use. The
+ *  use-case step applies it on selection; the load step offers it as "Use typical tests" so a reader who
+ *  changed things can come back to it. Everything it sets stays editable. */
+export function typicalTests(uc: UseCase, generative = true): Partial<Wizard> & { why: string } {
+  if (uc === "dspm") return { concurrency: [1, 8, 16], sla: {}, request_mode: "concurrent", why: "1, 8 and 16 documents at a time: one analyst, a team, a scanning job. Targets come from the preset you pick on the results page." };
+  if (uc === "translation") return { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 }, request_mode: "concurrent", why: "1, 4 and 16 translations at a time; whole translation within 10 s, first word within 2 s." };
+  if (uc === "embedding") return { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch", batch_sizes: [1, 8, 32], why: "1, 8 and 32 requests at a time carrying 1, 8 or 32 texts each; the whole request within 1 s, as a search box needs." };
+  if (uc === "intel") return { concurrency: [16, 64, 128], sla: { p50_tpot_ms: 100, p99_ttft_ms: 3000 }, request_mode: "concurrent", why: "Intel's published settings: 16, 64 and 128 requests at a time, 100 ms per token, first token within 3 s." };
+  if (!generative) return { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch", batch_sizes: [1, 8, 32], why: "A classifier: 1, 8 and 32 requests at a time carrying 1, 8 or 32 inputs; each decision within 1 s." };
+  return { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, request_mode: "concurrent", why: "1, 4 and 16 chat sessions at a time; first word within 2 s, then reading speed (150 ms per word)." };
+}
+
 function StepUseCase({ w, set }: SP) {
   const cat = useCatalog()!;
   const pick = (uc: UseCase) => {
-    const defaults = uc === "dspm" ? { concurrency: [1, 8, 16], sla: {} }
-      : uc === "translation" ? { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 } }
-      : uc === "embedding" ? { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch" as const, batch_sizes: [1, 8, 32] }
-      : uc === "intel" ? { concurrency: [16, 64, 128], sla: { p50_tpot_ms: 100, p99_ttft_ms: 3000 }, request_mode: "concurrent" as const }
-      : { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 } };
+    const { why: _why, ...defaults } = typicalTests(uc);
     set({ use_case: uc, models: [], ...defaults });
   };
   return (
@@ -463,9 +471,15 @@ function StepLoad({ w, set }: SP) {
   const batchOk = chosen.length > 0 && chosen.every((m) => m.batch_capable);
   const generative = chosen.length === 0 || chosen.some((m) => m.type === "decoder" || m.type === "encoder-decoder");
   const levels = [1, 2, 4, 8, 10, 16, 20, 32, 50, 64];
+  const typical = typicalTests(w.use_case, generative);
+  const applyTypical = () => { const { why: _why, ...t } = typical; set({ ...t, request_mode: t.request_mode === "batch" && !batchOk ? "concurrent" : t.request_mode }); };
   return (
     <div>
-      <h2>6 · How hard to push, and what counts as acceptable?</h2>
+      <div className="row between">
+        <h2 style={{ margin: 0 }}>6 · How hard to push, and what counts as acceptable?</h2>
+        <button className="btn sm" onClick={applyTypical} title={typical.why}>Use typical tests</button>
+      </div>
+      <div className="small muted mb">Not sure what to pick? <b>Use typical tests</b> fills in the load settings and targets a first benchmark of this kind should use ({typical.why}). Everything stays editable afterwards.</div>
       <Label help="A single request shows each machine's best-case latency. Concurrent requests keep N in flight, as a service under load. Batched requests put several inputs in one request; available for classifier and detector models (chat models take one prompt per request and the server batches concurrent requests itself).">Request shape</Label>
       <div className="tiles mb">
         {Object.entries(cat.request_modes).map(([k, m]) => (

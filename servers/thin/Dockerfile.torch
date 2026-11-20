@@ -15,9 +15,15 @@ COPY servers/__init__.py /app/servers/__init__.py
 COPY servers/thin /app/servers/thin
 
 # Models are mounted read-only at /models; nothing is downloaded at run time.
+# The server runs as a user with no home directory. Every library that caches under ~ (Triton's kernel
+# cache on the CUDA build, torch.compile's inductor cache, Hugging Face) is pointed at /tmp, which the
+# container always has: Flan-T5 on the GPU failed its first request with
+# "PermissionError: [Errno 13] Permission denied: '/home/bench'" from triton/runtime/cache.py (2026-11-20).
 ENV PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-    THIN_HOST=127.0.0.1 THIN_PORT=8000
-RUN useradd --uid 10001 --no-create-home --shell /sbin/nologin bench
+    THIN_HOST=127.0.0.1 THIN_PORT=8000 \
+    HOME=/tmp XDG_CACHE_HOME=/tmp/cache TRITON_CACHE_DIR=/tmp/cache/triton TORCHINDUCTOR_CACHE_DIR=/tmp/cache/inductor \
+    HF_HOME=/tmp/cache/huggingface
+RUN useradd --uid 10001 --no-create-home --shell /sbin/nologin bench && mkdir -p /tmp/cache && chmod 1777 /tmp /tmp/cache
 USER 10001
 EXPOSE 8000
 ENTRYPOINT []

@@ -129,7 +129,8 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
             max_len = (model.classifier.max_length if model.classifier else model.max_input_tokens)
         if model.type == "embedding":
             max_len = model.embedding.max_length if model.embedding else model.max_input_tokens
-        cmd = ["serve", "{MODEL_DIR}", "--served-model-name", model.id, "--dtype", "bfloat16",
+        dtype = {"fp16": "float16", "fp32": "float32"}.get(cell.precision, "bfloat16")   # W8A8/INT8 checkpoints carry their own scheme
+        cmd = ["serve", "{MODEL_DIR}", "--served-model-name", model.id, "--dtype", dtype,
                "--max-model-len", str(max_len), "--max-num-seqs", str(a.get("max_num_seqs", 128)),
                "--max-num-batched-tokens", str(a.get("max_num_batched_tokens", 2048)),
                "--enable-prefix-caching" if _prefix_caching(run) else "--no-enable-prefix-caching",

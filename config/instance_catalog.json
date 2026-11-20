@@ -23,6 +23,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 96.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.54792,
+    "compute_3y": 1.03421,
+    "ec2_instance_1y": 1.41693,
+    "ec2_instance_3y": 0.94304
+   },
    "usd_per_hour": 2.142,
    "vcpus": 48
   },
@@ -36,6 +42,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.06389,
+    "compute_3y": 1.37895,
+    "ec2_instance_1y": 1.88924,
+    "ec2_instance_3y": 1.25739
+   },
    "usd_per_hour": 2.856,
    "vcpus": 64
   },
@@ -49,6 +61,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.09584,
+    "compute_3y": 2.06842,
+    "ec2_instance_1y": 2.83387,
+    "ec2_instance_3y": 1.88608
+   },
    "usd_per_hour": 4.284,
    "vcpus": 96
   },
@@ -62,6 +80,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.25799,
+    "compute_3y": 0.17237,
+    "ec2_instance_1y": 0.23616,
+    "ec2_instance_3y": 0.15717
+   },
    "usd_per_hour": 0.357,
    "vcpus": 8
   },
@@ -75,6 +99,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 6.19168,
+    "compute_3y": 4.13684,
+    "ec2_instance_1y": 5.66773,
+    "ec2_instance_3y": 3.77216
+   },
    "usd_per_hour": 8.568,
    "vcpus": 192
   },
@@ -88,6 +118,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.51597,
+    "compute_3y": 0.34474,
+    "ec2_instance_1y": 0.47231,
+    "ec2_instance_3y": 0.31435
+   },
    "usd_per_hour": 0.714,
    "vcpus": 16
   },
@@ -101,6 +137,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.03195,
+    "compute_3y": 0.68947,
+    "ec2_instance_1y": 0.94462,
+    "ec2_instance_3y": 0.62869
+   },
    "usd_per_hour": 1.428,
    "vcpus": 32
   },
@@ -114,6 +156,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 4.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.0645,
+    "compute_3y": 0.04309,
+    "ec2_instance_1y": 0.05904,
+    "ec2_instance_3y": 0.03929
+   },
    "usd_per_hour": 0.08925,
    "vcpus": 2
   },
@@ -127,6 +175,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 8.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.12899,
+    "compute_3y": 0.08618,
+    "ec2_instance_1y": 0.11808,
+    "ec2_instance_3y": 0.07859
+   },
    "usd_per_hour": 0.1785,
    "vcpus": 4
   },
@@ -140,6 +194,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 96.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.62527,
+    "compute_3y": 1.08589,
+    "ec2_instance_1y": 1.48774,
+    "ec2_instance_3y": 0.99017
+   },
    "usd_per_hour": 2.24904,
    "vcpus": 48
   },
@@ -153,6 +213,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.16703,
+    "compute_3y": 1.44786,
+    "ec2_instance_1y": 1.98365,
+    "ec2_instance_3y": 1.32022
+   },
    "usd_per_hour": 2.99872,
    "vcpus": 64
   },
@@ -166,6 +232,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.25055,
+    "compute_3y": 2.17178,
+    "ec2_instance_1y": 2.97548,
+    "ec2_instance_3y": 1.98033
+   },
    "usd_per_hour": 4.49808,
    "vcpus": 96
   },
@@ -179,6 +251,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.27088,
+    "compute_3y": 0.18098,
+    "ec2_instance_1y": 0.24796,
+    "ec2_instance_3y": 0.16503
+   },
    "usd_per_hour": 0.37484,
    "vcpus": 8
   },
@@ -192,6 +270,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 4.33406,
+    "compute_3y": 2.89571,
+    "ec2_instance_1y": 3.96731,
+    "ec2_instance_3y": 2.64044
+   },
    "usd_per_hour": 5.99744,
    "vcpus": 128
   },
@@ -205,6 +289,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 6.50109,
+    "compute_3y": 4.34357,
+    "ec2_instance_1y": 5.95096,
+    "ec2_instance_3y": 3.96067
+   },
    "usd_per_hour": 8.99616,
    "vcpus": 192
   },
@@ -218,6 +308,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.54176,
+    "compute_3y": 0.36196,
+    "ec2_instance_1y": 0.49591,
+    "ec2_instance_3y": 0.33006
+   },
    "usd_per_hour": 0.74968,
    "vcpus": 16
   },
@@ -231,6 +327,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.08352,
+    "compute_3y": 0.72393,
+    "ec2_instance_1y": 0.99183,
+    "ec2_instance_3y": 0.66011
+   },
    "usd_per_hour": 1.49936,
    "vcpus": 32
   },
@@ -244,6 +346,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 13.00219,
+    "compute_3y": 8.68714,
+    "ec2_instance_1y": 11.90192,
+    "ec2_instance_3y": 7.92133
+   },
    "usd_per_hour": 17.99232,
    "vcpus": 384
   },
@@ -257,6 +365,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 4.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.06772,
+    "compute_3y": 0.04525,
+    "ec2_instance_1y": 0.06199,
+    "ec2_instance_3y": 0.04126
+   },
    "usd_per_hour": 0.09371,
    "vcpus": 2
   },
@@ -270,6 +384,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 8.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.13544,
+    "compute_3y": 0.09049,
+    "ec2_instance_1y": 0.12398,
+    "ec2_instance_3y": 0.08251
+   },
    "usd_per_hour": 0.18742,
    "vcpus": 4
   },
@@ -283,6 +403,12 @@
    "gpu_model": "A10G",
    "gpus": 4,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 4.4667,
+    "compute_3y": 3.06288,
+    "ec2_instance_1y": 3.57336,
+    "ec2_instance_3y": 2.4503
+   },
    "usd_per_hour": 5.672,
    "vcpus": 48
   },
@@ -296,6 +422,12 @@
    "gpu_model": "A10G",
    "gpus": 1,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.2256,
+    "compute_3y": 2.21184,
+    "ec2_instance_1y": 2.58048,
+    "ec2_instance_3y": 1.76947
+   },
    "usd_per_hour": 4.096,
    "vcpus": 64
   },
@@ -309,6 +441,12 @@
    "gpu_model": "A10G",
    "gpus": 4,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 6.4134,
+    "compute_3y": 4.39776,
+    "ec2_instance_1y": 5.13072,
+    "ec2_instance_3y": 3.51821
+   },
    "usd_per_hour": 8.144,
    "vcpus": 96
   },
@@ -322,6 +460,12 @@
    "gpu_model": "A10G",
    "gpus": 1,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.95445,
+    "compute_3y": 0.65448,
+    "ec2_instance_1y": 0.76356,
+    "ec2_instance_3y": 0.52358
+   },
    "usd_per_hour": 1.212,
    "vcpus": 8
   },
@@ -335,6 +479,12 @@
    "gpu_model": "A10G",
    "gpus": 8,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 12.8268,
+    "compute_3y": 8.79552,
+    "ec2_instance_1y": 10.26144,
+    "ec2_instance_3y": 7.03642
+   },
    "usd_per_hour": 16.288,
    "vcpus": 192
   },
@@ -348,6 +498,12 @@
    "gpu_model": "A10G",
    "gpus": 1,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.2789,
+    "compute_3y": 0.87696,
+    "ec2_instance_1y": 1.02312,
+    "ec2_instance_3y": 0.70157
+   },
    "usd_per_hour": 1.624,
    "vcpus": 16
   },
@@ -361,6 +517,12 @@
    "gpu_model": "A10G",
    "gpus": 1,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.9278,
+    "compute_3y": 1.32192,
+    "ec2_instance_1y": 1.54224,
+    "ec2_instance_3y": 1.05754
+   },
    "usd_per_hour": 2.448,
    "vcpus": 32
   },
@@ -374,6 +536,12 @@
    "gpu_model": "A10G",
    "gpus": 1,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.79223,
+    "compute_3y": 0.54324,
+    "ec2_instance_1y": 0.63378,
+    "ec2_instance_3y": 0.43459
+   },
    "usd_per_hour": 1.006,
    "vcpus": 4
   },
@@ -387,6 +555,12 @@
    "gpu_model": "L4",
    "gpus": 4,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.74455,
+    "compute_3y": 2.64017,
+    "ec2_instance_1y": 2.99564,
+    "ec2_instance_3y": 2.11213
+   },
    "usd_per_hour": 4.6016,
    "vcpus": 48
   },
@@ -400,6 +574,12 @@
    "gpu_model": "L4",
    "gpus": 1,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.76415,
+    "compute_3y": 1.94891,
+    "ec2_instance_1y": 2.21132,
+    "ec2_instance_3y": 1.55913
+   },
    "usd_per_hour": 3.3968,
    "vcpus": 64
   },
@@ -413,6 +593,12 @@
    "gpu_model": "L4",
    "gpus": 4,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 5.43194,
+    "compute_3y": 3.8299,
+    "ec2_instance_1y": 4.34556,
+    "ec2_instance_3y": 3.06392
+   },
    "usd_per_hour": 6.6752,
    "vcpus": 96
   },
@@ -426,6 +612,12 @@
    "gpu_model": "L4",
    "gpus": 1,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.79552,
+    "compute_3y": 0.5609,
+    "ec2_instance_1y": 0.63642,
+    "ec2_instance_3y": 0.44872
+   },
    "usd_per_hour": 0.9776,
    "vcpus": 8
   },
@@ -439,6 +631,12 @@
    "gpu_model": "L4",
    "gpus": 8,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 10.86389,
+    "compute_3y": 7.65979,
+    "ec2_instance_1y": 8.69111,
+    "ec2_instance_3y": 6.12783
+   },
    "usd_per_hour": 13.3504,
    "vcpus": 192
   },
@@ -452,6 +650,12 @@
    "gpu_model": "L4",
    "gpus": 1,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.07675,
+    "compute_3y": 0.75919,
+    "ec2_instance_1y": 0.8614,
+    "ec2_instance_3y": 0.60735
+   },
    "usd_per_hour": 1.3232,
    "vcpus": 16
   },
@@ -465,6 +669,12 @@
    "gpu_model": "L4",
    "gpus": 1,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.63922,
+    "compute_3y": 1.15576,
+    "ec2_instance_1y": 1.31137,
+    "ec2_instance_3y": 0.92461
+   },
    "usd_per_hour": 2.0144,
    "vcpus": 32
   },
@@ -478,6 +688,12 @@
    "gpu_model": "L4",
    "gpus": 1,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.65491,
+    "compute_3y": 0.46175,
+    "ec2_instance_1y": 0.52392,
+    "ec2_instance_3y": 0.3694
+   },
    "usd_per_hour": 0.8048,
    "vcpus": 4
   },
@@ -491,6 +707,12 @@
    "gpu_model": "L40S",
    "gpus": 4,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 7.93243,
+    "compute_3y": 5.43938,
+    "ec2_instance_1y": 6.61036,
+    "ec2_instance_3y": 4.53282
+   },
    "usd_per_hour": 10.49264,
    "vcpus": 48
   },
@@ -504,6 +726,12 @@
    "gpu_model": "L40S",
    "gpus": 1,
    "memory_gib": 512.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 5.72836,
+    "compute_3y": 3.92802,
+    "ec2_instance_1y": 4.77363,
+    "ec2_instance_3y": 3.27335
+   },
    "usd_per_hour": 7.57719,
    "vcpus": 64
   },
@@ -517,6 +745,12 @@
    "gpu_model": "L40S",
    "gpus": 4,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 11.38959,
+    "compute_3y": 7.81,
+    "ec2_instance_1y": 9.49132,
+    "ec2_instance_3y": 6.50834
+   },
    "usd_per_hour": 15.06559,
    "vcpus": 96
   },
@@ -530,6 +764,12 @@
    "gpu_model": "L40S",
    "gpus": 1,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.69501,
+    "compute_3y": 1.16229,
+    "ec2_instance_1y": 1.41251,
+    "ec2_instance_3y": 0.96858
+   },
    "usd_per_hour": 2.24208,
    "vcpus": 8
   },
@@ -543,6 +783,12 @@
    "gpu_model": "L40S",
    "gpus": 8,
    "memory_gib": 1536.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 22.77917,
+    "compute_3y": 15.62,
+    "ec2_instance_1y": 18.98264,
+    "ec2_instance_3y": 13.01667
+   },
    "usd_per_hour": 30.13118,
    "vcpus": 192
   },
@@ -556,6 +802,12 @@
    "gpu_model": "L40S",
    "gpus": 1,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.2712,
+    "compute_3y": 1.5574,
+    "ec2_instance_1y": 1.89267,
+    "ec2_instance_3y": 1.29783
+   },
    "usd_per_hour": 3.00424,
    "vcpus": 16
   },
@@ -569,6 +821,12 @@
    "gpu_model": "L40S",
    "gpus": 1,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.42359,
+    "compute_3y": 2.3476,
+    "ec2_instance_1y": 2.85299,
+    "ec2_instance_3y": 1.95634
+   },
    "usd_per_hour": 4.52856,
    "vcpus": 32
   },
@@ -582,6 +840,12 @@
    "gpu_model": "L40S",
    "gpus": 1,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.40692,
+    "compute_3y": 0.96474,
+    "ec2_instance_1y": 1.17243,
+    "ec2_instance_3y": 0.80395
+   },
    "usd_per_hour": 1.861,
    "vcpus": 4
   },
@@ -595,6 +859,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.77735,
+    "compute_3y": 1.22689,
+    "ec2_instance_1y": 1.6003,
+    "ec2_instance_3y": 1.09735
+   },
    "usd_per_hour": 2.4192,
    "vcpus": 48
   },
@@ -608,6 +878,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.3698,
+    "compute_3y": 1.63585,
+    "ec2_instance_1y": 2.13373,
+    "ec2_instance_3y": 1.46313
+   },
    "usd_per_hour": 3.2256,
    "vcpus": 64
   },
@@ -621,6 +897,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.5547,
+    "compute_3y": 2.45378,
+    "ec2_instance_1y": 3.2006,
+    "ec2_instance_3y": 2.1947
+   },
    "usd_per_hour": 4.8384,
    "vcpus": 96
   },
@@ -634,6 +916,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.29622,
+    "compute_3y": 0.20448,
+    "ec2_instance_1y": 0.26672,
+    "ec2_instance_3y": 0.18289
+   },
    "usd_per_hour": 0.4032,
    "vcpus": 8
   },
@@ -647,6 +935,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 7.1094,
+    "compute_3y": 4.90755,
+    "ec2_instance_1y": 6.4012,
+    "ec2_instance_3y": 4.3894
+   },
    "usd_per_hour": 9.6768,
    "vcpus": 192
   },
@@ -660,6 +954,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.59245,
+    "compute_3y": 0.40896,
+    "ec2_instance_1y": 0.53343,
+    "ec2_instance_3y": 0.36578
+   },
    "usd_per_hour": 0.8064,
    "vcpus": 16
   },
@@ -673,6 +973,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.1849,
+    "compute_3y": 0.81793,
+    "ec2_instance_1y": 1.06687,
+    "ec2_instance_3y": 0.73157
+   },
    "usd_per_hour": 1.6128,
    "vcpus": 32
   },
@@ -686,6 +992,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 8.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.07406,
+    "compute_3y": 0.05112,
+    "ec2_instance_1y": 0.06668,
+    "ec2_instance_3y": 0.04572
+   },
    "usd_per_hour": 0.1008,
    "vcpus": 2
   },
@@ -699,6 +1011,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.14811,
+    "compute_3y": 0.10224,
+    "ec2_instance_1y": 0.13336,
+    "ec2_instance_3y": 0.09145
+   },
    "usd_per_hour": 0.2016,
    "vcpus": 4
   },
@@ -712,6 +1030,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 192.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.86622,
+    "compute_3y": 1.28823,
+    "ec2_instance_1y": 1.68032,
+    "ec2_instance_3y": 1.15222
+   },
    "usd_per_hour": 2.54016,
    "vcpus": 48
   },
@@ -725,6 +1049,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.48829,
+    "compute_3y": 1.71764,
+    "ec2_instance_1y": 2.24042,
+    "ec2_instance_3y": 1.53629
+   },
    "usd_per_hour": 3.38688,
    "vcpus": 64
   },
@@ -738,6 +1068,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.73243,
+    "compute_3y": 2.57647,
+    "ec2_instance_1y": 3.36063,
+    "ec2_instance_3y": 2.30443
+   },
    "usd_per_hour": 5.08032,
    "vcpus": 96
   },
@@ -751,6 +1087,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.31104,
+    "compute_3y": 0.21471,
+    "ec2_instance_1y": 0.28005,
+    "ec2_instance_3y": 0.19204
+   },
    "usd_per_hour": 0.42336,
    "vcpus": 8
   },
@@ -764,6 +1106,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 512.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 4.97658,
+    "compute_3y": 3.43529,
+    "ec2_instance_1y": 4.48084,
+    "ec2_instance_3y": 3.07258
+   },
    "usd_per_hour": 6.77376,
    "vcpus": 128
   },
@@ -777,6 +1125,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 7.46487,
+    "compute_3y": 5.15293,
+    "ec2_instance_1y": 6.72126,
+    "ec2_instance_3y": 4.60887
+   },
    "usd_per_hour": 10.16064,
    "vcpus": 192
   },
@@ -790,6 +1144,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.62207,
+    "compute_3y": 0.42941,
+    "ec2_instance_1y": 0.56011,
+    "ec2_instance_3y": 0.38407
+   },
    "usd_per_hour": 0.84672,
    "vcpus": 16
   },
@@ -803,6 +1163,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.24414,
+    "compute_3y": 0.85882,
+    "ec2_instance_1y": 1.12021,
+    "ec2_instance_3y": 0.76814
+   },
    "usd_per_hour": 1.69344,
    "vcpus": 32
   },
@@ -816,6 +1182,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 1536.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 14.92974,
+    "compute_3y": 10.30586,
+    "ec2_instance_1y": 13.44253,
+    "ec2_instance_3y": 9.21773
+   },
    "usd_per_hour": 20.32128,
    "vcpus": 384
   },
@@ -829,6 +1201,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 8.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.07776,
+    "compute_3y": 0.05368,
+    "ec2_instance_1y": 0.07001,
+    "ec2_instance_3y": 0.04801
+   },
    "usd_per_hour": 0.10584,
    "vcpus": 2
   },
@@ -842,6 +1220,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.15552,
+    "compute_3y": 0.10735,
+    "ec2_instance_1y": 0.14003,
+    "ec2_instance_3y": 0.09602
+   },
    "usd_per_hour": 0.21168,
    "vcpus": 4
   },
@@ -855,6 +1239,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.30043,
+    "compute_3y": 1.65631,
+    "ec2_instance_1y": 2.10039,
+    "ec2_instance_3y": 1.44027
+   },
    "usd_per_hour": 3.1752,
    "vcpus": 48
   },
@@ -868,6 +1258,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 512.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.06724,
+    "compute_3y": 2.20842,
+    "ec2_instance_1y": 2.80053,
+    "ec2_instance_3y": 1.92036
+   },
    "usd_per_hour": 4.2336,
    "vcpus": 64
   },
@@ -881,6 +1277,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 4.60086,
+    "compute_3y": 3.31262,
+    "ec2_instance_1y": 4.20079,
+    "ec2_instance_3y": 2.88054
+   },
    "usd_per_hour": 6.3504,
    "vcpus": 96
   },
@@ -894,6 +1296,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.38341,
+    "compute_3y": 0.27605,
+    "ec2_instance_1y": 0.35007,
+    "ec2_instance_3y": 0.24005
+   },
    "usd_per_hour": 0.5292,
    "vcpus": 8
   },
@@ -907,6 +1315,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 1536.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 9.20173,
+    "compute_3y": 6.62525,
+    "ec2_instance_1y": 8.40158,
+    "ec2_instance_3y": 5.76108
+   },
    "usd_per_hour": 12.7008,
    "vcpus": 192
   },
@@ -920,6 +1334,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.76681,
+    "compute_3y": 0.5521,
+    "ec2_instance_1y": 0.70013,
+    "ec2_instance_3y": 0.48009
+   },
    "usd_per_hour": 1.0584,
    "vcpus": 16
   },
@@ -933,6 +1353,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.53362,
+    "compute_3y": 1.10421,
+    "ec2_instance_1y": 1.40026,
+    "ec2_instance_3y": 0.96018
+   },
    "usd_per_hour": 2.1168,
    "vcpus": 32
   },
@@ -946,6 +1372,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.09585,
+    "compute_3y": 0.06901,
+    "ec2_instance_1y": 0.08752,
+    "ec2_instance_3y": 0.06001
+   },
    "usd_per_hour": 0.1323,
    "vcpus": 2
   },
@@ -959,6 +1391,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.1917,
+    "compute_3y": 0.13803,
+    "ec2_instance_1y": 0.17503,
+    "ec2_instance_3y": 0.12002
+   },
    "usd_per_hour": 0.2646,
    "vcpus": 4
   },
@@ -972,6 +1410,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 384.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 2.41554,
+    "compute_3y": 1.73919,
+    "ec2_instance_1y": 2.20549,
+    "ec2_instance_3y": 1.51234
+   },
    "usd_per_hour": 3.33408,
    "vcpus": 48
   },
@@ -985,6 +1429,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 512.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 3.22072,
+    "compute_3y": 2.31892,
+    "ec2_instance_1y": 2.94066,
+    "ec2_instance_3y": 2.01645
+   },
    "usd_per_hour": 4.44544,
    "vcpus": 64
   },
@@ -998,6 +1448,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 768.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 4.83108,
+    "compute_3y": 3.47838,
+    "ec2_instance_1y": 4.41099,
+    "ec2_instance_3y": 3.02468
+   },
    "usd_per_hour": 6.66816,
    "vcpus": 96
   },
@@ -1011,6 +1467,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 64.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.40259,
+    "compute_3y": 0.28986,
+    "ec2_instance_1y": 0.36758,
+    "ec2_instance_3y": 0.25206
+   },
    "usd_per_hour": 0.55568,
    "vcpus": 8
   },
@@ -1024,6 +1486,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 1024.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 6.44144,
+    "compute_3y": 4.63784,
+    "ec2_instance_1y": 5.88132,
+    "ec2_instance_3y": 4.0329
+   },
    "usd_per_hour": 8.89088,
    "vcpus": 128
   },
@@ -1037,6 +1505,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 1536.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 9.66216,
+    "compute_3y": 6.95676,
+    "ec2_instance_1y": 8.82198,
+    "ec2_instance_3y": 6.04935
+   },
    "usd_per_hour": 13.33632,
    "vcpus": 192
   },
@@ -1050,6 +1524,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 128.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.80518,
+    "compute_3y": 0.57973,
+    "ec2_instance_1y": 0.73516,
+    "ec2_instance_3y": 0.50411
+   },
    "usd_per_hour": 1.11136,
    "vcpus": 16
   },
@@ -1063,6 +1543,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 256.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 1.61036,
+    "compute_3y": 1.15946,
+    "ec2_instance_1y": 1.47033,
+    "ec2_instance_3y": 1.00823
+   },
    "usd_per_hour": 2.22272,
    "vcpus": 32
   },
@@ -1076,6 +1562,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 3072.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 19.32433,
+    "compute_3y": 13.91352,
+    "ec2_instance_1y": 17.64395,
+    "ec2_instance_3y": 12.09871
+   },
    "usd_per_hour": 26.67264,
    "vcpus": 384
   },
@@ -1089,6 +1581,12 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 16.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.10065,
+    "compute_3y": 0.07247,
+    "ec2_instance_1y": 0.0919,
+    "ec2_instance_3y": 0.06301
+   },
    "usd_per_hour": 0.13892,
    "vcpus": 2
   },
@@ -1102,11 +1600,17 @@
    "gpu_model": null,
    "gpus": 0,
    "memory_gib": 32.0,
+   "savings_plan_usd_per_hour": {
+    "compute_1y": 0.2013,
+    "compute_3y": 0.14493,
+    "ec2_instance_1y": 0.18379,
+    "ec2_instance_3y": 0.12603
+   },
    "usd_per_hour": 0.27784,
    "vcpus": 4
   }
  },
- "price_list_arn": "arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261107002852/us-east-1",
- "price_snapshot": "2026-11-09T20:45:21Z",
+ "price_list_arn": "arn:aws:pricing:::price-list/aws/AmazonEC2/USD/20261120034850/us-east-1",
+ "price_snapshot": "2026-11-20T20:14:41Z",
  "region": "us-east-1"
 }

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
-import { type CompareOut, type ExecSummary, type Group, type IntelReference, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, api, fmt } from "../api";
+import { type CompareOut, type DemandOption, type DemandPlan, type ExecSummary, type Group, type IntelReference, type Pricing, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, type TypicalLoad, api, fmt } from "../api";
+import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCatalog } from "../App";
 import { Badge, Help, Label, Metric, Note, Spinner, Toggle, instanceLine } from "../components/ui";
 import { Curves, InstancesBar, Swatch, UtilizationCurves, UtilizationTimeline, seriesKeys, seriesStyles } from "../components/Charts";
@@ -19,17 +20,19 @@ export default function Results() {
   const [models, setModels] = useState<string[] | null>(null);
   const [view, setView] = useState<"all" | "one">("all");
   const [series, setSeries] = useState<string | null>(null);
+  const [pricing, setPricing] = useState<Pricing>({ basis: "on_demand", cpu_usd_per_hour: null, gpu_usd_per_hour: null });
+  const [demandRpm, setDemandRpm] = useState<number | null>(null);
 
   useEffect(() => { api.runs().then((r) => setRuns(r.filter((x) => x.status === "complete"))).catch((e) => setErr(e.message)); }, []);
   useEffect(() => {
     selected.forEach((id) => { if (!infos[id]) api.summary(id).then((s) => setInfos((p) => ({ ...p, [id]: s }))).catch(() => undefined); });
   }, [selected.join(",")]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const key = useMemo(() => JSON.stringify({ selected, sla, limit, models }), [selected, sla, limit, models]);
+  const key = useMemo(() => JSON.stringify({ selected, sla, limit, models, pricing, demandRpm }), [selected, sla, limit, models, pricing, demandRpm]);
   useEffect(() => {
     if (!selected.length) { setOut(null); return; }
     setErr(null);
-    api.compare({ run_ids: selected, sla: sla ?? undefined, limit, models: models ?? undefined })
+    api.compare({ run_ids: selected, sla: sla ?? undefined, limit, models: models ?? undefined, pricing, demand_rpm: demandRpm })
       .then((o) => { setOut(o); if (!sla) setSla(o.sla); })
       .catch((e) => setErr(e.message));
   }, [key]);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -144,7 +147,9 @@ export default function Results() {
                   <Toggle value={view} onChange={(v) => setView(v)} options={[{ value: "all", label: "All hardware options" }, { value: "one", label: "One at a time" }]} />
                 </div>
               </div>
-              <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} />
+              <LoadAndPrices pricing={pricing} setPricing={setPricing} demandRpm={demandRpm} setDemandRpm={setDemandRpm} typical={out.analysis.typical_loads ?? []} priceLabel={out.analysis.pricing?.label} snapshot={out.analysis.pricing?.snapshot ?? null} />
+              {out.analysis.how_to_read && <div className="note mt"><b>How to read these results.</b> {out.analysis.how_to_read}</div>}
+              <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} pricing={pricing} demandRpm={demandRpm} />
               {out.analysis.groups.map((g) => <GroupView key={g.key} g={g} view={view} series={series} setSeries={setSeries} limit={limit} target={(sla?.[g.units.lat_sla] as number | null | undefined) ?? null} />)}
               {out.analysis.intel_reference && out.analysis.intel_reference.length > 0 && <IntelReferenceTable rows={out.analysis.intel_reference} groups={out.analysis.groups} />}
               <RunUtilization runIds={selected} />
@@ -156,6 +161,105 @@ export default function Results() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+const BASES: { value: string; label: string; help: string }[] = [
+  { value: "on_demand", label: "On-Demand (pay as you go)", help: "The public hourly price with no commitment. The reports' own numbers use it." },
+  { value: "compute_1y", label: "Compute Savings Plan · 1 year", help: "Commit to an hourly spend for one year, no upfront payment; applies to any instance family and region. Real rates from AWS, refreshed with the instance catalog." },
+  { value: "compute_3y", label: "Compute Savings Plan · 3 years", help: "The same, for three years: the deepest discount that still lets you change instance family." },
+  { value: "ec2_instance_1y", label: "EC2 Instance Savings Plan · 1 year", help: "Commit to one instance family in one region for a year, no upfront: cheaper than the Compute plan, less flexible." },
+  { value: "ec2_instance_3y", label: "EC2 Instance Savings Plan · 3 years", help: "The deepest discount AWS publishes for these families." },
+];
+
+/** The two inputs that turn "how many CPUs match one GPU" into a decision: the load to serve and the prices to use. */
+function LoadAndPrices({ pricing, setPricing, demandRpm, setDemandRpm, typical, priceLabel, snapshot }: {
+  pricing: Pricing; setPricing: (p: Pricing) => void; demandRpm: number | null; setDemandRpm: (n: number | null) => void;
+  typical: TypicalLoad[]; priceLabel?: string; snapshot: string | null;
+}) {
+  const [text, setText] = useState<string>(demandRpm != null ? String(demandRpm) : "");
+  const apply = (v: string) => { setText(v); const n = Number(v); setDemandRpm(v.trim() && n > 0 ? n : null); };
+  return (
+    <div className="card mt">
+      <h3 style={{ margin: 0 }}>Your load and your prices <Help text="The capacity verdict above asks how many CPU instances match one GPU's PEAK throughput, which the GPU always wins on AWS pricing. The decision is the cheapest option that meets your targets at the load you actually have, at the prices you actually pay. Set both here; every group below gets an 'At your load' card and the executive summary uses them." /></h3>
+      <div className="grid c2 mt">
+        <div>
+          <Label help="How many requests your application sends per minute at the level you want to size for (peak hour, not average). Pick a typical figure or type your own; the field always wins.">Load to serve (requests per minute)</Label>
+          <div className="row">
+            <input type="number" min={1} value={text} placeholder="e.g. 600" onChange={(e) => apply(e.target.value)} style={{ width: 140 }} />
+            {typical.map((t) => <button key={t.key} className={"chip " + (demandRpm === t.requests_per_minute ? "on" : "")} title={t.help} onClick={() => apply(String(t.requests_per_minute))}>{t.label}</button>)}
+            {demandRpm != null && <button className="btn sm" onClick={() => apply("")}>Clear</button>}
+          </div>
+          <div className="tiny muted mt">Empty: the verdicts assume you need a GPU's full peak. A request here is one API call, whatever it carries (one chat turn, one document, one batch of texts).</div>
+        </div>
+        <div>
+          <Label help="Which hourly prices to use on both sides. Savings Plans are real published rates (no upfront, Linux, shared tenancy); they lower both sides, and the CPU side a little more. Your own rate overrides the basis for that side: enter 0 for capacity you already pay for.">Prices</Label>
+          <select value={pricing.basis} onChange={(e) => setPricing({ ...pricing, basis: e.target.value })} title={BASES.find((b) => b.value === pricing.basis)?.help}>
+            {BASES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+          </select>
+          <div className="row mt small">
+            <span>Your own rate, $/hour:</span>
+            <label className="row" style={{ gap: 4 }}>CPU <input type="number" min={0} step={0.01} placeholder="basis" value={pricing.cpu_usd_per_hour ?? ""} onChange={(e) => setPricing({ ...pricing, cpu_usd_per_hour: e.target.value === "" ? null : Number(e.target.value) })} style={{ width: 90 }} /></label>
+            <label className="row" style={{ gap: 4 }}>GPU <input type="number" min={0} step={0.01} placeholder="basis" value={pricing.gpu_usd_per_hour ?? ""} onChange={(e) => setPricing({ ...pricing, gpu_usd_per_hour: e.target.value === "" ? null : Number(e.target.value) })} style={{ width: 90 }} /></label>
+          </div>
+          <div className="tiny muted mt">Using: {priceLabel ?? "On-Demand"}{pricing.cpu_usd_per_hour != null ? ` · CPU at your $${pricing.cpu_usd_per_hour}/h` : ""}{pricing.gpu_usd_per_hour != null ? ` · GPU at your $${pricing.gpu_usd_per_hour}/h` : ""}{snapshot ? ` · AWS prices as of ${snapshot.slice(0, 10)}` : ""}.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One group's cheapest-at-your-load result: the two sides sized for the demand, the crossover, and a cost-vs-load chart. */
+function AtYourLoad({ plan, label }: { plan: DemandPlan; label: string }) {
+  const cat = useCatalog();
+  const money = (v: number) => `$${v.toFixed(2)}/h · $${Math.round(v * 730).toLocaleString()}/month`;
+  const one = (o: DemandOption | null, title: string) => {
+    if (!o) return <div className="tile" style={{ cursor: "default" }}><div className="t">{title}</div><div className="small muted">No option on this side met your targets.</div></div>;
+    return (
+      <div className={`tile ${o.side}`} style={{ cursor: "default" }}>
+        <div className="t"><Badge kind={o.side}>{o.side.toUpperCase()}</Badge> {title}</div>
+        <div><b>{o.instances} × {o.instance_type}</b> · {cat?.engines[o.engine]?.label ?? o.engine} · {cat?.precisions[o.precision]?.label ?? o.precision}{o.estimated && <> <Badge kind="warn">estimated size</Badge></>}</div>
+        <div className="small mt"><b>{money(o.usd_per_hour)}</b> <span className="muted">({o.price_label})</span></div>
+        <div className="tiny muted mt">Capacity {o.capacity_basis}. {o.headroom != null ? `At your load it would run at about ${Math.max(1, Math.round(100 / (1 + o.headroom)))}% of that capacity.` : ""}</div>
+        {o.estimated && <div className="tiny mt" style={{ color: "var(--warn)" }}>Not measured: this size was derived from the measured one by core count and checked for memory. Run it (New benchmark, this size) to confirm before deciding.</div>}
+      </div>
+    );
+  };
+  const ratio = plan.cheapest_gpu && plan.cheapest_cpu ? (plan.cheapest_gpu.usd_per_hour / plan.cheapest_cpu.usd_per_hour) : null;
+  return (
+    <div className="mt">
+      <h3>At your load: {Math.round(plan.demand_rpm).toLocaleString()} requests per minute <Help text="Each option's capacity is the highest request rate at which it still met your targets in the measurements; the number of instances is your load divided by that capacity, rounded up; the cost is that many instances at the chosen prices. Smaller CPU sizes than the one measured are estimated from core count and marked; run them to confirm." /></h3>
+      <Note kind={plan.cheapest?.side === "cpu" ? "ok" : undefined}><b>{plan.cheapest?.side === "cpu" ? "The CPU side is the cheaper one here." : "The GPU side is the cheaper one here."}</b> {plan.text}{ratio != null && ratio > 1 ? ` The GPU option costs ${ratio.toFixed(1)}x the CPU option.` : ""}</Note>
+      <div className="grid c2 mt">
+        {one(plan.cheapest_cpu, "Cheapest CPU option")}
+        {one(plan.cheapest_gpu, "Cheapest GPU option")}
+      </div>
+      {plan.crossover && <div className="small mt"><b>Crossover.</b> {plan.crossover.text} <Help text="Found by sizing both sides for every load from zero to beyond the GPU's measured capacity. Below the crossover a small CPU slice is cheaper than the smallest GPU instance; above it the GPU's throughput per dollar wins." /></div>}
+      <CostCurve curve={plan.curve} demandRpm={plan.demand_rpm} crossover={plan.crossover?.rpm ?? null} label={label} />
+    </div>
+  );
+}
+
+function CostCurve({ curve, demandRpm, crossover, label }: { curve: DemandPlan["curve"]; demandRpm: number; crossover: number | null; label: string }) {
+  const data = curve.map((c) => ({ rpm: Math.round(c.rpm), GPU: c.gpu_usd_per_hour, "CPU (best, incl. estimated sizes)": c.cpu_usd_per_hour, "CPU (measured sizes only)": Number.isFinite(c.cpu_measured_usd_per_hour ?? NaN) ? c.cpu_measured_usd_per_hour : null }));
+  return (
+    <div className="mt" style={{ height: 240 }}>
+      <div className="small muted">Cheapest hourly cost per side as the load grows ({label}). Dashed vertical line: your load{crossover ? "; dotted: the crossover" : ""}.</div>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" />
+          <XAxis dataKey="rpm" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(v) => v.toLocaleString()} label={{ value: "requests per minute", position: "insideBottom", offset: -2, fontSize: 11 }} tick={{ fontSize: 11 }} />
+          <YAxis tickFormatter={(v) => `$${v}`} tick={{ fontSize: 11 }} width={56} />
+          <Tooltip formatter={(v: any) => (v == null ? "–" : `$${Number(v).toFixed(2)}/h`)} labelFormatter={(v) => `${Number(v).toLocaleString()} requests/minute`} />
+          <Legend />
+          <ReferenceLine x={Math.round(demandRpm)} stroke="var(--fg)" strokeDasharray="6 4" />
+          {crossover != null && <ReferenceLine x={Math.round(crossover)} stroke="var(--fg-3)" strokeDasharray="2 4" />}
+          <Line type="stepAfter" dataKey="GPU" stroke="var(--gpu)" dot={false} strokeWidth={2} isAnimationActive={false} />
+          <Line type="stepAfter" dataKey="CPU (best, incl. estimated sizes)" stroke="var(--cpu)" dot={false} strokeWidth={2} isAnimationActive={false} />
+          <Line type="stepAfter" dataKey="CPU (measured sizes only)" stroke="var(--cpu)" dot={false} strokeWidth={1} strokeDasharray="4 3" isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -172,11 +276,14 @@ function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_g
   return (
     <div className={`side-card ${kind}`}>
       <h3><Badge kind={kind}>{kind.toUpperCase()}</Badge> {c.instance_type} · {eng} · {cat?.precisions[c.precision]?.label ?? c.precision}</h3>
-      <div className="small muted">at {c.conc} concurrent request{c.conc === 1 ? "" : "s"}{c.batch > 1 ? `, batches of ${c.batch}` : ""} · {fmt.usd(c.usd_per_hour)}/hour{c.amx ? ` · AMX ${c.amx}` : ""}{c.run_id ? ` · run ${c.run_id}` : ""}</div>
+      <div className="small muted">at {c.conc} concurrent request{c.conc === 1 ? "" : "s"}{c.batch > 1 ? `, batches of ${c.batch}` : ""} · {fmt.usd(c.usd_per_hour)}/hour{c.price_label && c.price_label !== "On-Demand" ? ` (${c.price_label})` : ""}{c.amx ? ` · AMX ${c.amx}` : ""}{c.run_id ? ` · run ${c.run_id}` : ""}</div>
+      {c.savings && c.savings.length > 1 && (
+        <div className="tiny muted mt">With a commitment: {c.savings.filter((x) => x.basis !== "on_demand").map((x) => `${x.label.replace(", no upfront", "")} $${x.usd_per_hour.toFixed(2)}/h (−${x.saving_pct}%)`).join(" · ")} <Help text="Published AWS Savings Plan rates for this instance type (no upfront payment, Linux, shared tenancy), next to the On-Demand price the measurement used. Choose a basis under 'Your load and your prices' to apply one to every number on this page." /></div>
+      )}
       <div className="grid c3 mt">
         <Metric k="Throughput" v={`${fmt.n(c.throughput)} ${g.units.thr_label}`} d={isCpu && thrR != null ? `${fmt.x(thrR, 2)} of GPU` : undefined} dGood={isCpu && thrR != null ? thrR >= 1 : null} help={`${g.units.thr_label} across all concurrent requests. Higher is better; this is the capacity figure.`} />
         <Metric k="Responsiveness" v={`${fmt.n(c.latency)} ms`} d={isCpu && latR != null ? `${fmt.x(latR)} GPU's wait` : undefined} dGood={isCpu && latR != null ? latR <= 1 : null} help={`${g.units.lat_label}. Lower is better.`} />
-        <Metric k="Cost per unit" v={fmt.usd(c.cost)} d={isCpu && costR != null ? `${fmt.x(costR)} GPU's cost` : undefined} dGood={isCpu && costR != null ? costR <= 1 : null} help={`${g.units.cost_label} at this load, On-Demand price. Lower is better.`} />
+        <Metric k="Cost per unit" v={fmt.usd(c.cost)} d={isCpu && costR != null ? `${fmt.x(costR)} GPU's cost` : undefined} dGood={isCpu && costR != null ? costR <= 1 : null} help={`${g.units.cost_label} at this load, at the chosen prices (${c.price_label ?? "On-Demand"}). Lower is better.`} />
       </div>
       {c.accuracy && (
         <div className="small mt">Detection accuracy: recall <b>{fmt.pct(c.accuracy.recall)}</b> [{fmt.pct(c.accuracy.recall_ci[0])}–{fmt.pct(c.accuracy.recall_ci[1])}], false positives <b>{fmt.pct(c.accuracy.fpr)}</b>, F1 {c.accuracy.f1.toFixed(2)}{c.accuracy.agreement_with_gpu != null ? <> · agreement with GPU <b>{fmt.pct(c.accuracy.agreement_with_gpu)}</b></> : null}{!c.accuracy.fit && <Badge kind="warn">below the accuracy floors</Badge>}</div>
@@ -230,6 +337,8 @@ function GroupView({ g, view, series, setSeries, limit, target }: { g: Group; vi
         <SideCard kind="gpu" c={g.best_gpu} other={g.best_cpu} g={g} />
         <SideCard kind="cpu" c={g.best_cpu} other={g.best_gpu} g={g} />
       </div>
+      {g.demand_plan && !("error" in g.demand_plan) && g.demand_plan.options.length > 0 && <AtYourLoad plan={g.demand_plan} label={g.label} />}
+      {g.demand_plan && "error" in g.demand_plan && <Note kind="warn">The at-your-load plan could not be computed: {g.demand_plan.error}</Note>}
       {g.mechanics?.why && (
         <div className="note mt"><b>Why it came out this way.</b> {g.mechanics.why} <Help text="Computed from this run: tokens read and written per request, the share of time spent writing, the memory bandwidth each side reached (the model's weights stream once per written token) against what it has (STREAM measured on the CPU host; the vendor figure for the GPU), and the arithmetic rate at the heaviest load against each side's peak. Reading (prefill) is arithmetic, which AMX is built for; writing (decode) is memory bandwidth, where a price-matched CPU slice is furthest behind." /></div>
       )}
@@ -401,16 +510,16 @@ function RunUtilization({ runIds }: { runIds: string[] }) {
   );
 }
 
-function ExecutiveSummary({ runIds, sla, limit, models }: { runIds: string[]; sla: Record<string, number | string | null> | null; limit: number; models: string[] | null }) {
+function ExecutiveSummary({ runIds, sla, limit, models, pricing, demandRpm }: { runIds: string[]; sla: Record<string, number | string | null> | null; limit: number; models: string[] | null; pricing: Pricing; demandRpm: number | null }) {
   const [model, setModel] = useState<{ name: string; call_id: string } | null>(null);
   const [res, setRes] = useState<ExecSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { api.execModel().then(setModel).catch((e) => setErr(e.message)); }, []);
-  useEffect(() => { setRes(null); }, [runIds.join(","), JSON.stringify(sla), limit, JSON.stringify(models)]);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setRes(null); }, [runIds.join(","), JSON.stringify(sla), limit, JSON.stringify(models), JSON.stringify(pricing), demandRpm]);  // eslint-disable-line react-hooks/exhaustive-deps
   const go = async (force = false) => {
     setBusy(true); setErr(null);
-    try { setRes(await api.execSummary({ run_ids: runIds, sla: sla ?? undefined, limit, models: models ?? undefined, force })); }
+    try { setRes(await api.execSummary({ run_ids: runIds, sla: sla ?? undefined, limit, models: models ?? undefined, pricing, demand_rpm: demandRpm, force })); }
     catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
   return (

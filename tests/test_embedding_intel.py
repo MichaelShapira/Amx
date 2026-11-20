@@ -37,7 +37,7 @@ def test_cosine_agreement_and_cross_lingual_retrieval():
 def test_embedding_run_plan_and_cells():
     run = load_run(ROOT / "config/runs/embedding-smoke.yaml")
     cells = resolve_cells(run, MODELS, TARGETS)
-    assert {(c.target, c.engine) for c in cells} == {("t1-g6", "vllm"), ("t2-m8i-4xl", "vllm"), ("t4-m8i-4xl-torch", "thin-torch")}
+    assert {(c.target, c.engine) for c in cells} == {("t1-g6", "vllm"), ("t2-m8i-4xl", "vllm")}   # no PyTorch CPU option since 2026-11-20
     m = MODELS.get("e1-embeddinggemma-300m")
     sizes = {plan.embedding_pool(m, "sentence"): 600}
     levels = plan.levels_for_cell(run, cells[0], m, run_id="r", bucket="b", pool_sizes=sizes)
@@ -49,10 +49,6 @@ def test_embedding_run_plan_and_cells():
     cmd = spec["container"]["cmd"]
     assert "--runner" in cmd and cmd[cmd.index("--runner") + 1] == "pooling" and cmd[cmd.index("--max-model-len") + 1] == "512"
     assert spec["health"]["probe"]["path"] == "/v1/embeddings" and spec["api_task"] == "embed"
-    thin = build(cells[2], m, TMAP["t4-m8i-4xl-torch"], run, run_id="r", bucket="b", hf_token_secret="s",
-                 ecr_repo_uri="1.dkr.ecr.us-east-1.amazonaws.com/x", built_tags={"thin-torch-cpu": "t"})
-    opts = thin["container"]["run_opts"]
-    assert "THIN_TASK=embed" in opts and "THIN_MAX_INPUT_TOKENS=512" in opts
     d = run.model_dump(mode="json")
     d["prompt_set"] = "short"
     with pytest.raises(ValueError, match="text size"):

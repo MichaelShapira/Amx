@@ -110,7 +110,8 @@ export interface MechanicsSide { instance_type: string; engine: string; precisio
 export interface Mechanics { shape?: { input_tokens: number | null; output_tokens: number | null; writing_share: number | null; generation: boolean }; sides?: Record<"gpu" | "cpu", MechanicsSide>; why?: string; error?: string }
 export interface IntelReference { model_id: string; cpu_model: string; sockets: number; total_cores: number; memory_gb: number; ddr5_mt_s: number; io: string; max_concurrency: number; throughput_tok_s: number; tpot_ms: number; ttft_ms: number; vllm_version: string; tested: string | null; tok_s_per_core: number | null }
 export interface TranslationQuality { chrf: number | null; chrf_p10: number | null; length_ratio: number | null; truncated_pct: number | null; n: number | null; chrf_vs_gpu: number | null; exact_match_vs_gpu: number | null; flag: string | null }
-export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; quality_flag: string | null; amx: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
+export interface Saving { basis: string; label: string; usd_per_hour: number; saving_pct: number | null }
+export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; usd_per_hour_on_demand: number | null; price_label: string | null; savings: Saving[]; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; quality_flag: string | null; amx: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
 /** How busy the hardware was during one measurement (host-level means of 10-second samples). */
 export interface PointUtil { busy_mean: number | null; busy_p95: number | null; busy_max: number | null; mem_max: number | null; gpu_mem_pct: number | null; cpu_mean: number | null; gpu_mean: number | null; cpu_scale?: number }
 export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; quality_flag: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; util: PointUtil | null }
@@ -151,12 +152,19 @@ export interface Group {
   equivalence: { series: string; instance_type: string; precision: string; conc: number; instances_per_gpu: number; hourly_cost_ratio: number; within_limit: boolean; run_id: string }[];
   points: Point[]; series: string[]; missing: { gpu: string | null; cpu: string | null };
   mechanics?: Mechanics;
+  demand_plan?: DemandPlan | { error: string } | null;
 }
+export interface DemandOption { series: string; side: "gpu" | "cpu"; instance_type: string; engine: string; precision: string; capacity_req_s: number; capacity_basis: string; usd_per_hour_each: number; price_label: string; estimated: boolean; instances: number; usd_per_hour: number; usd_per_month: number; headroom: number | null; capacity_at?: { conc: number; batch: number; busy_mean: number | null; latency_p99_ms: number | null } }
+export interface DemandPlan { demand_req_s: number; demand_rpm: number; options: DemandOption[]; cheapest: DemandOption | null; cheapest_measured: DemandOption | null; cheapest_gpu: DemandOption | null; cheapest_cpu: DemandOption | null; cheapest_cpu_measured: DemandOption | null; crossover: { req_s: number | null; rpm: number | null; kind: string; text: string } | null; curve: { rpm: number; gpu_usd_per_hour: number | null; cpu_usd_per_hour: number | null; cpu_measured_usd_per_hour: number | null }[]; text: string }
+export interface Pricing { basis: string; cpu_usd_per_hour?: number | null; gpu_usd_per_hour?: number | null }
+export interface TypicalLoad { key: string; label: string; requests_per_minute: number; help: string }
 export interface NotRun { run_id: string; target: string; side: "GPU" | "CPU"; instance_type: string | null; refusals: number; reason: string }
 export interface CompareOut {
   comparability: { ok: boolean; blockers: string[]; warnings: string[]; shapes: Shape[] };
   sla: Record<string, number | string | null>;
-  analysis: { groups: Group[]; pairing: Pairing[]; warnings: string[]; smoke: boolean; not_run: NotRun[]; intel_reference?: IntelReference[] } | null;
+  analysis: { groups: Group[]; pairing: Pairing[]; warnings: string[]; smoke: boolean; not_run: NotRun[]; intel_reference?: IntelReference[];
+    pricing?: { basis: string; label: string; cpu_usd_per_hour: number | null; gpu_usd_per_hour: number | null; snapshot: string | null };
+    demand_rpm?: number | null; typical_loads?: TypicalLoad[]; how_to_read?: string } | null;
   runs: { run_id: string; shape: Shape; smoke: boolean }[];
 }
 
@@ -258,9 +266,9 @@ export const api = {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
   execModel: () => j<{ model_id: string; call_id: string; name: string; version: string }>("/api/executive-summary/model"),
-  execSummary: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; force?: boolean }) =>
+  execSummary: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; force?: boolean; pricing?: Pricing; demand_rpm?: number | null }) =>
     j<ExecSummary>("/api/executive-summary", { method: "POST", body: JSON.stringify(body) }),
-  compare: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; series?: string[] }) =>
+  compare: (body: { run_ids: string[]; sla?: Record<string, number | string | null>; limit?: number; models?: string[]; series?: string[]; pricing?: Pricing; demand_rpm?: number | null }) =>
     j<CompareOut>("/api/compare", { method: "POST", body: JSON.stringify(body) }),
 };
 

@@ -3,23 +3,14 @@
 # the Dockerfiles. Engine images that are not built here (vLLM, OpenVINO Model Server) are pinned by
 # digest in config/targets.yaml.
 images:
-  thin-torch-cpu:
-    dockerfile: servers/thin/Dockerfile.torch
-    base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159
-    runs_on: AMX CPU hosts (hardware option "PyTorch")
-    purpose: >-
-      Plain PyTorch serving through the thin server (servers/thin): the least optimized way to serve a
-      model, kept as the floor every optimized stack is measured against. Weights load as-is from the
-      Hugging Face snapshot; nothing is converted. oneDNN inside PyTorch dispatches BF16 matrix math to
-      AMX, which the AMX probe verifies from the oneDNN trace.
   thin-torch-cuda:
     dockerfile: servers/thin/Dockerfile.torch
     base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cu133-amzn2023@sha256:f9e5a7febd6ef9104deb79941b58c7b054091a29f2b661fe9c2ea076886cb7be
-    runs_on: GPU hosts (hardware option "vLLM + PyTorch", for models vLLM does not serve)
+    runs_on: GPU hosts (hardware option "vLLM", only for Flan-T5, which vLLM does not serve)
     purpose: >-
-      The same thin server on the CUDA build of PyTorch: encoder-decoder models (Flan-T5) and
-      classifiers on the GPU side, where vLLM has no matching API. Same Dockerfile as the CPU image;
-      only the base image differs.
+      The thin server on the CUDA build of PyTorch, used on the GPU side only for the encoder-decoder
+      model (Flan-T5) that vLLM has no API for; its CPU counterpart is OpenVINO through the thin server.
+      The plain-PyTorch CPU option was removed on 2026-11-20 (3-10x below vLLM on the same instance).
   thin-openvino:
     dockerfile: servers/thin/Dockerfile.openvino
     base_image: (see Dockerfile) Python with optimum-intel and OpenVINO runtime

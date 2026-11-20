@@ -234,7 +234,7 @@ def test_preflight_checks(tmp_path):
                    offerings={tmap[c.target].instance_type for c in cells}, host_flags={})
     assert ok == []
     errs = check_run(run, cells, models, tmap, reserved_worker_concurrency=32, offerings={"g6.xlarge"},
-                     host_flags={"t4-m8i-4xl-torch": {"amx_bf16", "amx_int8", "amx_tile"}})
+                     host_flags={"t3-m8i-4xl-ov": {"amx_bf16", "amx_int8", "amx_tile"}})
     text = " | ".join(errs)
     assert "reserved concurrency 32 < highest level 64" in text
     assert "not offered" in text and "m8i.4xlarge" in text
@@ -249,21 +249,21 @@ def test_preflight_checks(tmp_path):
     from bench.config import TargetCatalog, _strip_anchors, load_yaml
     raw = _strip_anchors(load_yaml("config/targets.yaml"))
     for tgt in raw["targets"]:
-        if tgt["id"] == "t4-m8i-4xl-torch":
+        if tgt["id"] == "t3-m8i-4xl-ov":
             tgt["cpu_features"] = tgt["cpu_features"] + ["amx_fp16"]
     claims = TargetCatalog.model_validate(copy.deepcopy(raw))
     from bench.config import Cell
     fp16_run = run.model_copy(update={"models": ["m3-roberta-large-mnli"],
-                                      "cells": [Cell(target="t4-m8i-4xl-torch", precision="fp16", model="m3-roberta-large-mnli")],
-                                      "instance_types": {"t4-m8i-4xl-torch": "c8i.4xlarge"}})
+                                      "cells": [Cell(target="t3-m8i-4xl-ov", precision="fp16", model="m3-roberta-large-mnli")],
+                                      "instance_types": {"t3-m8i-4xl-ov": "c8i.4xlarge"}})
     fp16_cells = resolve_cells(fp16_run, models, claims)
     cmap = claims.resolved()
     errs = check_run(fp16_run, fp16_cells, models, cmap, reserved_worker_concurrency=80, offerings={"c8i.4xlarge"},
-                     host_flags={"t4-m8i-4xl-torch": {"amx_bf16", "amx_int8", "amx_tile", "avx512_fp16"}})
-    assert errs == ["m3-roberta-large-mnli|t4-m8i-4xl-torch|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"]
+                     host_flags={"t3-m8i-4xl-ov": {"amx_bf16", "amx_int8", "amx_tile", "avx512_fp16"}})
+    assert errs == ["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"]
     # No host facts: the (claiming) catalog is believed; with the real catalog the cell never resolves.
     assert check_run(fp16_run, fp16_cells, models, cmap, reserved_worker_concurrency=80, offerings={"c8i.4xlarge"}, host_flags={}) == []
-    with pytest.raises(ValueError, match="needs CPU flag amx_fp16, which t4-m8i-4xl-torch lacks"):
+    with pytest.raises(ValueError, match="needs CPU flag amx_fp16, which t3-m8i-4xl-ov lacks"):
         resolve_cells(fp16_run, models, targets)
     # A GPU cell is never subject to a CPU-feature requirement, whatever the GPU host's facts say
     # (2026-11-12: RoBERTa FP16 on g6.xlarge was refused with "host facts of t1-g6 lack amx_fp16").

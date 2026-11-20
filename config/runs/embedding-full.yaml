@@ -1,5 +1,5 @@
 # Embedding-suite full-grade run: EmbeddingGemma 300M on T1 (GPU, vLLM pooling runner) vs T2 (m8i.4xlarge,
-# vLLM CPU) and T4 (PyTorch), short messages in EN/DE/ES. Methodology defaults: 200 requests x 3 repeats per
+# vLLM CPU), short messages in EN/DE/ES. Methodology defaults: 200 requests x 3 repeats per
 # level. Concurrency goes to 64 because the smoke run (50 requests, c<=32) left both sides mostly idle; at
 # 200 requests every worker still gets >= 3 requests at c64, so no level is a short window.
 run:
@@ -13,7 +13,6 @@ run:
   cells:
     - {target: t1-g6, precision: bf16}
     - {target: t2-m8i-4xl, precision: bf16}
-    - {target: t4-m8i-4xl-torch, precision: bf16}
   prompt_set: sentence                 # text size: sentence | paragraph
   embedding: {test_items: 300}
   concurrency: [1, 8, 32, 64]
@@ -26,6 +25,6 @@ run:
   sla: {p99_e2e_ms: 1000, max_error_pct: 1.0}
   capacity: {max_cpu_instances_per_gpu: 4}
   purchase: {type: spot, spot_fallback_on_demand: true}
-  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge, t4-m8i-4xl-torch: m8i.4xlarge}
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge}
   alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
   stop_targets_after_run: true

@@ -52,6 +52,31 @@ def describe(ec2, families: tuple[str, ...]) -> dict[str, dict]:
     return out
 
 
+SAVINGS_PLANS = (("compute_1y", "Compute", 31536000), ("compute_3y", "Compute", 94608000),
+                 ("ec2_instance_1y", "EC2Instance", 31536000), ("ec2_instance_3y", "EC2Instance", 94608000))
+
+
+def savings_plan_rates(sp, instance_type: str, region: str) -> dict[str, float | None]:
+    """Hourly rates under the common commitments, No Upfront, Linux shared tenancy, from the Savings Plans
+    offering-rates API (public prices, no account specifics). Compute plans apply to any family/region;
+    EC2 Instance plans are tied to the family in one region and are cheaper."""
+    out: dict[str, float | None] = {}
+    for key, kind, seconds in SAVINGS_PLANS:
+        try:
+            r = sp.describe_savings_plans_offering_rates(
+                savingsPlanTypes=[kind], savingsPlanPaymentOptions=["No Upfront"], products=["EC2"], serviceCodes=["AmazonEC2"],
+                filters=[{"name": "instanceType", "values": [instance_type]}, {"name": "region", "values": [region]},
+                         {"name": "tenancy", "values": ["shared"]}, {"name": "productDescription", "values": ["Linux/UNIX"]}],
+                maxResults=50)
+            rates = [float(x["rate"]) for x in r.get("searchResults", [])
+                     if x["savingsPlanOffering"]["durationSeconds"] == seconds and x.get("unit") == "Hrs"
+                     and not any(pp["name"] == "productDescription" and pp["value"] != "Linux/UNIX" for pp in x.get("properties", []))]
+            out[key] = min(rates) if rates else None
+        except Exception:  # noqa: BLE001 - no permission or throttled: the field stays empty, On-Demand still works
+            out[key] = None
+    return out
+
+
 def main(argv=None) -> int:
     import boto3
 
@@ -65,6 +90,7 @@ def main(argv=None) -> int:
     pr = boto3.client("pricing", region_name="us-east-1")
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     arn = cost.current_price_list_arn(pr, a.region, now)
+    sp = boto3.client("savingsplans", region_name="us-east-1")
     missing = []
     for t in sorted(specs):
         try:
@@ -73,6 +99,7 @@ def main(argv=None) -> int:
         except cost.PriceUnavailable:
             missing.append(t)
             specs[t]["usd_per_hour"] = None
+        specs[t]["savings_plan_usd_per_hour"] = savings_plan_rates(sp, t, a.region)
     doc = {"region": a.region, "price_snapshot": now, "price_list_arn": arn, "cpu_families": list(CPU_FAMILIES),
            "gpu_families": list(GPU_FAMILIES), "instances": dict(sorted(specs.items()))}
     Path(a.out).write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")

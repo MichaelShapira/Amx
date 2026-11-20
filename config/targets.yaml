@@ -11,6 +11,10 @@ x-vllm-common: &vllm_common
 # AL2023 kernel 6.12). r8i has not been booted here. So the FP16-on-AMX cells the design planned for
 # T3/T4 cannot run. Do not add amx_fp16 back because Granite Rapids "has" it: the instance is what counts.
 x-amx-8i: &amx_8i [amx_bf16, amx_int8, amx_tile]
+# The plain-PyTorch CPU option (t4-m8i-4xl-torch, image thin-torch-cpu) was removed on 2026-11-20: on every
+# workload it measured 3-10x below vLLM on the same instance (embedding 170 vs 585/s, DSPM 0.3 vs 3.9 docs/s),
+# so it compared PyTorch's lack of batching with vLLM's, not CPU with GPU. PyTorch stays only as the GPU
+# side's engine for Flan-T5, which vLLM does not serve.
 
 targets:
   - id: t1-g6
@@ -71,18 +75,6 @@ targets:
         args: {max_num_seqs: 256, max_num_batched_tokens: 2048, cache_size_gb: 24}
       thin-openvino:
         image: built:thin-openvino
-        args: {max_batch: 16, max_wait_ms: 5}
-
-  - id: t4-m8i-4xl-torch
-    label: T4
-    instance_type: m8i.4xlarge
-    ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
-    accelerator: cpu
-    cpu_features: *amx_8i
-    engines:
-      thin-torch:
-        image: built:thin-torch-cpu
-        env: {OMP_NUM_THREADS: "8", OMP_PROC_BIND: close, OMP_PLACES: cores, ONEDNN_PRIMITIVE_CACHE_CAPACITY: "4096"}
         args: {max_batch: 16, max_wait_ms: 5}
 
   - id: t5-m7i-4xl
