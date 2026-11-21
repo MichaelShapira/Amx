@@ -157,6 +157,14 @@ export interface Group {
 export interface DemandOption { series: string; side: "gpu" | "cpu"; instance_type: string; engine: string; precision: string; capacity_req_s: number; capacity_basis: string; usd_per_hour_each: number; price_label: string; estimated: boolean; instances: number; usd_per_hour: number; usd_per_month: number; headroom: number | null; capacity_at?: { conc: number; batch: number; busy_mean: number | null; latency_p99_ms: number | null } }
 export interface DemandPlan { demand_req_s: number; demand_rpm: number; options: DemandOption[]; cheapest: DemandOption | null; cheapest_measured: DemandOption | null; cheapest_gpu: DemandOption | null; cheapest_cpu: DemandOption | null; cheapest_cpu_measured: DemandOption | null; crossover: { req_s: number | null; rpm: number | null; kind: string; text: string } | null; curve: { rpm: number; gpu_usd_per_hour: number | null; cpu_usd_per_hour: number | null; cpu_measured_usd_per_hour: number | null }[]; text: string }
 export interface Pricing { basis: string; cpu_usd_per_hour?: number | null; gpu_usd_per_hour?: number | null }
+export interface CpuCaseExample { label: string; rpm: number; cpu: string; cpu_usd_per_hour: number; cpu_usd_per_month: number; gpu: string; gpu_usd_per_hour: number; gpu_usd_per_month: number; ratio: number | null; estimated: boolean }
+export interface CpuCaseCost { group: string; key: string; kind: "none" | "gpu_only" | "cpu_only" | "gpu_always" | "cpu_below_crossover" | "cpu_everywhere"; text: string; examples: CpuCaseExample[]; crossover_rpm?: number | null }
+export interface WhereCpuWins {
+  any_benefit: boolean; headline: string; cost: CpuCaseCost[]; wins: CpuCaseCost[]; losses: CpuCaseCost[];
+  availability: { kind: string; gpu_refusals: number; cpu_refusals: number; text: string; by_market?: Record<string, Record<string, number>> };
+  granularity: { cpu: string; gpu: string; ratio: number; estimated: boolean; text: string } | null;
+  not_won: { peak_throughput: string[]; text: string }; structural: { title: string; text: string }[];
+}
 export interface TypicalLoad { key: string; label: string; requests_per_minute: number; help: string }
 export interface NotRun { run_id: string; target: string; side: "GPU" | "CPU"; instance_type: string | null; refusals: number; reason: string }
 export interface CompareOut {
@@ -164,7 +172,7 @@ export interface CompareOut {
   sla: Record<string, number | string | null>;
   analysis: { groups: Group[]; pairing: Pairing[]; warnings: string[]; smoke: boolean; not_run: NotRun[]; intel_reference?: IntelReference[];
     pricing?: { basis: string; label: string; cpu_usd_per_hour: number | null; gpu_usd_per_hour: number | null; snapshot: string | null };
-    demand_rpm?: number | null; typical_loads?: TypicalLoad[]; how_to_read?: string } | null;
+    demand_rpm?: number | null; typical_loads?: TypicalLoad[]; how_to_read?: string; where_cpu_wins?: WhereCpuWins | { error: string } } | null;
   runs: { run_id: string; shape: Shape; smoke: boolean }[];
 }
 

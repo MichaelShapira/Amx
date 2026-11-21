@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
-import { type CompareOut, type DemandOption, type DemandPlan, type ExecSummary, type Group, type IntelReference, type Pricing, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, type TypicalLoad, api, fmt } from "../api";
+import { type CompareOut, type CpuCaseCost, type DemandOption, type DemandPlan, type ExecSummary, type Group, type IntelReference, type Pricing, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, type TypicalLoad, type WhereCpuWins, api, fmt } from "../api";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCatalog } from "../App";
 import { Badge, Help, Label, Metric, Note, Spinner, Toggle, instanceLine } from "../components/ui";
@@ -148,6 +148,7 @@ export default function Results() {
                 </div>
               </div>
               <LoadAndPrices pricing={pricing} setPricing={setPricing} demandRpm={demandRpm} setDemandRpm={setDemandRpm} typical={out.analysis.typical_loads ?? []} priceLabel={out.analysis.pricing?.label} snapshot={out.analysis.pricing?.snapshot ?? null} />
+              {out.analysis.where_cpu_wins && !("error" in out.analysis.where_cpu_wins) && <WhereCpuWinsCard w={out.analysis.where_cpu_wins} />}
               {out.analysis.how_to_read && <div className="note mt"><b>How to read these results.</b> {out.analysis.how_to_read}</div>}
               <ExecutiveSummary runIds={selected} sla={sla} limit={limit} models={models} pricing={pricing} demandRpm={demandRpm} />
               {out.analysis.groups.map((g) => <GroupView key={g.key} g={g} view={view} series={series} setSeries={setSeries} limit={limit} target={(sla?.[g.units.lat_sla] as number | null | undefined) ?? null} />)}
@@ -161,6 +162,52 @@ export default function Results() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+const COST_KIND: Record<CpuCaseCost["kind"], { badge: "ok" | "warn" | "bad" | undefined; label: string }> = {
+  cpu_everywhere: { badge: "ok", label: "CPU cheaper at every load" }, cpu_below_crossover: { badge: "ok", label: "CPU cheaper at low to moderate load" },
+  gpu_always: { badge: "bad", label: "GPU cheaper at every load" }, gpu_only: { badge: "bad", label: "only the GPU met the targets" },
+  cpu_only: { badge: "warn", label: "only the CPU met the targets" }, none: { badge: undefined, label: "nothing to compare" },
+};
+
+/** The section the reader came for: exactly where the CPU is the better choice, computed from the measurements, and where it is not. */
+function WhereCpuWinsCard({ w }: { w: WhereCpuWins }) {
+  const money = (m: number) => `$${Math.round(m).toLocaleString()}/month`;
+  return (
+    <div className="card mt" style={{ borderColor: w.any_benefit ? "var(--ok)" : "var(--bad)", borderWidth: 2 }}>
+      <h2 style={{ margin: 0 }}>Where the CPU is the better choice <Help text="Computed from the selected runs, never asserted. Cost: from each question's measurements, the load range below which the cheapest CPU option that meets your targets costs less than the cheapest GPU option, with worked examples at typical loads (at the prices chosen above). Availability: the runs' own capacity log, how often each side's launch was refused. Smallest unit: the cheapest instance that held the model and met the targets on each side. Everything the CPU does not win is listed too." /></h2>
+      <Note kind={w.any_benefit ? "ok" : "bad"}><b>{w.headline}</b></Note>
+      <h3 className="mt">1 · Cost at your kind of load</h3>
+      <table className="tbl">
+        <thead><tr><th>Question</th><th>Finding</th><th>What it means</th></tr></thead>
+        <tbody>
+          {w.cost.map((c) => (
+            <tr key={c.key}>
+              <td style={{ whiteSpace: "nowrap" }}><b>{c.group}</b></td>
+              <td style={{ whiteSpace: "nowrap" }}><Badge kind={COST_KIND[c.kind].badge}>{COST_KIND[c.kind].label}</Badge></td>
+              <td className="small">
+                {c.text}
+                {c.examples.length > 0 && (
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {c.examples.map((e) => <li key={e.label}>{e.label}: <b>{e.cpu}</b> {money(e.cpu_usd_per_month)}{e.estimated ? " (estimated size)" : ""} vs {e.gpu} {money(e.gpu_usd_per_month)} · <b>{e.ratio?.toFixed(1)}x cheaper</b></li>)}
+                  </ul>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h3 className="mt">2 · Availability <Badge kind={w.availability.kind.startsWith("gpu_scarcer") ? "ok" : undefined}>{w.availability.kind === "gpu_scarcer" ? "real benefit in these runs" : w.availability.kind === "gpu_scarcer_spot" ? "mild edge (Spot only)" : w.availability.kind === "none" ? "no evidence" : "no advantage"}</Badge></h3>
+      <div className="small">{w.availability.text}</div>
+      {w.granularity && (<><h3 className="mt">3 · Smallest unit you can buy <Badge kind="ok">{w.granularity.ratio.toFixed(0)}x smaller</Badge></h3><div className="small">{w.granularity.text}</div></>)}
+      <h3 className="mt">{w.granularity ? "4" : "3"} · Not measured here, but real</h3>
+      <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{w.structural.map((x) => <li key={x.title}><b>{x.title}.</b> {x.text}</li>)}</ul>
+      <h3 className="mt">Where the CPU is not the better choice</h3>
+      <div className="small">{w.not_won.text}</div>
+      {w.not_won.peak_throughput.length > 0 && <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{w.not_won.peak_throughput.map((t) => <li key={t}>{t}</li>)}</ul>}
+      {w.losses.length > 0 && <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{w.losses.map((l) => <li key={l.key}><b>{l.group}:</b> {l.text}</li>)}</ul>}
     </div>
   );
 }

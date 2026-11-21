@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import re
 
-from bench import demand, mechanics, pairing, report, utilization
+from bench import cpu_case, demand, mechanics, pairing, report, utilization
 from webui.api.catalog import (
     DIRECTIONS,
     INTEL_IO,
@@ -463,7 +463,11 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4, pricing: dict | No
     seen = set()
     intel_ref = [r for r in intel_ref if not (tuple(sorted(r.items())) in seen or seen.add(tuple(sorted(r.items()))))]
     basis = (pricing or {}).get("basis") or "on_demand"
-    return {"groups": out_groups, "pairing": cross, "run_pairing": pairs, "not_run": missing,
+    try:
+        where = cpu_case.build(out_groups, {g["key"]: g["rows"] for g in groups.values()}, summaries, pricing, catalog, _series_name, mech_ctx[0])
+    except Exception as e:  # noqa: BLE001 - the statement never blocks the results
+        where = {"error": str(e)[:200]}
+    return {"groups": out_groups, "pairing": cross, "run_pairing": pairs, "not_run": missing, "where_cpu_wins": where,
             "warnings": [w for s in summaries for w in (s.get("warnings") or [])],
             "smoke": any(s.get("smoke") for s in summaries), "intel_reference": intel_ref,
             "pricing": {"basis": basis, "label": demand.PRICING_BASES.get(basis, ("On-Demand",))[0],

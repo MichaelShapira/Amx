@@ -51,9 +51,19 @@ Rules:
 - If "hardware_that_did_not_run" is not empty, say so in the first sentence of the bottom line: which side
   did not run and why, and that the other side's numbers stand alone with no comparison.
 - Structure, with these exact headings in Markdown: "## Bottom line", "## What was tested",
-  "## Findings", "## At your load", "## Was the hardware the right size?", "## Caveats",
-  "## Recommendation", "## Suggested next step", "## Technical details".
-- Bottom line: at most three sentences. Whole summary before "Technical details": at most 700 words.
+  "## Findings", "## Where the CPU is the better choice", "## At your load",
+  "## Was the hardware the right size?", "## Caveats", "## Recommendation", "## Suggested next step",
+  "## Technical details".
+- "## Where the CPU is the better choice" is the section the reader came for. Build it ONLY from
+  "where_cpu_wins": start with its headline; then one line per question from "cost_by_question" (the load
+  range where the CPU is cheaper with the worked example, or the plain statement that the GPU is cheaper at
+  every load, or that no CPU option met the targets); then availability exactly as its text says (when the
+  runs show GPU launches refused for capacity, say that availability is a real benefit; when they show no
+  difference, say the runs give no evidence); then the smallest-unit point when present; then the two
+  structural points in one sentence each; and close with "not_won": peak throughput per dollar goes to the
+  GPU on every question. When "any_benefit" is false, say in one sentence that the CPU has no benefit in
+  these runs. Never add a benefit the data does not contain.
+- Bottom line: at most three sentences. Whole summary before "Technical details": at most 800 words.
 - "## At your load": when no finding has "at_your_load", one sentence saying that no load was set and
   what setting one would show; otherwise the headline result per finding.
 - "## Technical details" (120-220 words) explains WHY the CPU did well or badly here, for a reader who is
@@ -111,7 +121,7 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                        "at_your_load": _plan(g.get("demand_plan"))})
     return {"targets": sla, "quick_check_only": analysis.get("smoke", False),
             "pricing": analysis.get("pricing"), "load_requests_per_minute": analysis.get("demand_rpm"),
-            "frame": analysis.get("how_to_read"),
+            "frame": analysis.get("how_to_read"), "where_cpu_wins": _where(analysis.get("where_cpu_wins")),
             "runs": [{"run_id": r["run_id"], **r["shape"]} for r in runs],
             "comparability": {k: comparability.get(k) for k in ("ok", "blockers", "warnings")},
             "hardware_that_did_not_run": [{k: nr.get(k) for k in ("run_id", "side", "target", "instance_type", "reason")}
@@ -121,6 +131,19 @@ def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -
                                                                "throughput_tok_s", "tok_s_per_core", "tpot_ms", "ttft_ms")}
                                         for r in (analysis.get("intel_reference") or [])] or None,
             "notes_from_reports": sorted(set(analysis.get("warnings") or []))[:12]}
+
+
+def _where(w: dict | None) -> dict | None:
+    """bench/cpu_case.build, compacted: the computed statement of where the CPU is the better choice."""
+    if not w or w.get("error"):
+        return None
+    return {"headline": w.get("headline"), "any_benefit": w.get("any_benefit"),
+            "cost_by_question": [{"question": c["group"], "finding": c["kind"], "text": c["text"],
+                                  "examples": [{k: e.get(k) for k in ("label", "cpu", "cpu_usd_per_month", "gpu", "gpu_usd_per_month", "ratio", "estimated")}
+                                               for e in c.get("examples") or []][:3]} for c in w.get("cost") or []],
+            "availability": {k: (w.get("availability") or {}).get(k) for k in ("kind", "gpu_refusals", "cpu_refusals", "text")},
+            "smallest_unit": (w.get("granularity") or {}).get("text"),
+            "not_won": w.get("not_won"), "structural": w.get("structural")}
 
 
 def _plan(d: dict | None) -> dict | None:
