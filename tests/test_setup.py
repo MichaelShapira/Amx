@@ -182,8 +182,7 @@ def test_decoder_spec_gets_the_dspm_rules_of_the_shipped_chat_model_and_says_wha
     assert spec.user_added and spec.dspm_profile == "M1" and spec.suites == ["standard", "dspm", "translation", "intel"]
     assert spec.nominal_size_b == 7.25 and spec.max_input_tokens == 4096 and spec.max_model_len == 16384
     assert spec.prompt_format.kind == "chat_template"
-    assert set(spec.precisions) == {"bf16", "bf16-ov", "int8-ov", "int4-ov"}
-    assert spec.precisions["bf16"].engines == ["vllm", "thin-torch"] and spec.precisions["int4-ov"].engines == ["ovms"]
+    assert set(spec.precisions) == {"bf16"} and spec.precisions["bf16"].engines == ["vllm"]      # vLLM only since 2026-11-21
     assert notes[-1].startswith("Nothing has run this model here yet")
     assert not any("not on the support lists" in n for n in notes)       # mistral is on both lists
     assert not any("no chat template" in n for n in notes)
@@ -199,24 +198,23 @@ def test_unknown_family_without_a_chat_template_is_added_with_plain_warnings():
     assert spec.prompt_format.kind == "plain" and spec.max_input_tokens == 1536 and spec.max_model_len == 2048
     assert any("9 billion parameters" in n and "large for a CPU benchmark" in n for n in notes)
     assert any("no chat template" in n for n in notes)
-    assert any("not on the support lists of ovms, vllm" in n for n in notes)
+    assert any("not on the support lists of vllm" in n for n in notes)
 
 
 def test_encoder_decoder_and_classifier_specs():
     t5 = {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5", "is_encoder_decoder": True, "n_positions": 512}
-    spec, _ = O.derive_spec(found("google/flan-t5-xl", params=2_850_000_000), t5, None, set(), "U1")
-    assert spec.type == "encoder-decoder" and spec.dspm_profile == "M5" and set(spec.precisions) == {"bf16", "int8-ov"}
-    assert spec.precisions["int8-ov"].engines == ["thin-openvino"] and spec.max_input_tokens == 512 and spec.max_model_len is None
-    nli = {"architectures": ["DebertaV2ForSequenceClassification"], "model_type": "deberta-v2", "max_position_embeddings": 512,
+    with pytest.raises(O.OnboardingError, match="Encoder-decoder models .* cannot be benchmarked here any more"):
+        O.derive_spec(found("google/flan-t5-xl", params=2_850_000_000), t5, None, set(), "U1")
+    cls = {"architectures": ["RobertaForSequenceClassification"], "model_type": "roberta", "max_position_embeddings": 514,
            "id2label": {"0": "entailment", "1": "neutral", "2": "contradiction"}}
-    spec, notes = O.derive_spec(found("org/nli", params=184_000_000), nli, None, set(), "U1")
+    spec, notes = O.derive_spec(found("org/nli", params=355_000_000), cls, None, set(), "U1")
     assert spec.type == "encoder-classifier" and spec.dspm_profile is None and spec.suites == ["standard"]
     assert spec.prompt_format.kind == "pair" and spec.classifier.labels == ["entailment", "neutral", "contradiction"]
-    assert spec.precisions["bf16"].inference_precision == "bf16" and "int8-ov" in spec.precisions
+    assert spec.precisions["bf16"].inference_precision == "bf16" and set(spec.precisions) == {"bf16"} and spec.precisions["bf16"].engines == ["vllm"]
     assert any("speed benchmark only" in n for n in notes)
     tok = {"architectures": ["BertForTokenClassification"], "model_type": "bert", "id2label": {"0": "O", "1": "B-PER"}}
     spec, _ = O.derive_spec(found("org/ner", params=110_000_000), tok, None, set(), "U1")
-    assert spec.type == "token-classifier" and spec.max_input_tokens == 512 and spec.precisions["bf16"].engines == ["thin-torch"]
+    assert spec.type == "token-classifier" and spec.max_input_tokens == 512 and spec.precisions["bf16"].engines == ["vllm"]
 
 
 def test_specs_the_benchmark_cannot_serve_are_refused_with_a_reason():

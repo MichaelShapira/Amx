@@ -6,7 +6,7 @@ run:
   account: "346399954218"
   region: us-east-1
   az_id: use1-az1
-  models: [m1-qwen3-1.7b, m6-gemma-4-e4b, m7-gemma-4-e2b, m3-roberta-large-mnli, m5-flan-t5-xl]
+  models: [m1-qwen3-1.7b, m6-gemma-4-e4b, m7-gemma-4-e2b, m3-roberta-large-mnli]
   cells:
     - {target: t1-g6, precision: bf16}
     - {target: t1-g6, precision: bf16, model: m1-qwen3-1.7b, variant: constrained}
@@ -15,11 +15,6 @@ run:
     - {target: t2-m8i-4xl, precision: bf16, model: m6-gemma-4-e4b}
     - {target: t2-m8i-4xl, precision: bf16, model: m7-gemma-4-e2b}
     - {target: t2-m8i-4xl, precision: bf16, model: m3-roberta-large-mnli}
-    - {target: t3-m8i-4xl-ov, precision: bf16-ov, model: m1-qwen3-1.7b}
-    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m1-qwen3-1.7b}
-    - {target: t3-m8i-4xl-ov, precision: int4-ov, model: m1-qwen3-1.7b}
-    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m5-flan-t5-xl}
-    - {target: t3-m8i-4xl-ov, precision: int8-ov, model: m3-roberta-large-mnli}
   prompt_set: dspm
   sampling: {temperature: 0.0, max_new_tokens: 4, ignore_eos: false, seed: 0}
   concurrency: [1, 4, 8, 16, 32, 64]

@@ -98,8 +98,8 @@ const STEPS: [string, string, string][] = [
     "target_control launches from the option's launch template, tagged bench:managed. At boot the host syncs the host scripts from s3://…/artifacts/host/, starts the CloudWatch agent and uploads its facts (CPU flags, kernel, driver)."],
   ["Stage the model", "The exact model version is copied onto the machine, from our S3 cache when we have it, otherwise from Hugging Face.",
     "stage_model.sh puts the pinned revision under /opt/models; every LFS file is checked against the sha256 the Hub reports, then cached in S3 for the next run. The token is read from Secrets Manager into a 0600 tmpfs file only for gated repositories."],
-  ["Convert, when the engine needs it", "OpenVINO cannot read the Hugging Face files directly, so for its number formats the model is converted once and the result cached. vLLM and PyTorch need no conversion.",
-    "The export container turns the checkpoint into OpenVINO IR (BF16-OV, INT8, INT4), compressing weights where asked; cached in S3 under a hash of the arguments, the source revision and the tool versions."],
+  ["Convert, when the engine needs it", "Nothing is converted any more: every active option serves the published model files through vLLM. (The OpenVINO options, which needed a one-off conversion, were retired on 2026-11-21; earlier runs still show their results.)",
+    "Until 2026-11-21 an export container turned the checkpoint into OpenVINO IR (BF16-OV, INT8, INT4) and cached it in S3 under a hash of the arguments, revision and tool versions. The code stays in servers/export for reference; no active target uses it."],
   ["Serve", "The serving software starts in a container with the model; the run waits until it answers a real request.",
     "serve.sh runs the engine image with the cell's options (port, environment, model directory, GPU access), waits for the health endpoint, then sends one request; the run page shows the server's answer when that fails."],
   ["Probe", "On CPU machines we check that the matrix math really ran on AMX, and measure the machine's memory speed.",
@@ -135,7 +135,7 @@ function Hardware({ hardware }: { hardware: TechHardware[] }) {
         <thead><tr>
           <Th help="The name you see in the wizard. GPU = NVIDIA graphics card; CPU = Intel Xeon with AMX (its built-in matrix-math unit). 'needs …' lists a CPU feature the machine must have.">Hardware option</Th>
           <Th help="The AWS machine type used by default, and the alternates tried when it is not available in the chosen Availability Zone.">Instance</Th>
-          <Th help="The serving software that loads the model and answers requests: vLLM (chat models), OpenVINO Model Server, or a small PyTorch/OpenVINO server this project wrote for models the big engines do not support.">Engine</Th>
+          <Th help="The serving software that loads the model and answers requests. Every active option uses vLLM, on the GPU and on the AMX CPU (Intel's own Xeon recipe). The small PyTorch server this project wrote exists on the GPU option only for models vLLM cannot serve. The PyTorch and OpenVINO CPU options were retired (2026-11-20/21): they measured 3-10x and 2.3x below vLLM on the same instance, comparing engines rather than CPU with GPU.">Engine</Th>
           <Th help="The Docker image that is run. 'Public, pinned' = a vendor image fetched from a public registry at an exact digest, so the same bytes run every time. 'Built by this project' = built from a Dockerfile in this repository when the stack is deployed and stored in this account's registry.">Container image</Th>
           <Th help="The port the server listens on, plus the environment variables and command-line arguments the host passes to the container. These are the tuning settings; they are the same for every run.">How it is started</Th>
         </tr></thead>
@@ -215,12 +215,10 @@ function Path({ title, conversion, bullets, specifics }: { title: string; conver
 }
 
 function Preparation({ data }: { data: TechData }) {
-  const presets = data.export_presets;
-  const fmt = (k: string) => JSON.stringify(presets[k] ?? {});
   return (
     <div className="card mb">
-      <h2>What happens to a model before each engine can serve it <Help text="Models are published on Hugging Face in PyTorch's file format. Two of the engines read that directly; OpenVINO needs the model converted into its own format first. This section says which is which and what the conversion does, because a conversion can change speed and, in compressed formats, answer quality." /></h2>
-      <div className="small muted">Why this matters: a conversion is a step between the published model and what is measured. Where there is none, the engine runs the published files as they are; where there is one, the number format chosen in the wizard is decided at that step.</div>
+      <h2>What happens to a model before each engine can serve it <Help text="Models are published on Hugging Face in PyTorch's file format. vLLM, the engine on every active option, reads that directly: nothing is converted, so what is measured is the published model. The retired OpenVINO path, which did convert, is described for the earlier runs that used it." /></h2>
+      <div className="small muted">Why this matters: a conversion is a step between the published model and what is measured. Every active option runs the published files as they are.</div>
       <div className="grid c2 mt">
         <Path title="vLLM (GPU and AMX CPU) · BF16, W8A8" conversion="No conversion"
           bullets={[
@@ -229,26 +227,22 @@ function Preparation({ data }: { data: TechData }) {
             "W8A8 (8-bit) cells use a pre-quantized model published on Hugging Face, listed on the model; nothing is quantized here.",
           ]}
           specifics={<>The pinned safetensors checkpoint is mounted at <code>/models</code>. CPU: <code>VLLM_CPU_OMP_THREADS_BIND=auto</code>, <code>VLLM_CPU_NUM_OF_RESERVED_CPU=1</code>; oneDNN executes the GEMMs with AMX ukernels (the AMX probe counts them). The KV-cache budget is sized from the host's memory minus the engine's measured footprint (bench/cellspec.py).</>} />
-        <Path title="PyTorch (thin server) · BF16" conversion="No conversion"
+        <Path title="PyTorch (thin server, GPU only) · BF16" conversion="No conversion"
           bullets={[
-            "A small server written for this project loads the published model with the Transformers library and answers an OpenAI-style API.",
-            "It picks the right loader from the model's kind (chat, encoder-decoder, classifier, detector, embedding).",
-            "On the CPU it uses one thread per physical core, pinned; on the GPU it is the CUDA build of the same image.",
+            "A small server written for this project loads the published model with the Transformers library and answers an OpenAI-style API; it runs on the GPU option only, for models vLLM cannot serve.",
+            "It picks the right loader from the model's kind (chat, classifier, detector, embedding).",
+            "The CPU PyTorch option was retired on 2026-11-20: 3-10x below vLLM on the same instance.",
           ]}
           specifics={<><code>servers/thin</code> uses <code>AutoModelFor*</code> chosen from <code>THIN_TASK</code>: {Object.entries(data.thin_tasks).map(([k, v]) => `${k} → ${v}`).join(", ")}. CPU: <code>OMP_NUM_THREADS</code> = physical cores with cores pinned.</>} />
-        <Path title="OpenVINO Model Server · BF16-OV, INT8, INT4 (chat models)" conversion="Converted once, then cached"
-          bullets={[
-            "OpenVINO cannot read Hugging Face files directly: an export container converts the model into OpenVINO's format (IR) once, and the result is cached in S3 for the next run.",
-            "The number format is chosen at that step: BF16-OV keeps full precision; INT8 and INT4 compress the weights to 8 or 4 bits, which makes the model smaller and faster and can change answers slightly (the quality pass measures that).",
-            "A converted model is reused only if the model version, the conversion settings and the tool versions are identical.",
-          ]}
-          specifics={<>OVMS's <code>export_model.py</code> produces the layout and <code>graph.pbtxt</code> the model server expects. Export arguments: <code>{fmt("x-ov-bf16")}</code> for BF16-OV (optimum has no BF16 weight format: the IR is written in FP16 and the CPU plugin runs it in BF16 on AMX; the AMX probe records the precision actually chosen), <code>{fmt("x-ov-int8")}</code> for INT8, <code>{fmt("x-ov-int4")}</code> for INT4 (nncf weight compression, 128-wide groups, asymmetric). Cached under <code>models/ov/&lt;hash&gt;/</code>; the hash covers arguments, source revision and tool versions.</>} />
-        <Path title="OpenVINO through the thin server · encoder-decoder models and classifiers" conversion="Converted once, then cached"
-          bullets={[
-            "Models the OpenVINO Model Server does not host (every non-chat model) are converted with Intel's optimum tool and served by this project's small OpenVINO server.",
-            "The conversion task follows the model's kind: text-to-text for Flan-T5, text classification for classifiers.",
-          ]}
-          specifics={<><code>optimum-cli export openvino</code> via <code>optimum_export.py</code> (which lifts the Transformers version caps upstream has already lifted): <code>text2text-generation-with-past</code> for Flan-T5, <code>text-classification</code> for classifiers. The thin OpenVINO image loads the IR with optimum-intel's <code>OVModelFor*</code> classes.</>} />
+        <div className="tile" style={{ cursor: "default", opacity: 0.75 }}>
+          <div className="t">OpenVINO (Model Server and thin server) · retired 2026-11-21</div>
+          <div className="small"><Badge kind="warn">No longer offered</Badge></div>
+          <ul className="small" style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+            <li>OpenVINO needed the model converted into its own format (IR) first, with INT8/INT4 weight compression applied at that step.</li>
+            <li>Measured at full grade on RoBERTa: OpenVINO BF16 ran 2.3x below vLLM BF16 on the same m8i.4xlarge, and the weight-only INT8 export was 18% slower than BF16 (an encoder is compute-bound; decompressing weights costs more than the saved bandwidth).</li>
+            <li>It therefore compared engines, not CPU with GPU, and was retired together with Flan-T5, whose only CPU engines were PyTorch and OpenVINO. Earlier runs that used it still render.</li>
+          </ul>
+        </div>
       </div>
       <Note kind="warn"><b>A model added under Setup follows the same paths by its kind.</b> Nothing checks in advance that the engine supports the model family; the first run is the proof, and the run page quotes the server's answer when a container refuses the model.</Note>
     </div>

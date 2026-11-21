@@ -16,7 +16,7 @@ from bench.config import load_models, load_run, load_targets, resolve_cells
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = sorted((ROOT / "config/runs").glob("*.yaml"))
-TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123", "thin-openvino": "thin-openvino-abc123", "export": "export-abc123"}
+TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123"}
 ECR = "346399954218.dkr.ecr.us-east-1.amazonaws.com/amx-gpu-bench"
 
 
@@ -36,8 +36,8 @@ SPECS = list(all_specs())
 
 
 def test_every_run_cell_has_a_spec():
-    assert len(SPECS) > 40
-    assert {s["engine"] for *_, s in SPECS} == {"vllm", "ovms", "thin-torch", "thin-openvino"}
+    assert len(SPECS) > 10
+    assert {s["engine"] for *_, s in SPECS} == {"vllm"}        # vLLM on every active option since 2026-11-21
 
 
 @pytest.mark.parametrize("name,run,cell,spec", SPECS, ids=[s["cell_id"] + "@" + n for n, _, _, s in SPECS])
@@ -98,8 +98,7 @@ def _pick(engine: str, target_prefix: str = ""):
     return next(s for _, _, c, s in SPECS if s["engine"] == engine and c.target.startswith(target_prefix))
 
 
-@pytest.mark.parametrize("engine,target", [("vllm", "t2-"), ("vllm", "t1-"), ("ovms", "t3-"),
-                                           ("thin-openvino", "t3-"), ("thin-torch", "t1-")])
+@pytest.mark.parametrize("engine,target", [("vllm", "t2-"), ("vllm", "t1-")])
 def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path):
     spec = _pick(engine, target)
     f = tmp_path / "cell.json"

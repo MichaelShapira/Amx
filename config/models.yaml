@@ -34,9 +34,7 @@ models:
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
       bf16: {engines: [vllm], weights: bf16, activations: bf16}
-      bf16-ov: {engines: [ovms], export: *ov_bf16, weights: bf16, activations: bf16}
-      int8-ov: {engines: [ovms], export: *ov_int8, weights: int8, activations: bf16-or-int8-dynamic}
-      int4-ov: {engines: [ovms], export: *ov_int4, weights: int4-g128, activations: bf16-or-int8-dynamic}
+      # OpenVINO formats (bf16-ov, int8-ov, int4-ov) retired 2026-11-21 with the T3 option; see config/targets.yaml.
 
   - id: m3-roberta-large-mnli
     slot: M3
@@ -54,25 +52,24 @@ models:
       target: t1-g6
       precision: bf16
     precisions:
-      bf16: {engines: [vllm, thin-openvino], inference_precision: bf16, weights: bf16, activations: bf16}
+      bf16: {engines: [vllm], inference_precision: bf16, weights: bf16, activations: bf16}
       fp16:
-        engines: [vllm, thin-openvino]      # vLLM serves it on the GPU (--dtype float16); no AWS Intel host has AMX-FP16
+        engines: [vllm]                      # the GPU (--dtype float16); no AWS Intel host has AMX-FP16
         inference_precision: f16
         weights: fp16
         activations: fp16
         requires_cpu_flag: amx_fp16
-      int8-ov:
-        engines: [thin-openvino]
-        export: {weight_format: int8, task: text-classification}
-        weights: int8
-        activations: bf16-or-int8-dynamic
+      # int8-ov retired 2026-11-21: weight-only INT8 through OpenVINO was 18% slower than BF16 on this encoder.
 
+  # Retired 2026-11-21 with the OpenVINO option: its CPU engines were PyTorch (retired 2026-11-20) and OpenVINO,
+  # so it has no CPU side left; kept disabled so earlier runs still render.
   - id: m5-flan-t5-xl
     slot: M5
     hf_repo: google/flan-t5-xl
     revision: 7d6315df2c2fb742f0f5b556879d730926ca9001
     type: encoder-decoder
     license: apache-2.0
+    enabled: false
     params: 2849757184
     nominal_size_b: 2.85
     suites: [standard, dspm, translation]

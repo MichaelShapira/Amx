@@ -6,8 +6,10 @@ account `346399954218`, `us-east-1`. It has three parts:
 
 - **Standard suite.** The catalog (reset 2026-11-19 to the models the comparison is about):
   Qwen3-1.7B (M1, the model Intel's Software Catalog publishes Xeon benchmarks for), Gemma 4
-  E4B and E2B (M6, M7, from Intel's catalog entries), Flan-T5 XL (M5), RoBERTa-large (M3) and
-  EmbeddingGemma 300M (E1), on vLLM (GPU and CPU), OpenVINO (OVMS and a thin server) and
+  E4B and E2B (M6, M7, from Intel's catalog entries), RoBERTa-large (M3) and EmbeddingGemma 300M (E1),
+  on vLLM on both sides (GPU and AMX CPU; Intel's own Xeon recipe). The PyTorch and OpenVINO CPU
+  options and Flan-T5 were retired on 2026-11-20/21 (3-10x and 2.3x below vLLM on the same instance;
+  they compared engines, not CPU with GPU) and stay disabled so earlier runs still render,
   native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50, P99 latency,
   throughput, prefill and decode speed, cost from the Price List API, AMX verification and a
   quality check.
@@ -45,8 +47,8 @@ SLA, and cost is shown as information. The spec is in
 |---|---|
 | `bench/` | Config schemas, metrics, load client, cost, AMX verdicts, quality and DSPM scoring, level plans, reports, estimators, CLI |
 | `lambdas/` | Preflight, target control, warm-up, wave planning, worker, probes, aggregation, reaper |
-| `servers/thin/` | FastAPI server for models vLLM/OVMS do not serve well (Flan-T5, classifiers, D1 `/detect`), torch and OpenVINO backends |
-| `servers/export/` | Pinned OpenVINO export image and `probe_ov.py` |
+| `servers/thin/` | FastAPI server, GPU only since 2026-11-21, for models vLLM does not serve; torch backend active, OpenVINO backends |
+| `servers/export/` | OpenVINO export image (retired 2026-11-21, kept for reference) and `probe_ov.py` |
 | `host/` | Scripts run on the targets over SSM: host facts, model staging, `serve.sh`, AMX probe, `perf`, STREAM, seccomp profile |
 | `infra/` | CDK app: `AmxBench-Network`, `AmxBench-Core`, one `AmxBench-Target-<id>` per target |
 | `config/` | `models.yaml`, `targets.yaml`, `migration_effort.yaml`, `runs/*.yaml`, `dspm/` policy and span map |
@@ -154,7 +156,7 @@ npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Tar
   `runs/<id>/capacity/` and listed in the report; the report rows carry the type that ran. The whole deployment is
   pinned to one AZ (`use1-az1`) so workers and targets share it; when EC2 says the type is
   available in another AZ, that is a redeploy of the network stack, not a run option.
-- More targets (`t2-c8i-4xl`, `t2-m8i-8xl`, `t3-m8i-4xl-ov`) are
+- More targets (`t2-c8i-4xl`, `t2-m8i-8xl`) are
   separate stacks; deploy them after the smoke reports are reviewed.
 
 ## Instance types and fair pairing

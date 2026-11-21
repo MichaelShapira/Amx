@@ -123,36 +123,35 @@ def test_fp16_refused_without_amx_fp16(models, targets):
 
 
 def test_engine_must_exist_on_target(models, targets):
+    # a precision whose engine the target lacks: fp16 is vLLM-only, and the GPU target has vLLM, so use a
+    # disabled target (t3, OpenVINO) with a vLLM precision
     run = _run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16"}])
-    with pytest.raises(ValueError, match="available on"):
+    with pytest.raises(ValueError, match="disabled|available on"):
         resolve_cells(run, models, targets)
 
 
-def test_openvino_bf16_is_its_own_precision(models, targets):
-    """BF16 on the OpenVINO option is `bf16-ov` (an FP16 IR run in BF16 by the CPU plugin), kept
-    apart from `bf16` so a vLLM-only BF16 cell still cannot land on the OVMS target."""
-    for mid in ("m1-qwen3-1.7b",):
-        p = models.get(mid).precisions["bf16-ov"]
-        assert p.engines == ["ovms"] and p.export == {"weight_format": "fp16"} and p.inference_precision is None
-        assert p.weights == "bf16" and p.activations == "bf16" and p.hf_repo is None
-    cells = resolve_cells(_run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
-    assert [(c.engine, c.precision) for c in cells] == [("ovms", "bf16-ov")]
-    assert "bf16-ov" not in models.get("m3-roberta-large-mnli").precisions     # classifiers already have bf16 on thin-openvino
-    # Flan-T5: defined through the thin OpenVINO wrapper (OVMS does not host T5) but DISABLED —
-    # measured 2026-11-14 slower than PyTorch eager BF16 on every metric (see models.yaml). The
-    # definition stays so the evidence is next to the switch; a run asking for it is refused.
-    t5 = models.get("m5-flan-t5-xl").precisions["bf16-ov"]
-    assert t5.engines == ["thin-openvino"] and t5.export == {"weight_format": "fp16", "task": "text2text-generation-with-past"}
-    assert t5.enabled is False
-    with pytest.raises(ValueError, match="no enabled precision bf16-ov"):
-        resolve_cells(_run(models=["m5-flan-t5-xl"], cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
+def test_retired_options_and_models_are_disabled_not_deleted(models, targets):
+    """The PyTorch (2026-11-20) and OpenVINO (2026-11-21) CPU options and Flan-T5 stay in the catalogs, disabled,
+    so earlier runs still render; a new run cannot select them."""
+    tmap = targets.resolved()
+    assert not tmap["t3-m8i-4xl-ov"].enabled and not tmap["t4-m8i-4xl-torch"].enabled and tmap["t2-m8i-4xl"].enabled
+    assert not models.get("m5-flan-t5-xl").enabled
+    assert {m.id for m in models.models if m.enabled} == {"m1-qwen3-1.7b", "m3-roberta-large-mnli", "m6-gemma-4-e4b",
+                                                           "m7-gemma-4-e2b", "e1-embeddinggemma-300m"}
+    for m in models.models:
+        if m.enabled:
+            assert all(p.engines == ["vllm"] for p in m.precisions.values() if p.enabled), m.id
+    with pytest.raises(ValueError):
+        resolve_cells(_run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
+    with pytest.raises(ValueError):
+        resolve_cells(_run(models=["m5-flan-t5-xl"], cells=[{"target": "t1-g6", "precision": "bf16"}]), models, targets)
 
 
 def test_constrained_variant_only_on_vllm(models, targets):
-    run = _run(models=["m5-flan-t5-xl"],
-               cells=[{"target": "t3-m8i-4xl-ov", "precision": "int8-ov", "variant": "constrained"}])
-    with pytest.raises(ValueError, match="constrained"):
-        resolve_cells(run, models, targets)
+    # every active engine is vLLM now; the guard still exists for a disabled target's engine
+    run = _run(models=["m1-qwen3-1.7b"], cells=[{"target": "t1-g6", "precision": "bf16", "variant": "constrained"}])
+    cells = resolve_cells(run, models, targets)
+    assert cells and all(c.variant == "constrained" for c in cells)
 
 
 def test_suite_membership(models, targets):

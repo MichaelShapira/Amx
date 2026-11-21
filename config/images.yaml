@@ -2,6 +2,8 @@
 # stack reads this file (infra/stacks/core.py); the web app's Technical details page shows it next to
 # the Dockerfiles. Engine images that are not built here (vLLM, OpenVINO Model Server) are pinned by
 # digest in config/targets.yaml.
+# thin-openvino and export were removed on 2026-11-21 with the OpenVINO option (config/targets.yaml, T3);
+# their Dockerfiles stay in servers/ for reference.
 images:
   thin-torch-cuda:
     dockerfile: servers/thin/Dockerfile.torch
@@ -11,24 +13,6 @@ images:
       The thin server on the CUDA build of PyTorch, used on the GPU side only for the encoder-decoder
       model (Flan-T5) that vLLM has no API for; its CPU counterpart is OpenVINO through the thin server.
       The plain-PyTorch CPU option was removed on 2026-11-20 (3-10x below vLLM on the same instance).
-  thin-openvino:
-    dockerfile: servers/thin/Dockerfile.openvino
-    base_image: (see Dockerfile) Python with optimum-intel and OpenVINO runtime
-    runs_on: AMX CPU hosts (hardware option "OpenVINO", models the model server does not host)
-    purpose: >-
-      OpenVINO through the thin server for encoder-decoder models and classifiers: loads an exported
-      OpenVINO IR (see the export image) with optimum-intel's OVModelFor* classes and serves the same
-      API as the other thin images.
-  export:
-    dockerfile: servers/export/Dockerfile
-    base_image: (see Dockerfile) Python with optimum-intel, nncf, openvino, OVMS export tooling
-    runs_on: AMX CPU hosts, once per model x OpenVINO number format, before serving
-    purpose: >-
-      Converts a Hugging Face checkpoint to OpenVINO IR: chat models through OVMS's export_model.py
-      (so the model server gets the layout and graph.pbtxt it expects), encoder-decoder models and
-      classifiers through optimum-cli. INT8 and INT4 weight compression is applied here (nncf). The IR
-      is cached in S3 under models/ov/<hash>/, where the hash covers the export arguments, the source
-      revision and the tool versions, so a changed setting never reuses an old conversion.
   web app:
     dockerfile: webui/Dockerfile
     base_image: public.ecr.aws/docker/library/python:3.12-slim (API) and node:22 (UI build stage)

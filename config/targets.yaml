@@ -63,12 +63,19 @@ targets:
         image: docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3
         args: {kv_cache_gib: 64}
 
+  # Retired 2026-11-21 (owner decision), kept disabled so earlier runs still render. Measured at full grade on
+  # RoBERTa (roberta-int8-full-20261120T211803Z): OpenVINO BF16 through the thin server ran 2.3x BELOW vLLM
+  # BF16 on the same m8i.4xlarge, and the weight-only INT8 export was 18% slower than BF16-OV (an encoder is
+  # compute-bound; decompressing weights costs more than the saved bandwidth). The chat path (OVMS) was never
+  # measured at full grade. Either way it compared engines, not CPU with GPU: vLLM, Intel's own Xeon recipe,
+  # is the CPU engine on every active option.
   - id: t3-m8i-4xl-ov
     label: T3
     instance_type: m8i.4xlarge
     ami_ssm: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.12-x86_64
     accelerator: cpu
     cpu_features: *amx_8i
+    enabled: false
     engines:
       ovms:
         image: docker.io/openvino/model_server@sha256:148e3fe802261ed0b5b634de3bbccdefe7176a218ec34a88e382b40704c34a1c

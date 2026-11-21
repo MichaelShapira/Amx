@@ -142,36 +142,31 @@ def derive_spec(found: dict, config: dict, tokenizer_cfg: dict | None, existing:
         notes.append(f"At {size_b:g} billion parameters this is large for a CPU benchmark: expect slow answers on the CPU "
                      "side and long model downloads. The comparison still runs.")
 
-    expected = {"vllm": family in VLLM_CPU_FAMILIES, "ovms": family in OPENVINO_FAMILIES,
-                "thin-openvino": family in OPENVINO_FAMILIES, "thin-torch": True}
+    # Since 2026-11-21 every active hardware option serves through vLLM (GPU and AMX CPU): the plain-PyTorch and
+    # OpenVINO CPU options were retired (3-10x and 2.3x below vLLM on the same instance; config/targets.yaml), so a
+    # model is only onboarded when vLLM can serve it. Encoder-decoder models (T5 family) have no vLLM API and are refused.
+    expected = {"vllm": family in VLLM_CPU_FAMILIES or kind in ("encoder-classifier", "token-classifier", "embedding")}
     precisions: dict[str, dict] = {}
+    if kind == "encoder-decoder":
+        raise OnboardingError(
+            "Encoder-decoder models (the T5 family) cannot be benchmarked here any more: vLLM, the serving software on every "
+            "hardware option, has no API for them, and the PyTorch and OpenVINO CPU options that used to serve them were "
+            "retired on 2026-11-20/21 because they measured 3-10x and 2.3x below vLLM on the same instance. Pick a chat "
+            "model, a classifier, a detector or an embedding model.")
     if kind == "decoder":
-        engines_bf16 = ["vllm", "thin-torch"]
-        precisions["bf16"] = {"engines": engines_bf16, "weights": "bf16", "activations": "bf16"}
-        precisions["bf16-ov"] = {"engines": ["ovms"], "export": {"weight_format": "fp16"}, "weights": "bf16", "activations": "bf16"}
-        precisions["int8-ov"] = {"engines": ["ovms"], "export": {"weight_format": "int8"}, "weights": "int8",
-                                 "activations": "bf16-or-int8-dynamic"}
-        precisions["int4-ov"] = {"engines": ["ovms"], "export": {"weight_format": "int4", "group_size": 128, "ratio": 1.0, "sym": False},
-                                 "weights": "int4-g128", "activations": "bf16-or-int8-dynamic"}
+        precisions["bf16"] = {"engines": ["vllm"], "weights": "bf16", "activations": "bf16"}
         max_input, max_len = min(4096, max(512, ctx - 512)), min(16384, ctx)
         prompt_format = {"kind": "chat_template"} if has_chat else {"kind": "plain"}
         suites = ["standard", "dspm", "translation", "intel"]
         if not has_chat:
             notes.append("This model has no chat template, so prompts are sent as plain text; a base (non-instruct) model "
                          "may ramble instead of answering.")
-    elif kind == "encoder-decoder":
-        precisions["bf16"] = {"engines": ["thin-torch"], "weights": "bf16", "activations": "bf16"}
-        precisions["int8-ov"] = {"engines": ["thin-openvino"], "export": {"weight_format": "int8", "task": "text2text-generation-with-past"},
-                                 "weights": "int8", "activations": "bf16-or-int8-dynamic"}
-        max_input, max_len = min(1024, ctx), None
-        prompt_format, suites = {"kind": "plain"}, ["standard", "dspm", "translation"]
+        notes.append("Compressed formats (INT8/INT4) are not offered for added models: the OpenVINO path that produced them was "
+                     "retired; a pre-quantized W8A8 checkpoint published on Hugging Face can be added as its own model.")
     else:
-        precisions["bf16"] = {"engines": ["thin-torch"] + (["thin-openvino"] if kind == "encoder-classifier" else []),
-                              "weights": "bf16", "activations": "bf16"}
+        precisions["bf16"] = {"engines": ["vllm"], "weights": "bf16", "activations": "bf16"}
         if kind == "encoder-classifier":
             precisions["bf16"]["inference_precision"] = "bf16"
-            precisions["int8-ov"] = {"engines": ["thin-openvino"], "export": {"weight_format": "int8", "task": "text-classification"},
-                                     "weights": "int8", "activations": "bf16-or-int8-dynamic"}
         max_input, max_len = min(512 if kind == "encoder-classifier" else 2048, ctx), None
         labels = [str(v) for _, v in sorted(((int(k), v) for k, v in (config.get("id2label") or {}).items()))]
         nli = {x.lower() for x in labels} & {"entailment", "contradiction", "neutral"}

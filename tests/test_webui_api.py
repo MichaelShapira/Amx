@@ -205,33 +205,22 @@ def test_comparison_marks_a_missing_side_instead_of_pretending_to_compare():
 
 
 def test_plan_survives_a_hardware_option_that_cannot_serve_the_format():
-    """The Review page crashed ('reading map') when the OpenVINO option was ticked with a chat
-    model in BF16: resolve_cells raised and the error reply lacked series/pairing/warnings. Now
-    the format is dropped with a note, the option is left out of instance_types, and every reply
-    carries every key."""
+    """The Review page crashed ('reading map') when an option was ticked with a format it cannot serve: resolve_cells
+    raised and the error reply lacked series/pairing/warnings. Now the format is dropped with a note, the option is
+    left out of instance_types, and every reply carries every key. Since 2026-11-21 the retired OpenVINO option is
+    disabled, so a draft that still names it (an old browser tab) is handled the same way."""
     OV = {"hardware": "t3-m8i-4xl-ov", "instance_type": "m8i.4xlarge", "precisions": ["bf16"]}
     w = {"use_case": "standard", "models": ["m1-qwen3-1.7b"], "gpu": GPU, "cpus": [CPU, OV], "request_mode": "concurrent", "concurrency": [1, 10]}
     pl = c.post("/api/plan", json=w).json()
-    assert pl["ok"] is True and {"series", "pairing", "warnings", "problems", "estimate"} <= set(pl)
+    assert {"series", "pairing", "warnings", "problems", "estimate"} <= set(pl)
+    assert pl["ok"] is True, pl["problems"]
     assert {s["hardware"] for s in pl["series"]} == {"t1-g6", "t2-m8i-4xl"}
-    assert any("runs nothing in this plan" in x and "INT8 compressed (OpenVINO)" in x for x in pl["warnings"])
     assert "t3-m8i-4xl-ov" not in pl["run"]["instance_types"]
-    # The OpenVINO option with a format it can serve takes part.
-    pl2 = c.post("/api/plan", json={**w, "cpus": [CPU, {**OV, "precisions": ["bf16", "int8-ov"]}]}).json()
-    assert pl2["ok"] is True and {s["hardware"] for s in pl2["series"]} == {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov"}
-    assert any("not available in BF16" in x for x in pl2["warnings"])
-    # BF16 on the OpenVINO option is its own format (bf16-ov) and the wizard names it.
-    cat = c.get("/api/catalog").json()
-    m1 = next(m for m in cat["models"] if m["id"] == "m1-qwen3-1.7b")
-    assert m1["precisions"]["bf16-ov"]["engines"] == ["ovms"] and m1["precisions"]["bf16-ov"]["label"] == "BF16 (OpenVINO)"
-    pl4 = c.post("/api/plan", json={**w, "cpus": [{**OV, "precisions": ["bf16-ov", "int8-ov"]}]}).json()
-    assert pl4["ok"] is True
-    assert {(s["hardware"], s["precision"]) for s in pl4["series"]} >= {("t3-m8i-4xl-ov", "BF16 (OpenVINO)"), ("t3-m8i-4xl-ov", "INT8 compressed (OpenVINO)")}
-    assert [x for x in pl4["warnings"] if "not available" in x] == []
-    # Nothing can serve it at all -> a problem, still with every key.
-    pl3 = c.post("/api/plan", json={**w, "models": ["m5-flan-t5-xl"], "gpu": None, "cpus": [CPU]}).json()
-    assert pl3["ok"] is False and pl3["series"] == [] and pl3["pairing"] == [] and any("No hardware option can serve" in p for p in pl3["problems"])
-
+    assert any("t3-m8i-4xl-ov" in x or "OpenVINO" in x for x in pl["warnings"]), pl["warnings"]
+    # a format the GPU option cannot serve for this model (fp16 is RoBERTa-only) is dropped with a note too
+    pl2 = c.post("/api/plan", json={**w, "cpus": [CPU], "gpu": {**GPU, "precisions": ["fp16"]}}).json()
+    assert {"series", "pairing", "warnings", "problems", "estimate"} <= set(pl2)
+    assert all(s_["hardware"] != "t1-g6" for s_ in pl2["series"]) and any("runs nothing in this plan" in x for x in pl2["warnings"])
 
 def _backend(supports: bool, commit="b75d598bd40e1fe19fc155d47d2b0f34f4ca09f0"):
     return {"commit": commit, "local_commit": "head", "supports": {"max_launch_attempts": supports}, "behind": not supports,
@@ -293,7 +282,7 @@ def test_copy_to_new_run_round_trips_the_definition(monkeypatch):
     monkeypatch.setattr(main, "deployed_backend", lambda: _backend(True))
     w = {"use_case": "standard", "models": ["m1-qwen3-1.7b"], "prompt_set": "medium", "answer_tokens": 256, "depth": "custom",
          "requests": 120, "passes": 2, "gpu": {**GPU, "instance_type": "g6.2xlarge", "precisions": ["bf16"], "alternates": ["g5.2xlarge"]},
-         "cpus": [{**CPU, "precisions": ["bf16"]}, {"hardware": "t3-m8i-4xl-ov", "instance_type": "m8i.4xlarge", "precisions": ["int8-ov"]}],
+         "cpus": [{**CPU, "precisions": ["bf16"]}],
          "request_mode": "concurrent", "concurrency": [2, 8], "sla": {"p99_ttft_ms": 1500, "p50_tpot_ms": 120},
          "purchase": "on-demand", "spot_fallback": False, "spot_wait_minutes": 20, "launch_attempts": 12, "parallel_targets": False,
          "name": "My Qwen test"}
@@ -303,7 +292,7 @@ def test_copy_to_new_run_round_trips_the_definition(monkeypatch):
     assert w2["name"] == "My Qwen test copy" and w2["copied_from"] == "my-qwen-test-20261112T000000Z"
     assert w2["sized_for"] == "m1-qwen3-1.7b|bf16" and w2["depth"] == "custom" and (w2["requests"], w2["passes"]) == (120, 2)
     assert w2["gpu"]["instance_type"] == "g6.2xlarge" and w2["gpu"]["alternates"] == ["g5.2xlarge"]
-    assert {s_["hardware"]: s_["precisions"] for s_ in w2["cpus"]} == {"t2-m8i-4xl": ["bf16"], "t3-m8i-4xl-ov": ["int8-ov"]}
+    assert {s_["hardware"]: s_["precisions"] for s_ in w2["cpus"]} == {"t2-m8i-4xl": ["bf16"]}
     assert w2["purchase"] == "on-demand" and w2["spot_fallback"] is False and w2["spot_wait_minutes"] == 20 and w2["launch_attempts"] == 12
     assert w2["parallel_targets"] is False and w2["concurrency"] == [2, 8] and w2["request_mode"] == "concurrent"
     assert w2["sla"] == {"p99_ttft_ms": 1500, "p50_tpot_ms": 120} and w2["prompt_set"] == "medium" and w2["answer_tokens"] == 256
@@ -327,8 +316,8 @@ def test_refusals_read_as_sentences_with_names():
     and the other pre-check messages, as the reader sees them."""
     from webui.api.main import refusal_sentences
 
-    old = refusal_sentences(["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: host facts of t3-m8i-4xl-ov lack amx_fp16"])[0]
-    assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): the FP16")
+    old = refusal_sentences(["m3-roberta-large-mnli|t2-m8i-4xl|fp16: host facts of t2-m8i-4xl lack amx_fp16"])[0]
+    assert old.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · vLLM in FP16 (half precision): the FP16")
     # 2026-11-15: the sentence told the reader to "pick an m8i, c8i or r8i size" for a run that was
     # already on c8i.4xlarge. No size has AMX-FP16 on EC2; the sentence must say so and never
     # recommend a size.
@@ -337,12 +326,12 @@ def test_refusals_read_as_sentences_with_names():
     gpu = refusal_sentences(["m3-roberta-large-mnli|t1-g6|fp16: host facts of t1-g6 lack amx_fp16"])[0]
     assert gpu.startswith("RoBERTa-large (classifier) on GPU · NVIDIA · vLLM in FP16 (half precision): refused by mistake.")
     assert "Start the run again" in gpu
-    new = refusal_sentences(["m3-roberta-large-mnli|t3-m8i-4xl-ov|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
-    assert new.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): the FP16")
+    new = refusal_sentences(["m3-roberta-large-mnli|t2-m8i-4xl|fp16: c8i.4xlarge has no amx_fp16 (the fp16 format needs it)"])[0]
+    assert new.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · vLLM in FP16 (half precision): the FP16")
     assert "c8i.4xlarge" in new and "No instance size changes this" in new and "Pick an" not in new
     # The config validator's own refusal (what the pre-checks now say first) reads the same way.
-    cfg = refusal_sentences(["m3-roberta-large-mnli/fp16 needs CPU flag amx_fp16, which t3-m8i-4xl-ov lacks"])[0]
-    assert cfg.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · OpenVINO in FP16 (half precision): this format needs the AMX-FP16")
+    cfg = refusal_sentences(["m3-roberta-large-mnli/fp16 needs CPU flag amx_fp16, which t2-m8i-4xl lacks"])[0]
+    assert cfg.startswith("RoBERTa-large (classifier) on CPU · Intel Xeon with AMX · vLLM in FP16 (half precision): this format needs the AMX-FP16")
     assert "Untick it for this option" in cfg
     s = refusal_sentences(["worker reserved concurrency 32 < highest level 64",
                            "instance types not offered in use1-az1: ['g6e.48xlarge', 'm8i.96xlarge']",
@@ -382,20 +371,20 @@ def test_fp16_is_blocked_for_cpu_options_at_selection_and_in_the_plan(monkeypatc
     assert "do not expose" in note_fp16 and "36 so far" in note_fp16 and "r8i" not in note_fp16
     assert "greyed out for the CPU options" in cat["precisions"]["fp16"]["help"]
     w = {"use_case": "standard", "models": ["m3-roberta-large-mnli"], "gpu": {**GPU, "precisions": ["fp16"]},
-         "cpus": [{"hardware": "t3-m8i-4xl-ov", "instance_type": "c8i.4xlarge", "precisions": ["bf16", "fp16"]}]}
+         "cpus": [{"hardware": "t2-m8i-4xl", "instance_type": "c8i.4xlarge", "precisions": ["bf16", "fp16"]}]}
     pl = c.post("/api/plan", json=w).json()
     assert pl["ok"] is True, pl["problems"]
     series = {(s_["hardware"], s_["precision"]) for s_ in pl["series"]}
     assert ("t1-g6", "FP16 (half precision)") in series                  # FP16 on the GPU is fine
-    assert ("t3-m8i-4xl-ov", "BF16 (standard)") in series and ("t3-m8i-4xl-ov", "FP16 (half precision)") not in series
+    assert ("t2-m8i-4xl", "BF16 (standard)") in series and ("t2-m8i-4xl", "FP16 (half precision)") not in series
     note = next(x for x in pl["warnings"] if "FP16" in x)
-    assert note.startswith("CPU · Intel Xeon with AMX · OpenVINO: RoBERTa-large (classifier) in FP16 (half precision) needs the AMX-FP16")
+    assert note.startswith("CPU · Intel Xeon with AMX · vLLM: RoBERTa-large (classifier) in FP16 (half precision) needs the AMX-FP16")
     assert "c8i" in note_fp16 and "Pick an" not in note
     assert "fp16" not in {cell["precision"] for cell in pl["run"]["cells"] if cell["target"] != "t1-g6"}
     # The same for any size: the feature is per family on EC2, not per size.
     for itype in ("m8i.4xlarge", "m8i.8xlarge", "c8i.4xlarge", "m7i.4xlarge"):
-        pl2 = c.post("/api/plan", json={**w, "cpus": [{"hardware": "t3-m8i-4xl-ov", "instance_type": itype, "precisions": ["fp16"]}]}).json()
-        assert ("t3-m8i-4xl-ov", "FP16 (half precision)") not in {(s_["hardware"], s_["precision"]) for s_ in pl2["series"]}
+        pl2 = c.post("/api/plan", json={**w, "cpus": [{"hardware": "t2-m8i-4xl", "instance_type": itype, "precisions": ["fp16"]}]}).json()
+        assert ("t2-m8i-4xl", "FP16 (half precision)") not in {(s_["hardware"], s_["precision"]) for s_ in pl2["series"]}
         assert any("runs nothing in this plan" in x for x in pl2["warnings"]), (itype, pl2["warnings"])
 
 
@@ -597,14 +586,14 @@ def test_a_rejected_first_request_names_the_servers_answer_or_says_it_was_not_ke
 def test_technical_details_describe_this_build():
     t = c.get("/api/technical").json()
     ids = {h["id"] for h in t["hardware"]}
-    assert {"t1-g6", "t2-m8i-4xl", "t3-m8i-4xl-ov"} <= ids and "t4-m8i-4xl-torch" not in ids   # PyTorch CPU option removed 2026-11-20
+    assert {"t1-g6", "t2-m8i-4xl"} <= ids and not ({"t3-m8i-4xl-ov", "t4-m8i-4xl-torch"} & ids)   # PyTorch (11-20) and OpenVINO (11-21) retired
     g6 = next(h for h in t["hardware"] if h["id"] == "t1-g6")
     assert g6["accelerator"] == "gpu" and {e["engine"] for e in g6["engines"]} == {"vllm", "thin-torch"}
     torch = next(e for e in g6["engines"] if e["engine"] == "thin-torch")
     assert torch["built"] and torch["dockerfile"] == "servers/thin/Dockerfile.torch" and torch["image"] == "built:thin-torch-cuda"
     vllm = next(e for e in g6["engines"] if e["engine"] == "vllm")
     assert not vllm["built"] and "@sha256:" in vllm["image"]
-    assert {im["name"] for im in t["images"]} >= {"thin-torch-cuda", "thin-openvino", "export"} and "thin-torch-cpu" not in {im["name"] for im in t["images"]}
+    assert {im["name"] for im in t["images"]} >= {"thin-torch-cuda"} and not ({"thin-torch-cpu", "thin-openvino", "export"} & {im["name"] for im in t["images"]})
     assert t["files"]["host/serve.sh"]["present"] and "first_request" in t["files"]["host/serve.sh"]["text"]
     assert t["files"]["servers/export/Dockerfile"]["present"] and t["thin_tasks"]["encoder-decoder"] == "seq2seq"
     assert t["export_presets"]["x-ov-int4"]["group_size"] == 128 and t["diagram"]["svg"] == "/api/technical/architecture.svg"
@@ -618,7 +607,7 @@ def test_catalog_offers_the_translation_use_case_and_gemma_4():
     assert set(cat["directions"]) == {"en-de", "de-en", "en-es", "es-en"} and set(cat["text_sizes"]) == {"sentence", "paragraph"}
     assert cat["text_sizes"]["sentence"]["answer_tokens"] == 192 and cat["text_sizes"]["paragraph"]["answer_tokens"] == 448
     trans = {m["id"] for m in cat["models"] if "translation" in m["use_cases"]}
-    assert trans == {"m1-qwen3-1.7b", "m7-gemma-4-e2b", "m5-flan-t5-xl", "m6-gemma-4-e4b"}
+    assert trans == {"m1-qwen3-1.7b", "m7-gemma-4-e2b", "m6-gemma-4-e4b"}        # Flan-T5 retired 2026-11-21
     g = next(m for m in cat["models"] if m["id"] == "m6-gemma-4-e4b")
     assert g["name"] == "Gemma 4 E4B Instruct" and g["params_b"] == 8.0 and g["commercial_ok"] and g["license"] == "apache-2.0"
     assert set(g["precisions"]) == {"bf16"} and set(g["precisions"]["bf16"]["engines"]) == {"vllm"}

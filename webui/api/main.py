@@ -187,6 +187,12 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
     hw = {h["id"]: h for h in cat["hardware"]}
     cells, itypes, alts = [], {}, {}
     for side in sides:
+        if side["hardware"] not in hw:
+            # a retired option (PyTorch CPU 2026-11-20, OpenVINO 2026-11-21) carried over from an old draft or tab
+            if notes is not None:
+                notes.append(f"The hardware option {side['hardware']} is no longer offered (retired; earlier runs still show "
+                             "it) and was left out of this plan.")
+            continue
         before, dropped = len(cells), []
         for p in side.get("precisions") or [w.precision]:
             for mid in w.models:
