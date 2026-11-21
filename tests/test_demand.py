@@ -95,3 +95,12 @@ def test_plan_applies_the_pricing_basis_to_both_sides():
     free = demand.plan(ROWS, 450.0, {"cpu_usd_per_hour": 0.0}, CATALOG, NAME, include_estimates=False)
     assert free["cheapest"]["side"] == "cpu" and free["cheapest"]["usd_per_hour"] == 0.0
     assert free["crossover"]["kind"] == "cpu_cheaper_everywhere"
+
+
+def test_curve_is_json_safe_when_a_side_has_no_measured_option():
+    import json
+    gpu_only = [r for r in ROWS if r["accelerator"] == "gpu"]
+    p = demand.plan(gpu_only, 1.0, None, CATALOG, NAME)
+    json.dumps(p)                                   # no NaN anywhere (the API serializer rejects it)
+    assert all(c["cpu_measured_usd_per_hour"] is None and c["cpu_usd_per_hour"] is None for c in p["curve"])
+    assert p["crossover"] is None and p["cheapest"]["side"] == "gpu"

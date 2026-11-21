@@ -228,7 +228,7 @@ def _curve(options: list[dict], demand_req_s: float, points: int = 40) -> list[d
     for i in range(0, points + 1):
         d = top * i / points if i else top / points / 100       # a near-zero first point: one instance of each side
         out.append({"rpm": d * 60 if i else 0.0, "gpu_usd_per_hour": _cost_at(options, "gpu", d), "cpu_usd_per_hour": _cost_at(options, "cpu", d),
-                    "cpu_measured_usd_per_hour": min([_size(o, d)["usd_per_hour"] for o in options if o["side"] == "cpu" and not o["estimated"]] or [float("nan")])})
+                    "cpu_measured_usd_per_hour": min([_size(o, d)["usd_per_hour"] for o in options if o["side"] == "cpu" and not o["estimated"]], default=None)})
     return out
 
 
