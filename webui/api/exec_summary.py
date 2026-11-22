@@ -6,6 +6,7 @@ them. The model is the one chosen in Setup (webui/api/settings.py); default: the
 from __future__ import annotations
 
 import json
+import re
 import time
 
 SYSTEM = """You write executive summaries for product and business decision makers choosing between
@@ -78,7 +79,15 @@ Rules:
   is present, put the run's per-core throughput next to Intel's per-core figures and explain the
   difference by core count, memory bandwidth and concurrency, not by software.
 - Say "measurement" or "load setting", never "level"; say "repeated" rather than "passes".
+- Output raw Markdown only: no preamble, and never wrap the text (or a table) in a ``` code fence; the page
+  renders Markdown directly and a fence would show it as plain text.
 """
+_FENCE = re.compile(r"\A\s*```[a-zA-Z]*[ \t]*\n(.*?)\n[ \t]*```\s*\Z", re.DOTALL)
+def clean_markdown(text: str) -> str:
+    """The model's output as the page should render it. A whole answer wrapped in one ```markdown fence
+    (seen as 'the summary is displayed as plain text') is unwrapped; fences inside the text are left alone."""
+    m = _FENCE.match(text)
+    return m.group(1).strip() if m else text.strip()
 
 
 def _compact(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> dict:
@@ -202,7 +211,7 @@ def write(analysis: dict, comparability: dict, sla: dict, runs: list[dict]) -> d
         if r.get("stopReason") != "max_tokens":
             break
     content = r["output"]["message"]["content"]
-    text = "".join(c.get("text", "") for c in content)
+    text = clean_markdown("".join(c.get("text", "") for c in content))
     truncated = r.get("stopReason") == "max_tokens"
     if truncated:
         text += ("\n\n> The summary was cut at the model's output limit before it finished. Press Rewrite to generate "
