@@ -10,7 +10,11 @@ RUN dnf install -y -q git && dnf clean all
 COPY servers/decider/requirements.lock servers/decider/requirements-git.txt /app/
 RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /app/requirements.lock \
     && python -m pip install --no-cache-dir --no-deps -r /app/requirements-git.txt \
-    && python -c "import torch, transformers, peft, strands_decider; print('torch', torch.__version__, 'transformers', transformers.__version__, 'peft', peft.__version__)"
+    && python -c "import torch, transformers; print('torch', torch.__version__, 'transformers', transformers.__version__)" \
+    && python -m pip show strands-decider peft | grep -E '^(Name|Version)' \
+    && python -c "import importlib.util as u; assert u.find_spec('strands_decider') and u.find_spec('peft')"
+# Importing peft or strands_decider is left to run time: on the CUDA base, peft probes transformer_engine, which
+# dlopens libcuda.so.1, absent at image build time (the build failed on it, 2026-11-22).
 COPY servers/decider/entrypoint.py /app/entrypoint.py
 # Models are mounted read-only at /models; the entrypoint lays the staged torso into an offline Hub cache under
 # HF_HOME. The server runs as a user with no home directory, so every cache goes to /tmp.
