@@ -773,9 +773,10 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
                    "TPOT P50 ms", "Prefill tok/s P50", "Agg tok/s", "req/s", "err %", "$/hr", "$/1M tok", "AMX",
                    "Q delta", "SLA"]
         else:
-            hdr = ["Target", "Instance", "Engine", "Precision", "C", "E2E P1/P50/P99 ms", "docs/s" if rows[0]["workload"]
-                   else "cls/s", "err %", "$/hr", "$/1M docs" if rows[0]["workload"] else "$/1M cls",
-                   "$/GB", "GB/h", "AMX", "Q delta", "SLA"]
+            item = ("docs" if rows[0]["workload"] else
+                    {"decision": "decisions", "embedding": "embeddings"}.get(rows[0].get("model_type") or "", "cls"))
+            hdr = ["Target", "Instance", "Engine", "Precision", "C", "E2E P1/P50/P99 ms", f"{item}/s", "err %", "$/hr",
+                   f"$/1M {item}", "$/GB", "GB/h", "AMX", "Q delta", "SLA"]
         cheapest = pm.get("cheapest_cpu")
         body = []
         for r in sorted(rows, key=lambda r: (r["accelerator"] != "gpu", r["target"], r["precision"], r["conc"])):

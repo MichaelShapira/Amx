@@ -172,3 +172,16 @@ def test_dspm_accuracy_and_cpu_gpu_agreement():
     md = report.render(s, with_charts=False)["summary.md"].decode()
     assert "DSPM/DLP accuracy" in md and "CC BY 4.0" in md and "not like-for-like" in md
     assert "Speed results transfer" in md
+
+
+def test_markdown_table_names_the_item_the_model_produces():
+    """A decision model's rows are decisions, an embedding model's are embeddings; 'cls' is for classifiers only
+    (the first decision run's report said cls/s, 2026-11-22)."""
+    s = report.build_summary(inputs())
+    pm = next(iter(s["per_model"].values()))
+    for mt, item in (("decision", "decisions"), ("embedding", "embeddings"), ("classifier", "cls")):
+        rows = [{**r, "kind": "classifier", "workload": None, "bucket": None, "direction": None, "model_type": mt,
+                 "batch": 1, "text_size": None} for r in s["rows"]]
+        per_model = {report.analysis_key(r): pm for r in rows}
+        md = report.render({**s, "rows": rows, "per_model": per_model}, with_charts=False)["summary.md"].decode()
+        assert f"| {item}/s |" in md and f"| $/1M {item} |" in md, (mt, md[:600])
