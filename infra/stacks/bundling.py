@@ -27,7 +27,7 @@ class _UvBundling:
         out = Path(output_dir)
         # Lambda python3.12 runs on Amazon Linux 2023 (glibc 2.34); numpy 2.5 ships aarch64
         # wheels for manylinux_2_28 only, so manylinux2014 finds no wheel.
-        subprocess.run([uv, "pip", "install", "--quiet", "--target", str(out), "--python-platform",
+        subprocess.run([uv, "pip", "install", "--quiet", "--target", str(out), "--python-platform",  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit (argv list, paths from this file)
                         "aarch64-manylinux_2_28", "--python-version", "3.12", "--only-binary", ":all:",
                         *REQUIREMENTS], check=True)
         for pkg in PACKAGES:

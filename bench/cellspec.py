@@ -160,7 +160,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
                "--max-model-len", str(max_len), "--max-num-seqs", str(a.get("max_num_seqs", 128)),
                "--max-num-batched-tokens", str(a.get("max_num_batched_tokens", 2048)),
                "--enable-prefix-caching" if _prefix_caching(run) else "--no-enable-prefix-caching",
-               "--seed", str(a.get("seed", 0)), "--host", "0.0.0.0", "--port", str(PORT)]  # noqa: S104 - in-container bind; published on the private IP only
+               "--seed", str(a.get("seed", 0)), "--host", "0.0.0.0", "--port", str(PORT)]  # noqa: S104 - in-container bind; published on the private IP only  # nosec B104
         if gpu:
             cmd += ["--gpu-memory-utilization", str(a.get("gpu_memory_utilization", 0.9))]
         else:
@@ -172,7 +172,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         cmd += list(model.vllm_args)          # the model's own serve flags (chat template, parsers, modality limits)
     elif cell.engine == "ovms":
         opts += _env_flags(eng.env)
-        cmd = ["--rest_port", str(PORT), "--rest_bind_address", "0.0.0.0", "--model_name", model.id,  # noqa: S104 - in-container bind
+        cmd = ["--rest_port", str(PORT), "--rest_bind_address", "0.0.0.0", "--model_name", model.id,  # noqa: S104 - in-container bind  # nosec B104
                "--model_path", "{MODEL_DIR}", "--log_level", "INFO"]
     elif cell.engine in ("thin-torch", "thin-openvino"):
         p = model.precisions[cell.precision]
@@ -184,7 +184,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
             "THIN_MAX_BATCH": str(a.get("max_batch", 16)), "THIN_MAX_WAIT_MS": str(a.get("max_wait_ms", 5)),
             "THIN_MAX_INPUT_TOKENS": str(model.classifier.max_length if model.classifier else
                                          model.embedding.max_length if model.embedding else model.max_input_tokens),
-            "THIN_HOST": "0.0.0.0", "THIN_PORT": str(PORT),  # noqa: S104 - in-container bind; published on the private IP only
+            "THIN_HOST": "0.0.0.0", "THIN_PORT": str(PORT),  # noqa: S104 - in-container bind; published on the private IP only  # nosec B104
         }
         if cell.engine == "thin-openvino" and p.inference_precision:
             env["THIN_OV_PRECISION_HINT"] = p.inference_precision

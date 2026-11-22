@@ -34,7 +34,7 @@ export interface Catalog {
   cpu_flag_notes: Record<string, string>;
   precisions: Record<string, { label: string; help: string }>;
   engines: Record<string, { label: string; help: string }>;
-  fair_ratio: [number, number]; account: string; region: string;
+  fair_ratio: [number, number]; region: string;
 }
 
 export interface Side { hardware: string; instance_type: string; precisions: string[]; alternates?: string[] }

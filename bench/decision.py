@@ -225,7 +225,8 @@ def score_cell(records: list[dict], items_by_id: dict[str, dict], reference: dic
                 if not b:
                     continue
                 if a["type"] == "noul":
-                    agree.append((a["value"] >= 0.5) == (b["value"] >= 0.5)); gaps.append(abs(a["value"] - b["value"]))
+                    agree.append((a["value"] >= 0.5) == (b["value"] >= 0.5))
+                    gaps.append(abs(a["value"] - b["value"]))
                 elif a["type"] == "choice":
                     agree.append(a["value"] == b["value"])
                     if a.get("probabilities") and b.get("probabilities"):

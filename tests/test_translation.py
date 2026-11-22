@@ -139,7 +139,7 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     m = MODELS.get("m6-gemma-4-e4b")
     assert m.params == 7996156490 and m.license == "apache-2.0" and not m.gated
     cells = {c.target: c for c in resolve_cells(run, MODELS, TARGETS)}
-    cpu = build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
+    cpu = build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",  # nosec B106 (a Secrets Manager secret NAME, not a value)
                 instance_type="m8i.4xlarge")
     cmd = cpu["container"]["cmd"]
     for flag in ("--enable-auto-tool-choice", "--tool-call-parser", "--reasoning-parser", "--limit-mm-per-prompt"):
@@ -155,7 +155,7 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     # first live host). A 32 GiB host cannot hold the model at all and is refused with the size it needs.
     assert cmd[cmd.index("--kv-cache-memory-bytes") + 1] == str(25 * 2**30)
     with pytest.raises(ValueError, match="needs about 43 GiB.*c8i.4xlarge has 32 GiB"):
-        build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",
+        build(cells["t2-m8i-4xl"], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s",  # nosec B106 (a Secrets Manager secret NAME, not a value)
               instance_type="c8i.4xlarge")
     # Gemma 4 E2B (9.5 GiB) keeps the target's budget on the 64 GiB host and gets 5 GiB on a 32 GiB host;
     # Qwen3-1.7B (3.8 GiB) keeps 16 there.
@@ -163,11 +163,11 @@ def test_gemma4_vllm_command_carries_the_recipe_flags_and_fits_the_host():
     assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "m8i.4xlarge", q, "bf16") == 32
     assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", q, "bf16") == 5
     assert cpu_kv_cache_gib(32, TMAP["t2-m8i-4xl"], "c8i.4xlarge", MODELS.get("m1-qwen3-1.7b"), "bf16") == 16
-    gpu = build(cells["t1-g6"], m, TMAP["t1-g6"], run, run_id="r", bucket="b", hf_token_secret="s")["container"]["cmd"]
+    gpu = build(cells["t1-g6"], m, TMAP["t1-g6"], run, run_id="r", bucket="b", hf_token_secret="s")["container"]["cmd"]  # nosec B106 (a Secrets Manager secret NAME, not a value)
     assert "--limit-mm-per-prompt" in gpu and "--gpu-memory-utilization" in gpu
     # A model without vllm_args carries none of these.
     other = build(cells["t2-m8i-4xl"], MODELS.get("m1-qwen3-1.7b"), TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b",
-                  hf_token_secret="s")["container"]["cmd"]
+                  hf_token_secret="s")["container"]["cmd"]  # nosec B106 (a Secrets Manager secret NAME, not a value)
     assert "--reasoning-parser" not in other
 
 

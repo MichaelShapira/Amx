@@ -561,7 +561,7 @@ def _run_history(model_ids: list[str], use_case: str, limit: int = 6) -> list[di
             break
         try:
             sm = _summary(r["run_id"])
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112 - an old run without a readable report is skipped, never fatal
             continue
         run = sm.get("run") or {}
         models = run.get("models") or []
@@ -575,7 +575,7 @@ def _run_history(model_ids: list[str], use_case: str, limit: int = 6) -> list[di
         run = sm.get("run") or {}
         try:
             an = compare.analyze([sm], compare.default_sla([sm]))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112 - same: a report the analysis cannot read is skipped
             continue
         rows = sm.get("rows") or []
         gpu_types = sorted({x["instance_type"] for x in rows if x.get("accelerator") == "gpu"})
@@ -583,7 +583,7 @@ def _run_history(model_ids: list[str], use_case: str, limit: int = 6) -> list[di
         questions = []
         for g in an["groups"]:
             u = g["units"]
-            def best(c):
+            def best(c, u=u):
                 if not c:
                     return None
                 load = f"{c['conc']} at a time" + (f", batch {c['batch']}" if (c.get("batch") or 1) > 1 else "")

@@ -45,7 +45,7 @@ def test_embedding_run_plan_and_cells():
     perf = [lv for lv in levels if not lv["accuracy"]]
     assert len(acc) == 1 and acc[0]["pool"]["size"] == 300 and acc[0]["api_task"] == "embed" and acc[0]["api_path"] == "/v1/embeddings"
     assert len(perf) == 3 * 3 and {lv["batch"] for lv in perf} == {1, 8, 32} and all(lv["text_size"] == "sentence" for lv in perf)
-    spec = build(cells[1], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s", instance_type="m8i.4xlarge")
+    spec = build(cells[1], m, TMAP["t2-m8i-4xl"], run, run_id="r", bucket="b", hf_token_secret="s", instance_type="m8i.4xlarge")  # nosec B106 (a Secrets Manager secret NAME, not a value)
     cmd = spec["container"]["cmd"]
     assert "--runner" in cmd and cmd[cmd.index("--runner") + 1] == "pooling" and cmd[cmd.index("--max-model-len") + 1] == "512"
     assert spec["health"]["probe"]["path"] == "/v1/embeddings" and spec["api_task"] == "embed"

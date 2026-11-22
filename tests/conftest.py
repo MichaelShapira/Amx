@@ -20,7 +20,7 @@ import moto  # noqa: F401 - imported first on purpose, see the module docstring
 
 os.environ["AMXBENCH_CREDS_FILE"] = ""
 os.environ["AWS_ACCESS_KEY_ID"] = "testing"
-os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"  # nosec B105 (moto test credentials)
 os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 for _k in ("AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_SECURITY_TOKEN"):
     os.environ.pop(_k, None)

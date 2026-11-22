@@ -44,7 +44,8 @@ def test_request_body_is_the_servers_shape():
 
 
 def _resp(route, urgent_p, sev_level, conf=0.9):
-    probs = {t: 0.02 for t in decision.TEAMS}; probs[route] = 0.92
+    probs = {t: 0.02 for t in decision.TEAMS}
+    probs[route] = 0.92
     return {"answers": {"route": {"type": "choice", "choice": route, "confidence": conf, "probabilities": probs},
                         "urgent": {"type": "noul", "noul": urgent_p},
                         "severity": {"type": "score", "score": float(decision.SEVERITY.index(sev_level)), "confidence": conf,
@@ -95,7 +96,7 @@ def test_decision_run_plans_and_builds_cells_on_both_sides():
     assert len(perf) == len(run.concurrency) * len(run.decision.questions) * run.repeats
     assert {lv["payload"]["questions"] for lv in perf} == {1, 3} and {lv["batch"] for lv in perf} == {1, 3}
     for c in cells:
-        spec = cellspec.build(c, m, TMAP[c.target], run, run_id="r", bucket="b", hf_token_secret="s",
+        spec = cellspec.build(c, m, TMAP[c.target], run, run_id="r", bucket="b", hf_token_secret="s",  # nosec B106 (a Secrets Manager secret NAME, not a value)
                               ecr_repo_uri="1.dkr.ecr.us-east-1.amazonaws.com/x", built_tags={"decider-cpu": "c", "decider-cuda": "g"},
                               instance_type=TMAP[c.target].instance_type)
         opts = spec["container"]["run_opts"]
@@ -113,6 +114,7 @@ def test_decision_run_plans_and_builds_cells_on_both_sides():
 
 def test_decision_suite_refuses_other_models_and_wrong_prompt_set():
     import pytest
+
     from bench.config import RunConfig
     base = dict(name="t", account="1", suite="decision", models=["m1-qwen3-1.7b"], prompt_set="short",
                 cells=[{"target": "t1-g6", "precision": "bf16"}], concurrency=[1], per_level={"requests": 50}, repeats=1)
@@ -178,7 +180,7 @@ def test_12b_smoke_run_pairs_an_l40s_with_an_m8i_8xlarge_and_threads_follow_the_
     m = MODELS.get("d2-strands-decider-12b")
     assert run.instance_types == {"t1-g6": "g6e.xlarge", "t2-m8i-8xl": "m8i.8xlarge"}
     for c in cells:
-        spec = cellspec.build(c, m, TMAP[c.target], run, run_id="r", bucket="b", hf_token_secret="s",
+        spec = cellspec.build(c, m, TMAP[c.target], run, run_id="r", bucket="b", hf_token_secret="s",  # nosec B106 (a Secrets Manager secret NAME, not a value)
                               ecr_repo_uri="1.dkr.ecr.us-east-1.amazonaws.com/x", built_tags={"decider-cpu": "c", "decider-cuda": "g"},
                               instance_type=run.instance_types[c.target])
         assert spec["base_weights"]["repo"] == "google/gemma-4-12B-it"

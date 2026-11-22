@@ -76,25 +76,37 @@ def pin_base_revision(checkpoint: pathlib.Path, work: pathlib.Path, repo: str, r
     return work
 
 
+def _int_env(env, name: str, default: int, *, lo: int, hi: int) -> int:
+    raw = env.get(name, str(default))
+    if not raw.isdigit() or not lo <= int(raw) <= hi:
+        raise SystemExit(f"{name} must be an integer between {lo} and {hi}, not {raw!r}")
+    return int(raw)
+
+
 def main() -> int:
     env = os.environ
     checkpoint = pathlib.Path(env["DECIDER_CHECKPOINT"])
     base_dir = pathlib.Path(env["DECIDER_BASE_DIR"])
     repo, revision = env["DECIDER_BASE_REPO"], env["DECIDER_BASE_REVISION"]
+    # Argument values come from the cell spec the operator's catalog produced; admit only the shapes the server takes.
     device = env.get("DECIDER_DEVICE", "cpu")
-    port = env.get("DECIDER_PORT", "8000")
+    if device not in ("cpu", "cuda"):
+        raise SystemExit(f"DECIDER_DEVICE must be cpu or cuda, not {device!r}")
+    port = str(_int_env(env, "DECIDER_PORT", 8000, lo=1, hi=65535))
+    max_batch = str(_int_env(env, "DECIDER_MAX_BATCH", 8, lo=1, hi=256))
+    max_conc = str(_int_env(env, "DECIDER_MAX_CONCURRENCY", 4, lo=1, hi=64))
     # A private, freshly created working directory (mode 0700) rather than fixed names under /tmp: nothing else in the
     # container can pre-create or symlink the path. The image's HF_HOME is kept when set (the offline Hub cache).
     work = pathlib.Path(tempfile.mkdtemp(prefix="decider-"))
     hf_home = pathlib.Path(env["HF_HOME"]) if env.get("HF_HOME") else work / "huggingface"
     lay_hub_cache(repo, revision, base_dir, hf_home / "hub")
     ckpt = pin_base_revision(checkpoint, work / "checkpoint", repo, revision)
-    cmd = ["strands-decider", "serve", str(ckpt), "--host", "0.0.0.0", "--port", port, "--device", device,  # noqa: S104 - in-container bind; published on the private IP only
-           "--max-batch", env.get("DECIDER_MAX_BATCH", "8"), "--max-concurrency", env.get("DECIDER_MAX_CONCURRENCY", "4")]
+    cmd = ["strands-decider", "serve", str(ckpt), "--host", "0.0.0.0", "--port", port, "--device", device,  # noqa: S104 - in-container bind; published on the private IP only  # nosec B104
+           "--max-batch", max_batch, "--max-concurrency", max_conc]
     log("exec: " + " ".join(cmd))
     os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_HOME": str(hf_home)})
     sys.stdout.flush()
-    return subprocess.call(cmd)
+    return subprocess.call(cmd)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args (values validated above; argv list, no shell)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ DOC_TEST_CARDS = frozenset({
     "6011111111111117", "4000056655665556", "5105105105105100", "4012888888881881",
 })
 DOC_AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
-DOC_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+DOC_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"  # nosec B105 (AWS's published documentation example; the dataset's 'placeholder is not sensitive' case)
 DOC_PLACEHOLDERS = ("YOUR_API_KEY", "<password>", "<your-token>", "REPLACE_ME", "${API_KEY}",
                     "<YOUR_SECRET_HERE>", "xxxxxxxx")
 

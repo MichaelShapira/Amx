@@ -186,7 +186,7 @@ class WebAppStack(Stack):
         return {
             # In-container bind; only the load balancer's security group reaches the port, and the
             # API refuses this bind without the pool.
-            "AMXBENCH_BIND": "0.0.0.0", "PORT": str(PORT), "AMXBENCH_DATA_SYNC": "1", "AMXBENCH_CREDS_FILE": "",  # noqa: S104
+            "AMXBENCH_BIND": "0.0.0.0", "PORT": str(PORT), "AMXBENCH_DATA_SYNC": "1", "AMXBENCH_CREDS_FILE": "",  # noqa: S104  # nosec B104
             "AMXBENCH_OUTPUTS": self.to_json_string(outputs),
             "AMXBENCH_COGNITO_USER_POOL_ID": self.pool.user_pool_id,
             "AMXBENCH_COGNITO_REGION": self.region,

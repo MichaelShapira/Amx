@@ -487,9 +487,19 @@ range Intel publishes for whole two-socket servers. Findings, numbers and what w
 On AWS On-Demand pricing a GPU instance beats a price-matched Intel AMX CPU instance on **peak
 throughput** for every workload measured here, including the ones built for AMX (embeddings,
 classifiers): at the same hourly price one L4 (g6.xlarge, $0.80/h) carries about 7.5x the matrix
-arithmetic and 2.7x the memory bandwidth of eight Xeon 6 cores (m8i.4xlarge, $0.85/h), and the CPU
-side runs at 70-80% of its own limits with AMX verified. "How many CPU instances replace one GPU"
-therefore always favours the GPU (3-5x on embeddings, 4x on chat); the Results page says so up front.
+arithmetic and 2.7x the memory bandwidth of eight Xeon 6 cores (m8i.4xlarge, $0.85/h): 121 dense BF16
+TFLOPS and 300 GB/s for the L4 (NVIDIA's L4 datasheet, `bench/mechanics.py` GPU table) against 8 cores x
+~2 TFLOPS of AMX BF16 (1,024 FLOPs per cycle per core, Intel) and 107 GB/s measured with STREAM on the
+m8i.4xlarge (`hosts/membw-*`). The CPU side runs at 70-80% of its own limits with AMX verified: ~70% of
+the slice's memory bandwidth in single-stream decode and inside Intel's own per-core range
+(`docs/recipe-check-2026-11-19.md`, runs `recipe-check-20261119T081855Z` and `-085351Z`). "How many CPU
+instances replace one GPU" therefore always favours the GPU: 4.3x on embeddings at batch 32 (run
+`embedding-full-e1-20261119T141541Z`, 2,531 vs 583 embeddings/s), 7.3x on RoBERTa classification (run
+`roberta-int8-full-20261120T211803Z`), 14-16x on inline DLP and short-document scans with Gemma 4 E4B (run
+`gemma-bulk-scan-dlp-dspm-20261122T085327Z`), ~4x on chat ($0.49 vs $1.93 per 1M tokens at C=16,
+`docs/recipe-check-2026-11-19.md` Result 2). The one measured exception: long-document scans with Gemma 4
+E4B, where the m8i.4xlarge matched the g6.2xlarge (4.5 vs 3.5 documents/s, same run). The Results page
+says so up front.
 
 The question the CPU can win is **the cheapest option that meets your targets at your load**. The
 Results page takes the load to serve (requests per minute, with typical figures to start from) and

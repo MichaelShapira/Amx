@@ -277,7 +277,7 @@ def catalog() -> dict:
         "precisions": {k: {"label": v[0], "help": v[1]} for k, v in PRECISIONS.items()},
         "engines": {k: {"label": v[0], "help": v[1]} for k, v in ENGINES.items()},
         "fair_ratio": list(pairing.FAIR_RATIO),
-        "account": "346399954218", "region": "us-east-1",
+        "region": "us-east-1",
     }
 
 

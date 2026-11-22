@@ -3,6 +3,7 @@ name = "amx-gpu-bench"
 version = "0.1.0"
 description = "CPU (Intel AMX) vs GPU inference benchmark harness, DSPM/DLP suite and migration effort calculator"
 requires-python = ">=3.12"
+# Ranges here are the compatibility statement; the tested, hash-locked tree is uv.lock (uv sync installs it exactly).
 dependencies = [
   "pydantic>=2.9,<3",
   "pyyaml>=6",
@@ -35,7 +36,7 @@ dev = [
 bench = "bench.cli:main"
 
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools>=70,<81"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

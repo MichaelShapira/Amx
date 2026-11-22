@@ -2,8 +2,8 @@
 # The decider is pinned to the main commit verified on 2026-11-21 (Gemma 4 support; not on PyPI yet).
 strands-decider @ git+https://github.com/strands-labs/strands-decider@c3c845782095b31d438963ac2afcdfe41b49f757
 transformers==5.22.2
-peft>=0.21
-accelerate>=0.34
+peft==0.22.0
+accelerate==1.16.0
 huggingface_hub==2.4.0
 safetensors==0.8.0
 fastapi==0.162.2

@@ -734,7 +734,9 @@ def test_user_guide_is_served_and_names_what_the_app_shows():
     word and every DSPM preset the app shows has to be named in it, so a renamed screen fails here, not in front of
     a reader."""
     from pathlib import Path
-    from webui.api import catalog as C, main as M
+
+    from webui.api import catalog as C
+    from webui.api import main as M
     r = c.get("/api/guide")
     assert r.status_code == 200
     md = r.json()["markdown"]

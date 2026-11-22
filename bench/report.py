@@ -574,7 +574,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     for ck, sc in sorted(dq.items()):
         if sc.get("flag"):
             warnings.append(f"{cells[ck].cell_id}: decision quality flag: {sc['flag']} (warning only; the row stays in the rankings)")
-    for ck, c in cells.items():
+    for c in cells.values():
         if models.get(c.model).type == "decision" and targets[c.target].accelerator == "cpu":
             warnings.append(f"{c.cell_id}: the decision model's server runs the torso in fp32 on CPU (the project's own setting), "
                             "so this cell uses AVX-512, not AMX; its AMX verdict is not applicable.")

@@ -600,6 +600,7 @@ def test_bringup_error_leads_with_the_root_cause_not_the_wrapper():
 def test_hf_access_admits_only_repo_ids_and_revisions():
     """The Hub URL is built from catalog strings: anything that could reshape the path is refused before any request."""
     import pytest
+
     from lambdas import preflight
     for repo, rev in (("google/gemma-4-E4B-it", "main"), ("StrandsAgents/strands-decider-E4B-gemma4-v1-2610", "0fd76a6eac253cbd2cde06015734e987d979e28c")):
         assert preflight._HF_REPO.match(repo) and preflight._HF_REVISION.match(rev)

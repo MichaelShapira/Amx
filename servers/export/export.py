@@ -127,7 +127,7 @@ def run_ir(a: argparse.Namespace) -> int:
 
     def run(cmd: list[str]) -> None:
         print("+ " + shlex.join(cmd), file=sys.stderr, flush=True)
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit (argv list built by this module from the catalog)
         ran.append(shlex.join(cmd))
 
     steps = commands(a.model_type, exp, a.source, dest)

@@ -28,7 +28,7 @@ def all_specs():
         for cell in resolve_cells(run, models, targets):
             yield path.stem, run, cell, cellspec.build(
                 cell, models.get(cell.model), tmap[cell.target], run, run_id=f"{path.stem}-001",
-                bucket="amx-gpu-bench-346399954218-us-east-1", hf_token_secret="amx-gpu-bench/hf-token",
+                bucket="amx-gpu-bench-346399954218-us-east-1", hf_token_secret="amx-gpu-bench/hf-token",  # nosec B106 (a Secrets Manager secret NAME, not a value)
                 ecr_repo_uri=ECR, built_tags=TAGS,
                 instance_type=run.instance_types.get(cell.target))      # the size the run picked, as preflight passes it
 
@@ -45,7 +45,7 @@ def test_every_run_cell_has_a_spec():
 def test_spec_is_private_pinned_and_consistent(name, run, cell, spec):
     opts = spec["container"]["run_opts"]
     publishes = [opts[i + 1] for i, o in enumerate(opts) if o == "-p"]
-    assert publishes == ["{PRIVATE_IP}:8000:8000"]           # never 0.0.0.0 or a bare port
+    assert publishes == ["{PRIVATE_IP}:8000:8000"]           # never 0.0.0.0 or a bare port  # nosec B104
     assert "-v" in opts and opts[opts.index("-v") + 1] == "/opt/models:/models:ro"
     assert "--network" not in opts and "--privileged" not in opts and "host" not in opts
     assert re.fullmatch(r"[0-9a-f]{40}", spec["weights"]["revision"])
@@ -66,7 +66,7 @@ def test_spec_is_private_pinned_and_consistent(name, run, cell, spec):
     if spec["engine"].startswith("thin"):
         env = dict(opts[i + 1].split("=", 1) for i, o in enumerate(opts) if o == "-e")
         # In-container bind; the publish above is the boundary (private IP only).
-        assert env["THIN_HOST"] == "0.0.0.0" and env["THIN_MODEL_DIR"] == "{MODEL_DIR}"  # noqa: S104
+        assert env["THIN_HOST"] == "0.0.0.0" and env["THIN_MODEL_DIR"] == "{MODEL_DIR}"  # noqa: S104  # nosec B104
         if spec["engine"] == "thin-openvino" and cell.precision == "fp16":
             assert env["THIN_OV_PRECISION_HINT"] == "f16"
         if spec["model_id"] == "d2-roblox-pii-v2":
@@ -104,7 +104,7 @@ def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path)
     spec = _pick(engine, target)
     f = tmp_path / "cell.json"
     f.write_text(json.dumps(spec))
-    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env=dry_env, capture_output=True,
+    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env=dry_env, capture_output=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                          text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     run_line = next(line for line in out.stderr.splitlines() if line.startswith("DRY-RUN: docker run -d"))
@@ -118,7 +118,7 @@ def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path)
 def test_serve_refuses_public_address(dry_env, tmp_path):
     f = tmp_path / "cell.json"
     f.write_text(json.dumps(_pick("vllm", "t2-")))
-    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env={**dry_env, "PRIVATE_IP": "54.1.2.3"},
+    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env={**dry_env, "PRIVATE_IP": "54.1.2.3"},  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                          capture_output=True, text=True, timeout=60)
     assert out.returncode != 0 and "non-private" in out.stderr
 
@@ -140,5 +140,5 @@ def test_shellcheck_clean():
     if not Path(sc).exists():
         pytest.skip("shellcheck not installed")
     scripts = sorted(str(p) for p in (ROOT / "host").glob("*.sh"))
-    out = subprocess.run([sc, "-x", "-P", str(ROOT / "host"), *scripts], capture_output=True, text=True)
+    out = subprocess.run([sc, "-x", "-P", str(ROOT / "host"), *scripts], capture_output=True, text=True)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     assert out.returncode == 0, out.stdout

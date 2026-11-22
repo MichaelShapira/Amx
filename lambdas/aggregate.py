@@ -164,7 +164,7 @@ def _dataset_items(resolved: dict, split: str) -> list[dict] | None:
         for mid in run.get("models") or []:
             try:
                 m = load_models().get(mid)
-            except Exception:  # noqa: BLE001 - a model not in the seed: no labels, no accuracy
+            except Exception:  # noqa: BLE001, S112 - a model not in the seed: no labels, no accuracy
                 continue
             if m.type == "decision":
                 items += common.read_jsonl(plan.decision_pool(m, run.get("prompt_set", "short")))

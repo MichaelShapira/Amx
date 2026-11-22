@@ -36,14 +36,14 @@ def creds_file(tmp_path, monkeypatch):
 def test_env_file_parsing_keeps_only_the_three_credential_values():
     vals = aws.parse_env_file(CREDS)
     assert vals == {"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE000000001", "AWS_SECRET_ACCESS_KEY": "secret/one+two",
-                    "AWS_SESSION_TOKEN": "IQoJtoken1"}
+                    "AWS_SESSION_TOKEN": "IQoJtoken1"}  # nosec B105 (a made-up test value)
     assert aws.parse_env_file("AWS_ACCESS_KEY_ID=  \n# AWS_SECRET_ACCESS_KEY=x\n") == {}
 
 
 def test_session_is_rebuilt_when_the_file_changes_and_not_otherwise(creds_file):
     s1 = aws.session()
     assert s1.get_credentials().access_key == "ASIAEXAMPLE000000001"
-    assert s1.get_credentials().token == "IQoJtoken1" and s1.region_name == "us-east-1"
+    assert s1.get_credentials().token == "IQoJtoken1" and s1.region_name == "us-east-1"  # nosec B105
     assert aws.session() is s1                      # same mtime: same session, no re-read
     assert "creds.env" in aws.source() and "written" in aws.source()
     time.sleep(0.02)
@@ -51,7 +51,7 @@ def test_session_is_rebuilt_when_the_file_changes_and_not_otherwise(creds_file):
     os.utime(creds_file, (time.time() + 2, time.time() + 2))   # a new mtime even on coarse filesystems
     s2 = aws.session()
     assert s2 is not s1 and s2.get_credentials().access_key == "ASIAEXAMPLE000000002"
-    assert s2.get_credentials().token == "IQoJtoken2"
+    assert s2.get_credentials().token == "IQoJtoken2"  # nosec B105
     # The pasted file is the operator's own machine; the API never copies the values anywhere.
     assert "ASIAEXAMPLE" not in aws.source() and "token2" not in aws.expired_sentence()
 

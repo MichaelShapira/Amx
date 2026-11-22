@@ -44,7 +44,7 @@ def token(**over) -> str:
               "cognito:groups": ["operators"]}
     claims.update(over)
     key = claims.pop("_key", PEM)
-    return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "k1"})
+    return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "k1"})  # nosemgrep: python.jwt.security.jwt-python-hardcoded-secret (a key generated per test run)
 
 
 @pytest.fixture()
@@ -95,9 +95,9 @@ def test_bad_tokens_are_refused(gated):
         "expired": "Bearer " + token(exp=int(time.time()) - 120),
         "other issuer": "Bearer " + token(iss="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Other"),
         "other client": "Bearer " + token(client_id="zzzzzzzzzzzzzzzzzzzzzzzzzz"),
-        "id token": "Bearer " + token(token_use="id"),
+        "id token": "Bearer " + token(token_use="id"),  # nosec B106 (the claim's value)
         "basic scheme": "Basic dXNlcjpwYXNz",
-        "none alg": "Bearer " + jwt.encode({"sub": "x", "iss": ISSUER, "client_id": CLIENT, "token_use": "access",
+        "none alg": "Bearer " + jwt.encode({"sub": "x", "iss": ISSUER, "client_id": CLIENT, "token_use": "access",  # nosemgrep: python.jwt.security.jwt-python-none-alg (the REFUSED case)
                                             "exp": int(time.time()) + 60, "iat": int(time.time())}, "", algorithm="none"),
     }
     for why, header in bad.items():
@@ -169,17 +169,17 @@ def test_public_bind_is_refused_without_a_pool(monkeypatch):
     from webui.api import main
 
     monkeypatch.delenv("AMXBENCH_COGNITO_USER_POOL_ID", raising=False)
-    monkeypatch.setenv("AMXBENCH_BIND", "0.0.0.0")                   # noqa: S104 - the refused case
+    monkeypatch.setenv("AMXBENCH_BIND", "0.0.0.0")                   # noqa: S104 - the refused case  # nosec B104
     auth.reset_for_tests()
-    with pytest.raises(SystemExit, match="refusing to bind 0.0.0.0"):
+    with pytest.raises(SystemExit, match="refusing to bind 0.0.0.0"):  # nosec B104
         main.bind_address()
     monkeypatch.setenv("AMXBENCH_BIND", "127.0.0.1")
     assert main.bind_address() == ("127.0.0.1", 8601)
-    monkeypatch.setenv("AMXBENCH_BIND", "0.0.0.0")                   # noqa: S104
+    monkeypatch.setenv("AMXBENCH_BIND", "0.0.0.0")                   # noqa: S104  # nosec B104
     monkeypatch.setenv("PORT", "8080")
     monkeypatch.setenv("AMXBENCH_COGNITO_USER_POOL_ID", POOL)
     auth.reset_for_tests()
-    assert main.bind_address() == ("0.0.0.0", 8080)                  # noqa: S104 - with the pool, the container bind
+    assert main.bind_address() == ("0.0.0.0", 8080)                  # noqa: S104 - with the pool, the container bind  # nosec B104
     auth.reset_for_tests()
 
 

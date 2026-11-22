@@ -29,7 +29,7 @@ The honest way to decide is to run **your** model with **your** data on both kin
 
 Across every model measured at full grade in this deployment, one pattern holds:
 
-- **On peak throughput per dollar the GPU wins.** On AWS pricing, one `g6.xlarge` (about $0.80/h) delivers 5 to 10 times the work of a price-matched `m8i.4xlarge` (about $0.85/h) for the same model. This is physics and pricing, not software: the GPU has about 7.5 times the arithmetic and 2.7 times the memory bandwidth of the 8 cores you get for the same money, and the CPU side here runs at 70 to 80 per cent of its own hardware limit with AMX verified.
+- **On peak throughput per dollar the GPU wins.** On AWS pricing, one `g6.xlarge` (about $0.80/h) delivers roughly 4 to 15 times the work of a price-matched `m8i.4xlarge` (about $0.85/h) for the same model, depending on the task: 4.3x on embeddings (run `embedding-full-e1-20261119T141541Z`, 2026-11-19), 7.3x on RoBERTa classification (`roberta-int8-full-20261120T211803Z`, 2026-11-20), 14 to 16x on inline DLP and short-document scans with Gemma 4 E4B (`gemma-bulk-scan-dlp-dspm-20261122T085327Z`, 2026-11-22), about 4x on chat (`docs/recipe-check-2026-11-19.md`). The one measured exception so far: long-document scans with Gemma 4 E4B, where the CPU matched the GPU (same run). This is physics and pricing, not software: the L4 has about 7.5 times the arithmetic (121 dense BF16 TFLOPS, NVIDIA's L4 datasheet, against 8 cores at about 2 TFLOPS of AMX BF16 each, Intel's 1,024 FLOPs per cycle per core) and 2.7 times the memory bandwidth (300 GB/s against 107 GB/s measured with STREAM on the `m8i.4xlarge`) of the 8 cores you get for the same money, and the CPU side here runs at 70 to 80 per cent of its own hardware limit with AMX verified (`docs/recipe-check-2026-11-19.md`). Every figure in this paragraph is in the run's report under Results, or in that document; see also section 1.5.
 - **The CPU wins in four situations**, which the results page computes for every run:
   1. **At low or moderate load**, because the smallest CPU slice that meets your targets is far cheaper than the smallest GPU you can buy. Below a load the page calls the **crossover**, the CPU is the cheaper option.
   2. **On availability**, when AWS refuses to launch the GPU size you want and launches the CPU on request. The page counts the refusals from the run's own log.
@@ -48,6 +48,19 @@ So the tool is not trying to prove that the CPU is faster. It measures where eac
 - Strands Decider, the decision model family: <https://huggingface.co/StrandsAgents> and <https://github.com/strands-labs/strands-decider>
 - Hugging Face model hub, where every model and its exact version come from: <https://huggingface.co/>
 - Amazon Bedrock (the reasoning model that proposes hardware and writes the executive summary): <https://aws.amazon.com/bedrock/>
+
+### 1.5 Sources for the figures quoted in this guide
+
+| Figure | Source |
+|---|---|
+| L4: 121 dense BF16 TFLOPS, 300 GB/s | NVIDIA L4 product page and datasheet, <https://www.nvidia.com/en-us/data-center/l4/>; the same numbers drive the "Why it came out this way" card (`bench/mechanics.py`). |
+| AMX: 1,024 BF16 FLOPs per cycle per core | Intel AMX overview (link above); about 2 TFLOPS per Xeon 6 core at AMX clock, the figure `bench/mechanics.py` uses. |
+| m8i.4xlarge memory bandwidth 107 GB/s | Measured with STREAM on every CPU test host by the benchmark itself (the "membw" probe); shown on each run's "Why it came out this way" card. |
+| CPU at 70 to 80 per cent of its hardware limit | `docs/recipe-check-2026-11-19.md`, runs `recipe-check-20261119T081855Z` and `recipe-check-20261119T085351Z`: the harness's vLLM configuration against Intel's own recipe on the same instance, decode at about 70 per cent of measured bandwidth, per-core throughput inside Intel's published range. |
+| GPU/CPU ratios 4.3x, 7.3x, 14 to 16x, about 4x | The runs named in section 1.3, each a full-grade report under Results in this deployment, and the recipe-check document for chat cost per million tokens. |
+| Spot 30 to 70 per cent below On-Demand | AWS Spot Instance Advisor savings for the `g6`, `g6e` and `m8i` sizes in us-east-1 at the time of writing (November 2026), <https://aws.amazon.com/ec2/spot/instance-advisor/>; AWS states savings of up to 90 per cent, <https://aws.amazon.com/ec2/spot/>. The estimate shown before a run uses On-Demand prices on purpose. |
+| Savings Plan rates | AWS Price List API (`savingsplans describe-savings-plans-offering-rates`), snapshotted into the instance catalog with its date; shown next to every price on the Results page. |
+| Instance prices | AWS Price List API, On-Demand, Linux, shared tenancy, snapshotted with the catalog; the snapshot date is printed on the Results page. |
 
 ---
 
@@ -213,7 +226,7 @@ For sensitive-data detection you pick a **preset** instead: Inline strict (every
 
 - **Name this benchmark**: optional. It becomes the first part of the run id, followed by the start time.
 - **What will run**: the whole test in words: use case, data, depth, model, hardware with sizes and formats, load settings, targets, purchase option.
-- **Estimate**: wall-clock time, cost (On-Demand rates; Spot is usually 30 to 70 per cent less) and the grade (Decision-grade or Quick check). The time is estimated from assumed speeds until the model has been measured here; afterwards it uses measured speeds.
+- **Estimate**: wall-clock time, cost (On-Demand rates; Spot is usually 30 to 70 per cent less, see section 1.5) and the grade (Decision-grade or Quick check). The time is estimated from assumed speeds until the model has been measured here; afterwards it uses measured speeds.
 - Problems found by the pre-checks are listed here in words: a size with too little memory for the model, a model the serving software cannot run in the chosen format, an unfair pair. An unfair pair can be started anyway by ticking **I understand the sizes are not comparable; start anyway**.
 - **Start the benchmark** launches the run and takes you to its page under Runs.
 
@@ -420,7 +433,7 @@ For the engineer who wants to check the method, and for the reader who wants to 
 
 ## 12. Costs and safety
 
-- **What a run costs you**: the instances for the duration of the run (shown as an estimate before you start; Spot is usually 30 to 70 per cent less than the On-Demand estimate), a few cents of storage and Lambda time, and one Bedrock call per hardware proposal and per executive summary.
+- **What a run costs you**: the instances for the duration of the run (shown as an estimate before you start; Spot is usually 30 to 70 per cent less than the On-Demand estimate, section 1.5), a few cents of storage and Lambda time, and one Bedrock call per hardware proposal and per executive summary.
 - **Instances are per run** and terminated when the run ends or is stopped. A reaper also terminates anything the tool launched that outlives its run.
 - **Nothing is public**: the test hosts have no public IP addresses; the application sits behind CloudFront with a web firewall and a sign-in; the hosts reach the internet only to download models.
 - **No real customer data** is used: every data set is synthetic, with known answers.
@@ -446,7 +459,7 @@ The processor's AMX counters show the matrix units were not used, so the measure
 Yes, under Setup → Models → Add a model, with its Hugging Face repository id. The first run is the real test of whether the serving software loads it; the hardware proposal says so in its caveats until a run has finished.
 
 **Why Spot by default?**
-It is 30 to 70 per cent cheaper and the tool recovers from interruptions by relaunching and re-running only the unfinished measurements. The numbers are priced at On-Demand rates either way, so Spot never changes a result.
+It is typically 30 to 70 per cent cheaper (AWS Spot Instance Advisor, section 1.5) and the tool recovers from interruptions by relaunching and re-running only the unfinished measurements. The numbers are priced at On-Demand rates either way, so Spot never changes a result.
 
 **Why is the quick check not enough to decide?**
 Fifty requests give a 99th percentile made of one request. The full test's 200 requests and three repetitions are what make the slow tail and the repeatability trustworthy.
