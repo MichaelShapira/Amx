@@ -50,7 +50,7 @@ targets:
       decider:
         image: built:decider-cpu
         env: {OMP_PROC_BIND: close, OMP_PLACES: cores}
-        args: {max_batch: 8, max_concurrency: 2, omp_threads: 8}
+        args: {max_batch: 8, max_concurrency: 2}      # OMP threads = physical cores of the size the run picks
 
   - id: t2-c8i-4xl
     label: T2

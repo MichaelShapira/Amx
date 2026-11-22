@@ -169,3 +169,17 @@ def test_decision_models_run_the_dspm_suite_as_one_typed_question():
     assert all(lv["api_task"] == "decide" and lv["payload"] == {"questions": 1} and lv["batch"] == 1 for lv in levels)
     assert acc[0]["pool"]["size"] == run.dspm.test_items
     assert len(cells) == 2 and {c.engine for c in cells} == {"decider"}
+
+
+def test_12b_smoke_run_pairs_an_l40s_with_an_m8i_8xlarge_and_threads_follow_the_size():
+    run = load_run(ROOT / "config/runs/decision-smoke-d2.yaml")
+    cells = resolve_cells(run, MODELS, TARGETS)
+    m = MODELS.get("d2-strands-decider-12b")
+    assert run.instance_types == {"t1-g6": "g6e.xlarge", "t2-m8i-8xl": "m8i.8xlarge"}
+    for c in cells:
+        spec = cellspec.build(c, m, TMAP[c.target], run, run_id="r", bucket="b", hf_token_secret="s",
+                              ecr_repo_uri="1.dkr.ecr.us-east-1.amazonaws.com/x", built_tags={"decider-cpu": "c", "decider-cuda": "g"},
+                              instance_type=run.instance_types[c.target])
+        assert spec["base_weights"]["repo"] == "google/gemma-4-12B-it"
+        if c.target == "t2-m8i-8xl":
+            assert "OMP_NUM_THREADS=16" in spec["container"]["run_opts"]      # 32 vCPUs, 16 physical cores

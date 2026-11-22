@@ -203,7 +203,11 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
             "DECIDER_MAX_BATCH": str(a.get("max_batch", 8)), "DECIDER_MAX_CONCURRENCY": str(a.get("max_concurrency", 4)),
         }
         if not gpu:
-            env["OMP_NUM_THREADS"] = str(a.get("omp_threads", 8))
+            # One thread per physical core of the size this run picked (m8i.4xlarge 8, m8i.8xlarge 16): the torso's
+            # fp32 GEMMs gain nothing from the hyperthreads, and the E4B kept all 16 vCPUs of a 4xlarge busy on 8.
+            from bench.pairing import spec
+            cores = max(1, int((spec(instance_type or target.instance_type or "") or {}).get("vcpus") or 16) // 2)
+            env["OMP_NUM_THREADS"] = str(a.get("omp_threads") or cores)
         opts += _env_flags({**eng.env, **env})
         cmd = []
     else:

@@ -29,7 +29,8 @@ def all_specs():
             yield path.stem, run, cell, cellspec.build(
                 cell, models.get(cell.model), tmap[cell.target], run, run_id=f"{path.stem}-001",
                 bucket="amx-gpu-bench-346399954218-us-east-1", hf_token_secret="amx-gpu-bench/hf-token",
-                ecr_repo_uri=ECR, built_tags=TAGS)
+                ecr_repo_uri=ECR, built_tags=TAGS,
+                instance_type=run.instance_types.get(cell.target))      # the size the run picked, as preflight passes it
 
 
 SPECS = list(all_specs())
