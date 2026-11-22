@@ -27,7 +27,7 @@ def targets():
 
 
 def test_catalogs_load(models, targets):
-    assert {m.slot for m in models.models} == {"M1", "M3", "M5", "M6", "M7", "E1"}
+    assert {m.slot for m in models.models} == {"M1", "M3", "M5", "M6", "M7", "E1", "D1"}
     resolved = targets.resolved()
     assert resolved["t2-c8i-4xl"].instance_type == "c8i.4xlarge"
     # inherited env survives a partial override
@@ -137,10 +137,11 @@ def test_retired_options_and_models_are_disabled_not_deleted(models, targets):
     assert not tmap["t3-m8i-4xl-ov"].enabled and not tmap["t4-m8i-4xl-torch"].enabled and tmap["t2-m8i-4xl"].enabled
     assert not models.get("m5-flan-t5-xl").enabled
     assert {m.id for m in models.models if m.enabled} == {"m1-qwen3-1.7b", "m3-roberta-large-mnli", "m6-gemma-4-e4b",
-                                                           "m7-gemma-4-e2b", "e1-embeddinggemma-300m"}
+                                                           "m7-gemma-4-e2b", "e1-embeddinggemma-300m", "d1-strands-decider-e4b"}
     for m in models.models:
         if m.enabled:
-            assert all(p.engines == ["vllm"] for p in m.precisions.values() if p.enabled), m.id
+            want = ["decider"] if m.type == "decision" else ["vllm"]
+            assert all(p.engines == want for p in m.precisions.values() if p.enabled), m.id
     with pytest.raises(ValueError):
         resolve_cells(_run(cells=[{"target": "t3-m8i-4xl-ov", "precision": "bf16-ov"}]), models, targets)
     with pytest.raises(ValueError):

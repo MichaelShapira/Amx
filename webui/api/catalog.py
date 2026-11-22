@@ -52,6 +52,17 @@ USE_CASES = {
                  "the work Intel's AMX units are built for."),
         "icon": "vector",
     },
+    "decision": {
+        "name": "Agent decisions (routing, guardrails, triage)",
+        "short": "How fast each hardware option answers the typed decisions inside an agent, and what it costs per million decisions.",
+        "long": ("A decision model (Strands Decider) does not write text: given a state (a message or a ticket thread) it picks "
+                 "one of N options, answers yes/no, or rates on a scale, each with a calibrated confidence, in one pass. These are "
+                 "the decisions inside an agent: which team handles a request, whether an action needs a response within the hour, "
+                 "how severe a problem is. The suite sends generated customer requests with their gold labels; it reports decisions "
+                 "per second, cost per million decisions, time per decision, accuracy against the labels, and whether the CPU's "
+                 "decisions agree with the GPU's (same model and server on both sides). All reading, no writing. Note: the model's "
+                 "server runs the torso in fp32 on CPU (the project's own setting), so the CPU side uses AVX-512, not AMX."),
+    },
     "intel": {
         "name": "Intel's published benchmark (reproduced)",
         "short": "The exact test Intel's Software Catalog publishes Xeon numbers for, run on your GPU and CPU options, with Intel's figures beside yours.",
@@ -95,16 +106,24 @@ MODELS = {
                                                  "only here. Apache-2.0. Served with the vLLM settings from Intel's Xeon recipe."),
     "m7-gemma-4-e2b": ("Gemma 4 E2B Instruct", "The compact Gemma 4: 5.1 billion stored parameters (2 billion effective), "
                                                  "text, image and audio upstream, text only here. Apache-2.0."),
+    "d1-strands-decider-e4b": ("Strands Decider E4B", "AWS Strands Labs' decision model on Gemma 4 E4B: a LoRA adapter and a pointer "
+                                                      "readout replace the text-writing head, so it picks between options and rates on "
+                                                      "scales with a calibrated confidence (81% on JevBench). Served by the official "
+                                                      "strands-decider server on both sides; fp32 on CPU."),
     "e1-embeddinggemma-300m": ("EmbeddingGemma 300M", "Google's embedding model (Gemma-3-based), 0.3 billion parameters, "
                                                        "768-dimensional vectors, 100+ languages. The embedding model Intel's "
                                                        "catalog lists for Xeon. Embeddings use case only."),
 }
 MODEL_KIND = {"decoder": "Chat / generation", "encoder-decoder": "Instruction model (encoder-decoder)",
-              "encoder-classifier": "Classifier", "token-classifier": "Detector (marks words)", "embedding": "Embedding model"}
+              "encoder-classifier": "Classifier", "token-classifier": "Detector (marks words)", "embedding": "Embedding model",
+              "decision": "Decision model"}
 
 ENGINES = {"vllm": ("vLLM", "The most common open-source serving software for chat models, on GPUs and Intel CPUs."),
            "ovms": ("OpenVINO", "Intel's optimized CPU serving stack (OpenVINO Model Server)."),
            "thin-openvino": ("OpenVINO", "OpenVINO through a small serving wrapper, for models the model server does not host."),
+           "decider": ("Strands Decider server", "The official strands-decider server (PyTorch): the only engine that can run a decision "
+                                                   "model, whose pointer readout replaces the text-writing head vLLM expects. The same code "
+                                                   "serves the GPU (bf16) and the CPU (fp32, the project's setting)."),
            "thin-torch": ("PyTorch", "Plain PyTorch through a small serving wrapper, used on the GPU side only for Flan-T5, which vLLM does not serve. "
                                      "The CPU PyTorch option was removed on 2026-11-20: 3-10x below vLLM on the same instance, it compared engines, not CPU with GPU.")}
 
@@ -196,9 +215,11 @@ def hardware_options() -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        # The GPU option is named for vLLM alone: its PyTorch engine serves only Flan-T5 (which vLLM has no
-        # API for) and is not an option the reader chooses, so it stays out of the label and the sentences.
-        named = [e for e in t.engines if not (e == "thin-torch" and "vllm" in t.engines)]
+        # An option is named for its headline engine. vLLM's helper engines (the PyTorch thin server for the one
+        # model vLLM cannot serve, the Strands Decider server for decision models) are model-specific, not a choice
+        # the reader makes, so they stay out of the label and the sentences; the Technical page lists them.
+        helpers = {"thin-torch", "decider"}
+        named = [e for e in t.engines if not (e in helpers and "vllm" in t.engines)]
         engines = list(dict.fromkeys(ENGINES[e][0] for e in named))
         spec = pairing.spec(t.instance_type) or {}
         out.append({
@@ -314,6 +335,8 @@ def dataset_info(use_case: str) -> dict:
                             "and Spanish, embedded one by one. Each text is prefixed with the model's document prompt. Besides "
                             "speed, the report checks that the CPU's vectors point the same way as the GPU's and that a German or "
                             "Spanish text's nearest English neighbour is its own translation.")}
+    if use_case == "decision":
+        return _decision_info()
     if use_case == "intel":
         return _intel_info()
     man_p = ROOT / "data/dspm/v1/manifest.json"
@@ -372,6 +395,27 @@ def _embedding_prefix() -> str:
         if m.type == "embedding" and m.embedding:
             return m.embedding.prefix
     return ""
+
+
+def _decision_info() -> dict:
+    """The decision suite's data: generated agent decisions (bench/decision.py), two state sizes, gold labels."""
+    from bench import decision
+    sizes = {}
+    for size in decision.SIZES:
+        items = decision.generate(20, size)
+        words = [len(x["state"].split()) for x in items]
+        sizes[size] = {"label": {"short": "Short messages", "long": "Ticket threads"}[size],
+                       "help": {"short": "One customer message of 25-50 words: the state an agent routes on first contact.",
+                                "long": "A ticket thread of 200-250 words with the deciding facts in the middle, as an agent sees a case later."}[size],
+                       "words": [min(words), max(words)]}
+    return {"available": True, "kind": "decision", "sizes": sizes, "teams": list(decision.TEAMS), "severity": list(decision.SEVERITY),
+            "questions": {"route": "choice: which of five teams should handle this (billing, security, shipping, technical, sales)",
+                          "urgent": "noul (yes/no): does the writer need a response within the hour",
+                          "severity": "score: how severe is the problem, on minor / moderate / major / critical"},
+            "summary": ("Generated customer requests, balanced over five teams and twenty scenarios, each with the three typed "
+                        "questions a Strands Decider answers and the gold answers. A request carries one state and 1 or 3 of the "
+                        "questions (the state is read once; each question adds its own tokens). The report scores accuracy against "
+                        "the gold answers and the CPU's agreement with the GPU's decisions.")}
 
 
 def _intel_info() -> dict:
@@ -438,6 +482,12 @@ def sample(use_case: str, *, prompt_set: str | None = None, model: str | None = 
                 out.append({"id": f"{x['id']}:{lg}", "domain": x["domain"], "lang": lg, "size": size, "text": prefix + x["text"][lg],
                             "chars": x["chars"][lg], "words": x["words"][lg]})
         return out
+    if use_case == "decision":
+        from bench import decision
+        size = prompt_set if prompt_set in decision.SIZES else "short"
+        items = decision.generate(300 if size == "short" else 120, size)
+        return [{"id": x["id"], "size": size, "text": x["state"], "gold": x["gold"], "words": len(x["state"].split()),
+                 "questions": {k: v["instructions"] for k, v in x["questions"].items()}} for x in rnd.sample(items, min(n, len(items)))]
     if use_case == "intel":
         base = (ROOT / "prompts/generated").resolve()
         ids = {m.id for m in catalog_store.load_catalog().models}

@@ -235,6 +235,13 @@ details summary { cursor: pointer; font-weight: 600; }
 .prose p, .prose li { color: var(--fg); font-size: 14.5px; }
 .prose ul { padding-left: 20px; }
 .prose strong { font-weight: 650; }
+.prose h1 { font-size: 18px; margin: 4px 0 10px; }
+.prose h3 { font-size: 14.5px; margin: 14px 0 4px; }
+.prose table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 12px; }
+.prose th { text-align: left; color: var(--fg-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.prose td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.prose blockquote { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 8px; }
+.prose code { font-size: 13px; }
 
 /* run picker (Results) */
 .picker { position: relative; }

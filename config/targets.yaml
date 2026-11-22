@@ -31,6 +31,9 @@ targets:
       thin-torch:
         image: built:thin-torch-cuda
         args: {max_batch: 16, max_wait_ms: 5}
+      decider:
+        image: built:decider-cuda
+        args: {max_batch: 8, max_concurrency: 4}
 
   - id: t2-m8i-4xl
     label: T2
@@ -44,6 +47,10 @@ targets:
         image: docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3
         env: {VLLM_CPU_OMP_THREADS_BIND: auto, VLLM_CPU_NUM_OF_RESERVED_CPU: "1"}
         args: {<<: *vllm_common, kv_cache_gib: 32, block_size: 128}
+      decider:
+        image: built:decider-cpu
+        env: {OMP_PROC_BIND: close, OMP_PLACES: cores}
+        args: {max_batch: 8, max_concurrency: 2, omp_threads: 8}
 
   - id: t2-c8i-4xl
     label: T2

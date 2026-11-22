@@ -19,7 +19,7 @@ PORT = 8000
 THIN_TASK = {"decoder": "causal", "encoder-decoder": "seq2seq", "encoder-classifier": "seq-cls",
              "token-classifier": "token-cls", "embedding": "embed"}
 API_TASK = {"decoder": "generate", "encoder-decoder": "generate", "encoder-classifier": "classify",
-            "token-classifier": "detect", "embedding": "embed"}
+            "token-classifier": "detect", "embedding": "embed", "decision": "decide"}
 POOLING_TYPES = ("encoder-classifier", "token-classifier", "embedding")     # vLLM --runner pooling
 OV_TASK = {"decoder": "text-generation-with-past", "encoder-decoder": "text2text-generation-with-past",
            "encoder-classifier": "text-classification"}
@@ -81,6 +81,19 @@ def weights_gib(model: ModelSpec, precision: str) -> float:
     label = (model.precisions[precision].weights or "bf16").lower()
     per = next((b for k, b in BYTES_PER_WEIGHT.items() if label.startswith(k)), 0.5 if "int4" in label else 2)
     return model.params * per / 2**30
+
+
+def decider_host_check(model: ModelSpec, target: TargetSpec, instance_type: str | None) -> None:
+    """A decision model's server holds the whole torso in fp32 on CPU (the project's setting): refuse a host that
+    cannot hold it with headroom, with the size it needs (the plan and the pre-check both show the message)."""
+    from bench.pairing import spec
+    assert model.decision is not None
+    host = spec(instance_type or target.instance_type or "") or {}
+    need = model.params * (4 if model.decision.cpu_dtype == "fp32" else 2) / 2**30 + HOST_HEADROOM_GIB
+    if host.get("memory_gib") and host["memory_gib"] < need:
+        raise ValueError(f"{model.id} needs about {need:.0f} GiB of host memory on CPU (the decision model's server holds the "
+                         f"{model.params / 1e9:.1f}B torso in {model.decision.cpu_dtype}); {instance_type or target.instance_type} has "
+                         f"{host['memory_gib']:.0f} GiB. Pick a larger size.")
 
 
 def cpu_kv_cache_gib(default_kv: int, target: TargetSpec, instance_type: str | None, model: ModelSpec,
@@ -165,6 +178,22 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         if model.classifier and model.classifier.multi_label:
             env["THIN_MULTI_LABEL"] = "true"
         opts += _env_flags({**eng.env, **env})
+    elif cell.engine == "decider":
+        # The official strands-decider server (servers/decider): the adapter dir is {MODEL_DIR}, the Gemma torso
+        # {BASE_DIR}; the entrypoint lays both into an offline Hub cache and runs `strands-decider serve`.
+        assert model.decision is not None
+        if not gpu:
+            decider_host_check(model, target, instance_type)
+        env = {
+            "DECIDER_CHECKPOINT": "{MODEL_DIR}", "DECIDER_BASE_DIR": "{BASE_DIR}", "DECIDER_BASE_REPO": model.decision.base_repo,
+            "DECIDER_BASE_REVISION": model.decision.base_revision, "DECIDER_MODEL_ID": model.id,
+            "DECIDER_DEVICE": "cuda" if gpu else "cpu", "DECIDER_PORT": str(PORT),
+            "DECIDER_MAX_BATCH": str(a.get("max_batch", 8)), "DECIDER_MAX_CONCURRENCY": str(a.get("max_concurrency", 4)),
+        }
+        if not gpu:
+            env["OMP_NUM_THREADS"] = str(a.get("omp_threads", 8))
+        opts += _env_flags({**eng.env, **env})
+        cmd = []
     else:
         raise ValueError(f"unknown engine {cell.engine}")
     return {"run_opts": opts, "image": image, "cmd": cmd}
@@ -181,6 +210,9 @@ def health(cell: ResolvedCell, model: ModelSpec) -> dict:
         probe = {"path": "/classify", "body": {"model": model.id, "input": ["hello"]}}
     elif task == "embed":
         probe = {"path": "/v1/embeddings", "body": {"model": model.id, "input": ["hello"]}}
+    elif task == "decide":
+        probe = {"path": "/v1/systemone", "body": {"state": "Help! My payouts have been failing for 3 days!",
+                                                   "questions": {"urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}}
     else:
         probe = {"path": "/detect", "body": {"model": model.id, "input": ["hello"]}}
     path = "/v2/health/ready" if cell.engine == "ovms" else "/health"
@@ -211,6 +243,8 @@ def build(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: RunConf
         "target_id": target.id, "engine": cell.engine, "model_id": model.id, "model_type": model.type,
         "precision": cell.precision, "variant": cell.variant, "api_task": API_TASK[model.type],
         "weights": _weights(model, cell.precision), "ov": ov,
+        "base_weights": ({"repo": model.decision.base_repo, "revision": model.decision.base_revision, "gated": model.gated}
+                         if model.decision else None),
         "prefix_caching": _prefix_caching(run) if cell.engine in ("vllm", "ovms") else None,
         "instance_type": instance_type or target.instance_type,
         "container": docker_argv(cell, model, target, run, image, instance_type),

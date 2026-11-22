@@ -25,6 +25,11 @@ PRIORS = {
     ("cpu", "encoder-decoder"): {"prefill": 800.0, "decode": 10.0, "conc_knee": 8},
     ("gpu", "classifier"): {"prefill": 20000.0, "decode": 0.0, "conc_knee": 32},
     ("cpu", "classifier"): {"prefill": 3000.0, "decode": 0.0, "conc_knee": 8},
+    # Strands Decider E4B, one forward pass per request: the project's published medians are 139 ms per short
+    # question on one H100 (an L4 is roughly 3x slower) and 7.2 s on 16 CPU threads (designs/inference.md,
+    # fp32 torso). Expressed as prefill tokens/s on a ~150-token state.
+    ("gpu", "decision"): {"prefill": 400.0, "decode": 0.0, "conc_knee": 8},
+    ("cpu", "decision"): {"prefill": 25.0, "decode": 0.0, "conc_knee": 4},
 }
 
 

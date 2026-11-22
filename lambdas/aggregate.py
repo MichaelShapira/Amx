@@ -154,6 +154,21 @@ def _dataset_items(resolved: dict, split: str) -> list[dict] | None:
     suite = resolved["run"].get("suite")
     if suite in ("translation", "embedding"):            # the embedding pools are the translation corpus's texts
         return common.read_jsonl("datasets/translation/v1/items.jsonl.gz") if split == "test" else None
+    if suite == "decision":                               # the decision pool carries its own gold labels
+        if split != "test":
+            return None
+        run = resolved["run"]
+        from bench import plan
+        from bench.config import load_models
+        items: list[dict] = []
+        for mid in run.get("models") or []:
+            try:
+                m = load_models().get(mid)
+            except Exception:  # noqa: BLE001 - a model not in the seed: no labels, no accuracy
+                continue
+            if m.type == "decision":
+                items += common.read_jsonl(plan.decision_pool(m, run.get("prompt_set", "short")))
+        return items
     if suite != "dspm":
         return None
     return common.read_jsonl(f"datasets/dspm/v1/{split}.jsonl.gz")

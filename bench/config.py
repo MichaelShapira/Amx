@@ -20,11 +20,11 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 BUILT_IMAGE = re.compile(r"^built:[a-z0-9-]+$")
 
-ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder", "embedding"]
-Suite = Literal["standard", "dspm", "translation", "embedding", "intel"]
+ModelType = Literal["decoder", "encoder-classifier", "token-classifier", "encoder-decoder", "embedding", "decision"]
+Suite = Literal["standard", "dspm", "translation", "embedding", "intel", "decision"]
 TranslationDirection = Literal["en-de", "de-en", "en-es", "es-en"]
 TranslationSize = Literal["sentence", "paragraph"]
-EngineName = Literal["vllm", "ovms", "thin-torch", "thin-openvino"]
+EngineName = Literal["vllm", "ovms", "thin-torch", "thin-openvino", "decider"]
 
 # Methodology defaults (Requirement 7.4).
 FULL_MIN_REQUESTS = 200
@@ -60,6 +60,19 @@ class EmbeddingSpec(Strict):
     max_length: int = 512
     dim: int
     prefix: str = ""
+
+
+class DecisionSpec(Strict):
+    """A decision model (Strands Decider): a LoRA adapter plus a pointer readout on a decoder torso whose LM head
+    is discarded. The adapter repository is the model's hf_repo; `base_repo`/`base_revision` name the torso the
+    loader needs next to it (staged separately, never downloaded on the host). It answers typed questions about
+    a state in one forward pass: noul (yes/no probability), choice (one of N with a confidence) and score (a level
+    on an ordered scale). Served by the official `strands-decider` server on both sides (vLLM has no API for it)."""
+    base_repo: str
+    base_revision: str
+    window: int = 4096                      # the window the checkpoint was trained and calibrated at
+    cpu_dtype: Literal["fp32", "bf16"] = "fp32"   # the project serves the torso in fp32 on CPU
+    questions_per_request: list[int] = Field(default_factory=lambda: [1, 3])
 
 
 class QualityReference(Strict):
@@ -105,6 +118,7 @@ class ModelSpec(Strict):
     quality_reference: QualityReference | None = None
     classifier: ClassifierSpec | None = None
     embedding: EmbeddingSpec | None = None
+    decision: DecisionSpec | None = None
     precisions: dict[str, PrecisionSpec]
     # Extra `vllm serve` arguments this model needs on every vLLM target (a chat template, a
     # tool-call or reasoning parser, multimodal limits), appended verbatim after the harness's own
@@ -343,6 +357,15 @@ class EmbeddingCfg(Strict):
     test_items: int | None = None
 
 
+class DecisionCfg(Strict):
+    """Decision suite (Strands Decider): synthetic agent decisions, each a state plus typed questions (route
+    = choice, guardrail = noul, severity = score). `questions` picks how many questions ride on one request
+    (the state is encoded once; each question adds its own tokens). An accuracy pass keeps every answer for
+    the CPU-vs-GPU agreement score."""
+    questions: list[int] = Field(default_factory=lambda: [1, 3])
+    test_items: int | None = None
+
+
 class IntelCfg(Strict):
     """Intel's published vLLM benchmark method (Intel Software Catalog): random prompts of a fixed
     token count, a fixed answer length with ignore_eos, request rate unbounded, one concurrency at a
@@ -392,6 +415,7 @@ class RunConfig(Strict):
     translation: TranslationCfg | None = None
     embedding: EmbeddingCfg | None = None
     intel: IntelCfg | None = None
+    decision: DecisionCfg | None = None
     stop_targets_after_run: bool = True
     max_waves: int = 20
 
@@ -424,6 +448,11 @@ class RunConfig(Strict):
                 raise ValueError("the intel suite's prompt_set is 'intel' (random prompts of a fixed token count)")
             if not self.sampling.ignore_eos or self.sampling.max_new_tokens != self.intel.output_tokens:
                 raise ValueError("the intel suite generates exactly intel.output_tokens per answer (ignore_eos: true)")
+        if self.suite == "decision":
+            if self.decision is None:
+                self.decision = DecisionCfg()
+            if self.prompt_set not in ("short", "long"):
+                raise ValueError("the decision suite's prompt_set is the state size: short (a message) or long (a document)")
         if self.suite == "translation":
             if self.translation is None:
                 self.translation = TranslationCfg()

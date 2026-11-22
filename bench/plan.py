@@ -29,6 +29,7 @@ TRANSLATION_SIZES = ("sentence", "paragraph")
 TRANSLATION_ACCURACY_CONC = 8
 # Embedding suite: the translation corpus's texts (all three languages) embedded; one pool per text size.
 EMBEDDING_ACCURACY_CONC = 8
+DECISION_ACCURACY_CONC = 4
 # Intel suite: random prompts of a fixed token count (tools/build_prompts.py build_intel_sets); Intel's
 # own sweep runs one concurrency at a time up to the point TPOT passes 100 ms.
 INTEL_POOL = "intel-random-{n}"
@@ -44,13 +45,15 @@ def api_path(model: ModelSpec, engine: str) -> str:
         return "/v3/completions" if engine == "ovms" else "/v1/completions"
     if model.type == "embedding":
         return "/v1/embeddings"
+    if model.type == "decision":
+        return "/v1/systemone"
     return "/detect" if model.type == "token-classifier" else "/classify"
 
 
 def api_task(model: ModelSpec) -> str:
     if model.type in GENERATIVE:
         return "generate"
-    return {"token-classifier": "detect", "embedding": "embed"}.get(model.type, "classify")
+    return {"token-classifier": "detect", "embedding": "embed", "decision": "decide"}.get(model.type, "classify")
 
 
 def health_path(engine: str) -> str:
@@ -70,6 +73,12 @@ def embedding_pool(model: ModelSpec, size: str) -> str:
     """Rendered by tools/build_prompts.py build_embedding_sets: every corpus text of that size, in every
     language, with the model's document prefix; item_id and language identify the reference."""
     return f"artifacts/prompts/{model.id}/embed-{size}.jsonl"
+
+
+def decision_pool(model: ModelSpec, size: str) -> str:
+    """Rendered by tools/build_prompts.py build_decision_sets: generated agent decisions of one state size, each
+    with its typed questions and gold labels (bench/decision.py)."""
+    return f"artifacts/prompts/{model.id}/decide-{size}.jsonl"
 
 
 def intel_pool(model: ModelSpec, input_tokens: int) -> str:
@@ -131,6 +140,8 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             size = min(size, run.translation.test_items)
         if accuracy and run.suite == "embedding" and run.embedding and run.embedding.test_items:
             size = min(size, run.embedding.test_items)
+        if accuracy and run.suite == "decision" and run.decision and run.decision.test_items:
+            size = min(size, run.decision.test_items)
         lvl = {**base, "level_key": key, "name": name, "conc": conc, "repeat": rep, "batch": batch, "payload": payload,
                "pool": {"bucket": bucket, "key": pool_key, "size": size},
                "accuracy": accuracy, "keep_output": accuracy, "workload": workload, **(extra or {})}
@@ -172,6 +183,21 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
                     add(name, key, payload, conc, rep, batch=b, extra={"text_size": run.prompt_set})
         return out
 
+    if run.suite == "decision":
+        assert run.decision is not None
+        if model.type != "decision":
+            return []
+        key = decision_pool(model, run.prompt_set)
+        name = f"decide-{run.prompt_set}"
+        # One decision per request; `questions` says how many of the item's three questions ride on it (the
+        # state is encoded once, so three questions cost little more than one). The accuracy pass asks all three.
+        add(f"{name}-accuracy", key, {"model": model.id, "questions": 3}, DECISION_ACCURACY_CONC, 0, accuracy=True,
+            extra={"text_size": run.prompt_set})
+        for conc in run.concurrency:
+            for nq in run.decision.questions:
+                for rep in range(run.repeats):
+                    add(name, key, {"model": model.id, "questions": nq}, conc, rep, batch=nq, extra={"text_size": run.prompt_set})
+        return out
     if run.suite == "intel":
         assert run.intel is not None
         if model.type not in GENERATIVE:

@@ -193,3 +193,30 @@ models:
     quality_reference: {target: t1-g6, precision: bf16}
     precisions:
       bf16: {engines: [vllm], weights: bf16, activations: bf16}
+
+  # Decision model (Strands Decider, AWS Strands Labs): a LoRA adapter plus a pointer readout on google/gemma-4-E4B-it;
+  # the LM head is discarded, so it picks between options and rates on scales instead of generating text, with a
+  # calibrated confidence on every answer. Served by the official strands-decider server on both sides (vLLM has no
+  # API for it); on CPU the project runs the torso in fp32, so the CPU side uses AVX-512, not AMX, and the report
+  # says so. E4B (81% JevBench) is the size that fits a fair pair (15 GB GPU bf16, ~30 GB CPU fp32); 12B/26B-A4B
+  # need 46/101 GB on CPU. Base weights are staged from the existing google/gemma-4-E4B-it snapshot (m6).
+  - id: d1-strands-decider-e4b
+    slot: D1
+    hf_repo: StrandsAgents/strands-decider-E4B-gemma4-v1-2610
+    revision: 0fd76a6eac253cbd2cde06015734e987d979e28c
+    type: decision
+    license: apache-2.0
+    params: 8000000000                 # the Gemma 4 E4B torso: 8.0B stored (4.5B effective)
+    nominal_size_b: 8.0
+    suites: [decision]
+    max_input_tokens: 4096
+    prompt_format: {kind: plain}
+    quality_reference: {target: t1-g6, precision: bf16}
+    decision:
+      base_repo: google/gemma-4-E4B-it
+      base_revision: 4ecc2ba63bcac23ba4a767fc87025b1450f84c9c
+      window: 4096
+      cpu_dtype: fp32
+      questions_per_request: [1, 3]
+    precisions:
+      bf16: {engines: [decider], weights: bf16, activations: bf16}

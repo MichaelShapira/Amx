@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { type CompareOut, type CpuCaseCost, type DemandOption, type DemandPlan, type ExecSummary, type Group, type IntelReference, type Pricing, type RunRow, type RunUtilization, type Sizing, type SummaryInfo, type TypicalLoad, type WhereCpuWins, api, fmt } from "../api";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCatalog } from "../App";
@@ -61,7 +62,7 @@ export default function Results() {
             <tbody>
               {selected.map((id) => { const s = infos[id]; if (!s) return <tr key={id}><td colSpan={8}><Spinner /></td></tr>; const sh = s.shape; return (
                 <tr key={id}><td><b>{id}</b></td><td>{cat?.use_cases[sh.use_case]?.name}</td>
-                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : sh.use_case === "translation" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}: ${(sh.directions ?? []).map((d) => cat?.directions?.[d]?.label ?? d).join(", ")} · corpus ${sh.dataset}` : sh.use_case === "embedding" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}, EN/DE/ES, embedded` : sh.use_case === "intel" ? `Intel's benchmark, ${cat?.intel_io?.[sh.io!]?.label ?? sh.io} tokens` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
+                  <td className="small">{sh.use_case === "standard" ? `${cat?.prompt_sets[sh.prompt_set!]?.label}, ${sh.answer_tokens}-token answers` : sh.use_case === "translation" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}: ${(sh.directions ?? []).map((d) => cat?.directions?.[d]?.label ?? d).join(", ")} · corpus ${sh.dataset}` : sh.use_case === "embedding" ? `${cat?.text_sizes?.[sh.prompt_set!]?.label ?? sh.prompt_set}, EN/DE/ES, embedded` : sh.use_case === "intel" ? `Intel's benchmark, ${cat?.intel_io?.[sh.io!]?.label ?? sh.io} tokens` : sh.use_case === "decision" ? `agent decisions, ${sh.prompt_set === "long" ? "ticket threads" : "short messages"}, ${(sh.questions ?? []).join(" or ")} question(s) per request` : `${(sh.workloads ?? []).map((w) => cat?.workloads[w]?.label ?? w).join("; ")} · dataset ${sh.dataset}`}</td>
                   <td>{sh.request_mode}</td><td>{sh.concurrency.join(", ")}</td>
                   <td><Badge kind={sh.grade === "full" ? "ok" : "warn"}>{sh.grade === "full" ? "decision-grade" : "quick check"}</Badge></td>
                   <td className="small">{s.models.map(name).join(", ")}</td><td className="small">{s.instance_types.join(", ")}</td></tr>); })}
@@ -106,6 +107,11 @@ export default function Results() {
                     {cat && Object.entries(cat.presets).map(([k, p]) => (
                       <button key={k} className={"chip " + (sla?.preset === k ? "on" : "")} onClick={() => setSla({ p99_e2e_ms: p.p99_e2e_ms, max_error_pct: 1, preset: k })}>{p.label} · ≤ {fmt.n(p.p99_e2e_ms)} ms</button>
                     ))}
+                  </div>
+                ) : useCase === "decision" ? (
+                  <div className="grid c3 mt">
+                    <div><Label help="A decision comes back whole: 99 of 100 decisions within this many milliseconds. Empty = no limit.">Whole decision within (ms)</Label><input type="number" value={(sla?.p99_e2e_ms as number) ?? ""} onChange={(e) => setSla({ ...sla, p99_ttft_ms: null, p50_tpot_ms: null, p99_e2e_ms: e.target.value ? Number(e.target.value) : null })} /></div>
+                    <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>A decision model writes no words, so the first-word and per-word targets do not apply.</div>
                   </div>
                 ) : useCase === "embedding" ? (
                   <div className="grid c3 mt">
@@ -357,7 +363,15 @@ function SideCard({ kind, c, other, g }: { kind: "gpu" | "cpu"; c: Group["best_g
       {c.embedding && (
         <div className="small mt">Embedding quality: {c.embedding.cosine_mean != null ? <>cosine to the GPU's vectors <b>{c.embedding.cosine_mean.toFixed(4)}</b> (worst {c.embedding.cosine_min?.toFixed(4)}) <Help text="Cosine similarity between this option's vector and the GPU's vector for the same text; 1.0000 = identical direction. Differences come from BF16 arithmetic order, not from the model." /> · </> : null}retrieval DE→EN <b>{fmt.pct(c.embedding.recall_de)}</b>, ES→EN <b>{fmt.pct(c.embedding.recall_es)}</b> <Help text="For every German or Spanish text in the pool, is the nearest English text (by cosine) its own translation? A task score with a known answer; the same model on two machines should score alike." />{c.embedding.flag && <Badge kind="bad">quality loss: {c.embedding.flag}</Badge>}</div>
       )}
-      {c.quality_delta != null && !c.translation && !c.embedding && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
+      {c.decision && (
+        <div className="small mt">Decision quality: accuracy <b>{fmt.pct(c.decision.accuracy_overall)}</b> against the gold answers <Help text="Share of right answers over the quality pass: route (one of five teams, exact), urgency (yes/no at 0.5), severity (nearest of four levels). Both sides run the same model and server, so a gap between them is numerical, not a different model." />
+          {c.decision.accuracy_route != null && <> · route {fmt.pct(c.decision.accuracy_route)}, urgency {fmt.pct(c.decision.accuracy_urgent)}, severity {fmt.pct(c.decision.accuracy_severity)}</>}
+          {c.decision.confidence_mean != null && <> · mean confidence {c.decision.confidence_mean.toFixed(2)}</>}
+          {c.decision.agreement != null && <> · agrees with the GPU's decisions <b>{fmt.pct(c.decision.agreement)}</b>{c.decision.prob_gap_max != null ? ` (largest probability gap ${c.decision.prob_gap_max.toFixed(3)})` : ""}</>}
+          {c.decision.flag && <> <Badge kind="warn">{c.decision.flag}</Badge></>}
+        </div>
+      )}
+      {c.quality_delta != null && !c.translation && !c.embedding && !c.decision && <div className="small mt">Answer quality loss vs GPU: <b>{(c.quality_delta * 100).toFixed(0)}%</b> <Help text="1 minus the similarity (ROUGE-L) of this option's answers to the GPU's answers on 50 fixed prompts. BF16 on CPU sets the noise floor; compressed formats are judged against it." /></div>}
       {c.quality_flag && <div className="note warn small mt">Quality flag: {c.quality_flag}. <Help text="A warning, not an exclusion: this option stays in the rankings. The flag says its answers diverged from the reference more than the BF16 floor allows; for chat that measures different wording, not necessarily worse answers. Translation (chrF), embedding (cosine, recall@1) and detection (accuracy) flags measure the task itself." /></div>}
     </div>
   );
@@ -598,7 +612,7 @@ function ExecutiveSummary({ runIds, sla, limit, models, pricing, demandRpm }: { 
         </div>
       </div>
       {err && <Note kind="bad">{err}</Note>}
-      {res && <div className="prose mt"><Markdown>{res.markdown}</Markdown></div>}
+      {res && <div className="prose mt"><Markdown remarkPlugins={[remarkGfm]}>{res.markdown}</Markdown></div>}
     </div>
   );
 }

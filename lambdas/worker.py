@@ -4,8 +4,8 @@ Event (one Distributed Map item, built by plan_wave):
   mode            "measure" or "warm" (warm: sleep 3 s so C environments exist at once)
   run_id, cell_key, level_key, conc, repeat, wave, worker
   endpoint        http://<private-ip>:8000
-  api_path        /v1/completions, /v3/completions, /classify or /detect
-  api_task        generate | classify | detect
+  api_path        /v1/completions, /v3/completions, /classify, /detect, /v1/embeddings or /v1/systemone
+  api_task        generate | classify | detect | embed | decide
   payload         request template (model, max_tokens, temperature, seed, ignore_eos, stop, choices)
   pool            {"bucket", "key", "size"}: request pool (JSONL, one prompt or input per line)
   quota           requests for this worker (perf levels), or
@@ -57,6 +57,18 @@ def send(cl: httpx.Client, ev: dict, lines: list[dict]) -> dict:
         line = lines[0]
         body = {**ev["payload"], "prompt": line["prompt"]}
         rec = bc.stream_completion(cl, url, body, timeout_s=timeout, keep_text=keep)
+    elif ev["api_task"] == "decide":
+        # Strands Decider: one state per request, `questions` of its typed questions riding on it. The pool line
+        # carries the state and the questions in the server's own shape (bench/decision.request_body).
+        from bench import decision
+        line = lines[0]
+        body = decision.request_body(line, int(ev["payload"].get("questions", 1)))
+        rec, resp = bc.post_json(cl, url, body, timeout_s=timeout)
+        if resp:
+            rec["prompt_tokens"] = (resp.get("usage") or {}).get("input_tokens")
+            if keep:
+                rec["output"] = {"answers": resp.get("answers"), "latency_ms": resp.get("latency_ms")}
+        rec["n_inputs"] = len(body["questions"])
     else:
         inputs = [s for line in lines for s in _inputs(line)]
         rec, resp = bc.post_json(cl, url, {"model": ev["payload"]["model"], "input": inputs}, timeout_s=timeout)
@@ -69,7 +81,9 @@ def send(cl: httpx.Client, ev: dict, lines: list[dict]) -> dict:
     item_ids = [x["item_id"] for x in lines if x.get("item_id")]
     if item_ids:
         rec["item_ids"] = item_ids
-    rec["batch_size"] = len(lines) if ev["api_task"] != "generate" else 1
+    rec["batch_size"] = len(lines) if ev["api_task"] not in ("generate", "decide") else 1
+    if ev["api_task"] == "decide":
+        rec["batch_size"] = rec["n_inputs"]          # items per request = questions answered
     rec["content_bytes"] = sum(int(x.get("bytes") or 0) for x in lines) or None
     rec["content_chars"] = sum(int(x.get("chars") or 0) for x in lines) or None    # translation: source characters
     return rec

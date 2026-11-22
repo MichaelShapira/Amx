@@ -13,6 +13,22 @@ images:
       The thin server on the CUDA build of PyTorch, used on the GPU side only for the encoder-decoder
       model (Flan-T5) that vLLM has no API for; its CPU counterpart is OpenVINO through the thin server.
       The plain-PyTorch CPU option was removed on 2026-11-20 (3-10x below vLLM on the same instance).
+  decider-cpu:
+    dockerfile: servers/decider/Dockerfile
+    base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159
+    runs_on: AMX CPU hosts (hardware option "vLLM", for the decision model, which vLLM cannot serve)
+    purpose: >-
+      The official Strands Decider server (strands-labs/strands-decider, pinned commit) on the CPU build of
+      PyTorch. A decision model is a LoRA adapter plus a pointer readout on a Gemma 4 torso with the LM head
+      discarded, so vLLM has no API for it; the same server code runs on both sides. On CPU the project serves
+      the torso in fp32 (AVX-512, not AMX), which the report states.
+  decider-cuda:
+    dockerfile: servers/decider/Dockerfile
+    base_image: public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cu133-amzn2023@sha256:f9e5a7febd6ef9104deb79941b58c7b054091a29f2b661fe9c2ea076886cb7be
+    runs_on: GPU hosts (hardware option "vLLM", for the decision model)
+    purpose: >-
+      The same Strands Decider server on the CUDA build of PyTorch; the torso runs in bf16. Same Dockerfile as
+      the CPU image; only the base image differs.
   web app:
     dockerfile: webui/Dockerfile
     base_image: public.ecr.aws/docker/library/python:3.12-slim (API) and node:22 (UI build stage)

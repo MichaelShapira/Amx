@@ -1,0 +1,3 @@
+# The decider itself, pinned to a commit of its main branch (Gemma 4 support is not on PyPI yet). A git URL cannot carry
+# a wheel hash, so it is installed in its own --no-deps step after the hashed lock; the commit pin is the integrity check.
+strands-decider @ git+https://github.com/strands-labs/strands-decider@c3c845782095b31d438963ac2afcdfe41b49f757

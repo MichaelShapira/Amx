@@ -121,6 +121,9 @@ class Wizard(BaseModel):
     translation_items: int = 100                                      # translation: items per direction in the quality pass
     embedding_items: int = 300                                        # embedding: texts in the quality pass
     intel_io: str = "128/128"                                         # intel: input/output tokens
+    decision_size: str = "short"                                      # decision: short (a message) | long (a ticket thread)
+    decision_questions: list[int] = [1, 3]                            # decision: questions per request to measure
+    decision_items: int = 300                                         # decision: items in the accuracy pass
     depth: str = "quick"                       # quick | full | custom
     requests: int | None = None
     passes: int | None = None
@@ -224,6 +227,7 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
         "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": ACCOUNT, "region": REGION,
         "az_id": "use1-az1", "models": w.models, "cells": cells,
         "prompt_set": (w.prompt_set if w.use_case == "standard" else w.text_size if w.use_case in ("translation", "embedding")
+                       else (w.decision_size if w.decision_size in ("short", "long") else "short") if w.use_case == "decision"
                        else "intel" if w.use_case == "intel" else "dspm"),
         "sampling": {"temperature": 0.0,
                      "max_new_tokens": (int(w.answer_tokens) if w.use_case == "standard"
@@ -263,6 +267,10 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
                               "test_items": int(w.translation_items) if w.translation_items else None}
     if w.use_case == "embedding":
         run["embedding"] = {"test_items": int(w.embedding_items) if w.embedding_items else None}
+        run["quality"] = {"enabled": False}
+    if w.use_case == "decision":
+        qs = sorted({int(q) for q in (w.decision_questions or [1]) if 1 <= int(q) <= 3}) or [1]
+        run["decision"] = {"questions": qs, "test_items": int(w.decision_items) if w.decision_items else None}
         run["quality"] = {"enabled": False}
     if w.use_case == "intel":
         i, o = _intel_io(w)
@@ -423,6 +431,12 @@ def post_plan(w: Wizard):
             try:
                 cellspec.cpu_kv_cache_gib(int(eng.args.get("kv_cache_gib", 16)), tmap[c.target], rtypes[c.target],
                                           models.get(c.model), c.precision)
+            except ValueError as e:
+                problems.append(str(e))
+        if c.engine == "decider" and tmap[c.target].accelerator == "cpu":
+            from bench import cellspec
+            try:
+                cellspec.decider_host_check(models.get(c.model), tmap[c.target], rtypes[c.target])
             except ValueError as e:
                 problems.append(str(e))
         if n == 0 and not c.quality_only and not missing:
@@ -1286,12 +1300,15 @@ def wizard_from_run(run: dict, name: str | None = None, source_run_id: str | Non
          "text_size": run.get("prompt_set") if suite in ("translation", "embedding") and run.get("prompt_set") in C.TEXT_SIZES else "sentence",
          "translation_items": int(trans.get("test_items") or 100),
          "embedding_items": int((run.get("embedding") or {}).get("test_items") or 300),
+         "decision_size": run.get("prompt_set") if suite == "decision" and run.get("prompt_set") in ("short", "long") else "short",
+         "decision_questions": list((run.get("decision") or {}).get("questions") or [1, 3]),
+         "decision_items": int((run.get("decision") or {}).get("test_items") or 300),
          "intel_io": f"{(run.get('intel') or {}).get('input_tokens', 128)}/{(run.get('intel') or {}).get('output_tokens', 128)}",
          "depth": depth, "requests": per if depth == "custom" else None, "passes": reps if depth == "custom" else None,
          "models": models, "precision": "bf16", "gpu": gpu, "cpus": cpus,
          "parallel_targets": bool((run.get("execution") or {}).get("parallel_targets", True)),
          "request_mode": request_mode, "concurrency": conc, "batch_sizes": [int(b) for b in batches] if request_mode == "batch" else [8],
-         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite in ("standard", "translation", "embedding", "intel") else {},
+         "sla": {k: sla[k] for k in ("p99_ttft_ms", "p50_tpot_ms", "p99_e2e_ms") if sla.get(k) is not None} if suite in ("standard", "translation", "embedding", "intel", "decision") else {},
          "purchase": purchase.get("type", "spot"), "spot_fallback": bool(purchase.get("spot_fallback_on_demand", True)),
          "spot_wait_minutes": max(1, int(purchase.get("spot_capacity_window_s", 600)) // 60),
          "launch_attempts": int(purchase.get("max_launch_attempts", 30)),

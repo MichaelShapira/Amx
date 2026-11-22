@@ -588,7 +588,7 @@ def test_technical_details_describe_this_build():
     ids = {h["id"] for h in t["hardware"]}
     assert {"t1-g6", "t2-m8i-4xl"} <= ids and not ({"t3-m8i-4xl-ov", "t4-m8i-4xl-torch"} & ids)   # PyTorch (11-20) and OpenVINO (11-21) retired
     g6 = next(h for h in t["hardware"] if h["id"] == "t1-g6")
-    assert g6["accelerator"] == "gpu" and {e["engine"] for e in g6["engines"]} == {"vllm", "thin-torch"}
+    assert g6["accelerator"] == "gpu" and {e["engine"] for e in g6["engines"]} == {"vllm", "thin-torch", "decider"}
     torch = next(e for e in g6["engines"] if e["engine"] == "thin-torch")
     assert torch["built"] and torch["dockerfile"] == "servers/thin/Dockerfile.torch" and torch["image"] == "built:thin-torch-cuda"
     vllm = next(e for e in g6["engines"] if e["engine"] == "vllm")
@@ -603,7 +603,7 @@ def test_technical_details_describe_this_build():
 # ----------------------------------------------------------------------------- translation use case
 def test_catalog_offers_the_translation_use_case_and_gemma_4():
     cat = c.get("/api/catalog").json()
-    assert set(cat["use_cases"]) == {"standard", "dspm", "translation", "embedding", "intel"}
+    assert set(cat["use_cases"]) == {"standard", "dspm", "translation", "embedding", "intel", "decision"}
     assert set(cat["directions"]) == {"en-de", "de-en", "en-es", "es-en"} and set(cat["text_sizes"]) == {"sentence", "paragraph"}
     assert cat["text_sizes"]["sentence"]["answer_tokens"] == 192 and cat["text_sizes"]["paragraph"]["answer_tokens"] == 448
     trans = {m["id"] for m in cat["models"] if "translation" in m["use_cases"]}

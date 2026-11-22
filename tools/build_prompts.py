@@ -264,6 +264,41 @@ def build_embedding_sets(models, items: list[dict], dataset_manifest: dict, out:
     return manifest
 
 
+DECISION_ITEMS = {"short": 600, "long": 240}
+
+
+def build_decision_sets(models, out: Path, token, seed: int = 0) -> dict:
+    """Decision pools (Strands Decider): generated agent decisions in two state sizes (bench/decision.py), one
+    pool per size under prompts/generated/<model>/decide-<size>.jsonl. A line carries the state, the three
+    typed questions, the gold labels and the token count of state + all questions (the tokenizer in the
+    adapter repository is the torso's). The report scores answers against the gold labels and the GPU cell."""
+    from bench import decision
+
+    manifest = {}
+    for m in models:
+        if m.type != "decision":
+            continue
+        tok = tokenizer_for(m, token)
+        for size, n in DECISION_ITEMS.items():
+            items = decision.generate(n, size, seed)
+            rows = []
+            for it in items:
+                q_text = " ".join(f"{q['instructions']} {json.dumps(q.get('criteria', ''))}" for q in it["questions"].values())
+                rows.append({"id": it["id"], "item_id": it["id"], "size": size, "state": it["state"], "questions": it["questions"],
+                             "gold": it["gold"], "prompt_tokens_expected": count_tokens(tok, it["state"] + " " + q_text),
+                             "chars": len(it["state"])})
+            path = out / m.id / f"decide-{size}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows)
+            path.write_text(data, encoding="utf-8")
+            toks = [x["prompt_tokens_expected"] for x in rows]
+            manifest[f"{m.id}/decide-{size}"] = {"n": len(rows), "size": size, "min_tokens": min(toks), "max_tokens": max(toks),
+                                                 "questions": list(decision.QUESTION_TYPES), "sha256": hashlib.sha256(data.encode()).hexdigest(),
+                                                 "dataset_sha256": decision.dataset_sha256(items), "seed": seed}
+            print(f"{m.id}/decide-{size}: {len(rows)} decisions, {min(toks)}-{max(toks)} tokens")
+    return manifest
+
+
 INTEL_INPUT_TOKENS = (128, 2048)
 INTEL_POOL_SIZE = 512
 
@@ -362,6 +397,7 @@ def main(argv=None) -> int:
     manifest["sets"].update(build_length_sets(std_models, sentences, out, args.n, args.seed, args.sets, token))
     manifest["sets"].update(build_quality_sets(std_models, out, cache / "hf", args.seed, token))
     manifest["sets"].update(build_intel_sets(models, out, token, args.seed))
+    manifest["sets"].update(build_decision_sets(models, out, token, args.seed))
     translation_dir = ROOT / "data" / "translation" / "v1"
     if (translation_dir / "items.jsonl.gz").exists():
         from tools.translation import build_requests as tr

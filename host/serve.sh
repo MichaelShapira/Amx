@@ -147,6 +147,15 @@ start() {
   hf_dir=$("$BENCH_HOME/stage_model.sh" "$(jq -r .weights.repo "$spec")" "$(jq -r .weights.revision "$spec")" \
     "$(jq -r .weights.gated "$spec")" "$(jq -r .bucket "$spec")" "$(jq -r .hf_token_secret "$spec")" \
     "$(jq -r .region "$spec")")
+  # A decision model needs its base torso next to the adapter: stage it the same way (cache first).
+  local base_dir_c=""
+  if [[ "$(jq -r '.base_weights != null' "$spec")" == "true" ]]; then
+    local base_dir
+    base_dir=$("$BENCH_HOME/stage_model.sh" "$(jq -r .base_weights.repo "$spec")" "$(jq -r .base_weights.revision "$spec")" \
+      "$(jq -r .base_weights.gated "$spec")" "$(jq -r .bucket "$spec")" "$(jq -r .hf_token_secret "$spec")" \
+      "$(jq -r .region "$spec")")
+    base_dir_c="/models/${base_dir#"$MODELS_ROOT"/}"
+  fi
   local model_fetch_s; model_fetch_s=$(elapsed "$t")
   model_dir=$hf_dir
   local export_s=0
@@ -167,7 +176,7 @@ start() {
   while IFS= read -r x; do opts+=("${x//\{PRIVATE_IP\}/$ip}"); done < <(jq -r '.container.run_opts[]' "$spec")
   while IFS= read -r x; do cmd+=("${x//\{MODEL_DIR\}/$model_dir_c}"); done < <(jq -r '.container.cmd[]' "$spec")
   local i
-  for i in "${!opts[@]}"; do opts[i]=${opts[i]//\{MODEL_DIR\}/$model_dir_c}; done
+  for i in "${!opts[@]}"; do opts[i]=${opts[i]//\{MODEL_DIR\}/$model_dir_c}; opts[i]=${opts[i]//\{BASE_DIR\}/$base_dir_c}; done
   if [[ "$verbose" == "1" ]]; then
     while IFS= read -r x; do opts+=(-e "$x"); done < <(jq -r '.verbose_env | to_entries[] | "\(.key)=\(.value)"' "$spec")
   fi

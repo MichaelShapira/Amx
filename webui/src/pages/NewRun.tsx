@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api, defaultWizard, fmt, type AiJob, type AiProposal, type AiStep, type Catalog, type Hardware, type ModelInfo, type Plan, type Side, type UseCase, type Wizard } from "../api";
 import { useCatalog, useCatalogRefresh } from "../App";
 import DataPreview from "../components/DataPreview";
@@ -96,6 +97,7 @@ export function typicalTests(uc: UseCase, generative = true): Partial<Wizard> & 
   if (uc === "translation") return { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 10000, p99_ttft_ms: 2000 }, request_mode: "concurrent", why: "1, 4 and 16 translations at a time; whole translation within 10 s, first word within 2 s." };
   if (uc === "embedding") return { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch", batch_sizes: [1, 8, 32], why: "1, 8 and 32 requests at a time carrying 1, 8 or 32 texts each; the whole request within 1 s, as a search box needs." };
   if (uc === "intel") return { concurrency: [16, 64, 128], sla: { p50_tpot_ms: 100, p99_ttft_ms: 3000 }, request_mode: "concurrent", why: "Intel's published settings: 16, 64 and 128 requests at a time, 100 ms per token, first token within 3 s." };
+  if (uc === "decision") return { concurrency: [1, 4, 16], sla: { p99_e2e_ms: 2000 }, request_mode: "concurrent", why: "1, 4 and 16 decisions at a time, each request carrying 1 or 3 questions; the whole decision within 2 s, as a guardrail in an agent's loop needs." };
   if (!generative) return { concurrency: [1, 8, 32], sla: { p99_e2e_ms: 1000 }, request_mode: "batch", batch_sizes: [1, 8, 32], why: "A classifier: 1, 8 and 32 requests at a time carrying 1, 8 or 32 inputs; each decision within 1 s." };
   return { concurrency: [1, 4, 16], sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, request_mode: "concurrent", why: "1, 4 and 16 chat sessions at a time; first word within 2 s, then reading speed (150 ms per word)." };
 }
@@ -159,6 +161,21 @@ function StepData({ w, set }: SP) {
           <Label help="How many of the 600 texts per size (200 items x 3 languages) each option embeds once for the quality figures: cosine similarity to the GPU's vectors and cross-lingual retrieval (does a German or Spanish text's nearest English neighbour turn out to be its own translation?).">Texts in the quality pass</Label>
           <Chips options={[150, 300, 600]} value={[w.embedding_items]} onChange={(v) => set({ embedding_items: v.find((x) => x !== w.embedding_items) ?? w.embedding_items })} />
         </>
+      ) : w.use_case === "decision" ? (
+        <>
+          <p className="muted">Generated customer requests, each with the three typed questions a decision model answers: which team should handle it (one of five), does it need a response within the hour (yes/no), how severe is it (a four-level scale). The gold answers come with the data, so the report scores accuracy as well as speed. A decision is all reading: the model reads the state once and scores the options in one pass, no text is written.</p>
+          <Label help="How much the model reads per decision. A short message is what an agent routes on first contact; a ticket thread is what it sees later in a case, with the deciding facts in the middle.">State size</Label>
+          <div className="tiles mb">
+            {[["short", "Short messages", "One customer message of 25-50 words."], ["long", "Ticket threads", "A thread of 200-250 words: the facts that decide the answer sit in the middle."]].map(([k, label, help]) => (
+              <Tile key={k} selected={w.decision_size === k} onClick={() => set({ decision_size: k })} title={label} desc={help} />
+            ))}
+          </div>
+          <Label help="How many of the three questions ride on one request. The state is read once and each question adds only its own tokens, so three questions should cost little more than one; measuring both shows whether that holds on each machine.">Questions per request (pick one or both)</Label>
+          <Chips options={[1, 3]} value={w.decision_questions} onChange={(v) => set({ decision_questions: v.length ? v : [1] })} labels={(q) => q === 1 ? "1 · route only" : "3 · route, urgency, severity"} />
+          <Label help="How many items each option decides once, with all three questions, for the quality figures: accuracy against the gold answers and agreement with the GPU's decisions.">Items in the quality pass</Label>
+          <Chips options={[100, 300, 600]} value={[w.decision_items]} onChange={(v) => set({ decision_items: v.find((x) => x !== w.decision_items) ?? w.decision_items })} />
+          <Note kind="warn">The model's own server runs the torso in fp32 on CPU (the project's setting), so the CPU side uses AVX-512, not AMX, and the report says so. The same server code runs on both sides.</Note>
+        </>
       ) : w.use_case === "intel" ? (
         <>
           <p className="muted">Intel's published method: prompts of random vocabulary tokens with a fixed length, answers cut at a fixed length, requests sent as fast as the machine accepts them. The text means nothing; the test measures tokens read and written per second. Pick the token shape; Intel's own figures exist for every shape.</p>
@@ -181,7 +198,7 @@ function StepData({ w, set }: SP) {
       )}
       <div className="hr" />
       <h3>Preview <span className="muted small">— real examples of what the model will see</span></h3>
-      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : w.use_case === "translation" || w.use_case === "embedding" ? w.text_size : w.use_case === "intel" ? w.intel_io.split("/")[0] : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} directions={w.use_case === "translation" ? w.directions : undefined} compact model={w.models[0]} />
+      <DataPreview useCase={w.use_case} promptSet={w.use_case === "standard" ? w.prompt_set : w.use_case === "translation" || w.use_case === "embedding" ? w.text_size : w.use_case === "intel" ? w.intel_io.split("/")[0] : w.use_case === "decision" ? w.decision_size : undefined} workloads={w.use_case === "dspm" ? w.workloads : undefined} directions={w.use_case === "translation" ? w.directions : undefined} compact model={w.models[0]} />
     </div>
   );
 }
@@ -423,7 +440,7 @@ function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applie
       {r && !p && (
         <div className="mt">
           <Note kind="warn"><b>No proposal this time:</b> {r.problem}. Pick the sizes by hand below, or press Propose again. What the model wrote:</Note>
-          {r.markdown && <div className="prose mt"><Markdown>{r.markdown}</Markdown></div>}
+          {r.markdown && <div className="prose mt"><Markdown remarkPlugins={[remarkGfm]}>{r.markdown}</Markdown></div>}
         </div>
       )}
       {r && p && (
@@ -511,6 +528,12 @@ function StepLoad({ w, set }: SP) {
           <div><Label help="An embedding request returns all its vectors at once, so this is the one time limit that applies: 99 of 100 requests within this many milliseconds. 1,000 ms suits a search box; empty = no limit.">Whole request within (ms)</Label>
             <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
           <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>Embeddings generate no words, so there is no first-word or per-word target.</div>
+        </div>
+      ) : w.use_case === "decision" ? (
+        <div className="grid c3">
+          <div><Label help="A decision comes back whole, so this is the one time limit that applies: 99 of 100 decisions within this many milliseconds. 2,000 ms suits a guardrail inside an agent's loop; empty = no limit.">Whole decision within (ms)</Label>
+            <input type="number" value={w.sla.p99_e2e_ms ?? ""} onChange={(e) => set({ sla: { p99_e2e_ms: e.target.value ? Number(e.target.value) : undefined } })} /></div>
+          <div className="small muted" style={{ gridColumn: "span 2", alignSelf: "end" }}>A decision model writes no words, so there is no first-word or per-word target.</div>
         </div>
       ) : w.use_case === "intel" ? (
         <div className="grid c3">

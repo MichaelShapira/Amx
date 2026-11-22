@@ -22,6 +22,9 @@ from webui.api.catalog import (
     WORKLOADS,
 )
 
+DECISION_SIZES = {"short": "short messages", "long": "ticket threads"}
+
+
 # ----------------------------------------------------------------------------- run shape
 
 def request_mode(run: dict) -> str:
@@ -48,6 +51,9 @@ def shape(summary: dict) -> dict:
                  dataset=str(h.get("dataset_sha256"))[:12], test_items=(run.get("translation") or {}).get("test_items"))
     elif run.get("suite") == "embedding":
         s.update(prompt_set=run.get("prompt_set"), test_items=(run.get("embedding") or {}).get("test_items"))
+    elif run.get("suite") == "decision":
+        s.update(prompt_set=run.get("prompt_set"), questions=(run.get("decision") or {}).get("questions"),
+                 test_items=(run.get("decision") or {}).get("test_items"))
     elif run.get("suite") == "intel":
         i = run.get("intel") or {}
         s.update(prompt_set="intel", io=f"{i.get('input_tokens', 128)}/{i.get('output_tokens', 128)}",
@@ -165,6 +171,12 @@ def _group_key(r: dict) -> tuple[str, str]:
         label += " · " + DIRECTIONS.get(r["direction"], (r["direction"],))[0]
         label += f" ({TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]})"
         return key, label
+    if r.get("model_type") == "decision":
+        size = r.get("text_size") or "short"
+        key += "|decide|" + str(size) + (f"|q{r['batch']}" if r.get("batch", 1) > 1 else "")
+        label += f" · decisions, {DECISION_SIZES.get(size, size)}"
+        label += f" · {r['batch']} questions per request" if r.get("batch", 1) > 1 else " · 1 question per request"
+        return key, label
     if r.get("model_type") == "embedding":
         size = r.get("text_size")
         if not size:                      # reports rendered before 2026-11-20 lost it when repeats were pooled
@@ -187,6 +199,9 @@ def _group_key(r: dict) -> tuple[str, str]:
 
 
 def _unit(r: dict) -> dict:
+    if r.get("model_type") == "decision":
+        return {"thr": "cls_s", "thr_label": "decisions/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M decisions",
+                "lat": "e2e_p99", "lat_label": "whole decision, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("model_type") == "embedding":
         return {"thr": "cls_s", "thr_label": "embeddings/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M embeddings",
                 "lat": "e2e_p99", "lat_label": "whole request, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
@@ -252,6 +267,19 @@ def _eq(summary: dict, r: dict) -> dict | None:
     rt = a.get("retrieval") or {}
     return {"n": a.get("n"), "dim": a.get("dim"), "cosine_mean": vs.get("cosine_mean"), "cosine_min": vs.get("cosine_min"),
             "recall_de": (rt.get("de") or {}).get("recall_at_1"), "recall_es": (rt.get("es") or {}).get("recall_at_1"),
+            "flag": a.get("flag")}
+
+
+def _dq(summary: dict, r: dict) -> dict | None:
+    """Decision quality of this row's cell (report.decision_quality)."""
+    a = (summary.get("decision_quality") or {}).get(r.get("cell_key") or "")
+    if not a:
+        return None
+    vs = a.get("vs_reference_cell") or {}
+    acc = a.get("accuracy") or {}
+    return {"n": a.get("n"), "accuracy_overall": a.get("accuracy_overall"), "accuracy_route": acc.get("route"),
+            "accuracy_urgent": acc.get("urgent"), "accuracy_severity": acc.get("severity"), "confidence_mean": a.get("confidence_mean"),
+            "agreement": vs.get("agreement"), "prob_gap_mean": vs.get("prob_gap_mean"), "prob_gap_max": vs.get("prob_gap_max"),
             "flag": a.get("flag")}
 
 
@@ -347,6 +375,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4, pricing: dict | No
             r["accuracy"] = _acc(s, r)
             r["translation"] = _tq(s, r)
             r["embedding"] = _eq(s, r)
+            r["decision"] = _dq(s, r)
             reprice(r, pricing, catalog)
             rows.append(r)
     missing = [nr for s in summaries for nr in not_run(s)]
@@ -376,7 +405,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4, pricing: dict | No
                     "savings": demand.savings_options(r["instance_type"], catalog),
                     "throughput": r.get(u["thr"]), "latency": r.get(u["lat"]), "cost": r.get(u["cost"]),
                     "quality_delta": r.get("quality_delta"), "quality_flag": r.get("quality_flag"), "amx": r.get("amx"),
-                    "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"),
+                    "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"), "decision": r.get("decision"),
                     "run_id": r["run_id"], "ttft_p50": r.get("ttft_p50"), "tpot_p50": r.get("tpot_p50"),
                     "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99")}
 
@@ -422,7 +451,7 @@ def analyze(summaries: list[dict], sla: dict, limit: int = 4, pricing: dict | No
                    "e2e_p50": r.get("e2e_p50"), "e2e_p99": r.get("e2e_p99"), "ttft_p99": r.get("ttft_p99"),
                    "tpot_p50": r.get("tpot_p50"), "req_s": r.get("req_s"), "error_pct": r.get("error_pct"),
                    "amx": r.get("amx"), "quality_delta": r.get("quality_delta"), "quality_flag": r.get("quality_flag"),
-                   "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"),
+                   "accuracy": r.get("accuracy"), "translation": r.get("translation"), "embedding": r.get("embedding"), "decision": r.get("decision"),
                    "util": _util_point(r)}
                   for r in grows]
         sizing = utilization.sizing_for_rows(grows, _series_name, lambda t: pairing.spec(t), pairing.load_catalog()["instances"])

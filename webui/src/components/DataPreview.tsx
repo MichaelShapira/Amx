@@ -15,7 +15,7 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
   const [label, setLabel] = useState("");
   const [hard, setHard] = useState("");
   const [mid, setMid] = useState(model ?? "m1-qwen3-1.7b");
-  const [ps, setPs] = useState(promptSet ?? (useCase === "translation" || useCase === "embedding" ? "sentence" : useCase === "intel" ? "128" : "short"));
+  const [ps, setPs] = useState(promptSet ?? (useCase === "translation" || useCase === "embedding" ? "sentence" : useCase === "intel" ? "128" : "short"));   // "short" also fits the decision suite
   const [lang, setLang] = useState<string>("");
   const [dir, setDir] = useState<string>(directions?.[0] ?? "en-de");
 
@@ -32,13 +32,14 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
       : useCase === "translation" ? { prompt_set: ps, direction: dir, n: compact ? 2 : 4, seed }
       : useCase === "embedding" ? { prompt_set: ps, direction: lang || undefined, n: compact ? 2 : 3, seed }
       : useCase === "intel" ? { prompt_set: ps, model: mid, n: compact ? 2 : 3, seed }
+      : useCase === "decision" ? { prompt_set: ps, n: compact ? 2 : 3, seed }
       : { workload: wl, label: label || undefined, hard_case: hard || undefined, n: compact ? 3 : 5, seed };
     api.sample(useCase, q).then(setItems).catch(() => setItems([]));
   }, [useCase, ps, mid, wl, dir, lang, label, hard, seed, compact]);
 
   if (!info) return <Spinner label="Loading the test data…" />;
   if (!info.available) return <div className="note warn">{info.reason}</div>;
-  const expectedKind = useCase === "standard" ? "prompts" : useCase === "translation" ? "parallel" : useCase === "embedding" ? "embedding" : useCase === "intel" ? "intel" : "documents";
+  const expectedKind = useCase === "standard" ? "prompts" : useCase === "translation" ? "parallel" : useCase === "embedding" ? "embedding" : useCase === "intel" ? "intel" : useCase === "decision" ? "decision" : "documents";
   const intelModels = cat?.models.filter((m) => m.use_cases.includes("intel")) ?? [];
   if (info.kind !== expectedKind) return <Spinner label="Loading the test data…" />;
 
@@ -86,6 +87,25 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
               </select></label>
             )}
             <label className="row">Language <select value={lang} onChange={(e) => setLang(e.target.value)}><option value="">all three</option><option value="en">English</option><option value="de">German</option><option value="es">Spanish</option></select></label>
+            <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
+          </div>
+        </>
+      ) : useCase === "decision" ? (
+        <>
+          {!compact && (
+            <table className="tbl mb">
+              <thead><tr><th>Question</th><th>Type</th><th>What the model decides</th></tr></thead>
+              <tbody>
+                {Object.entries(info.questions as Record<string, string>).map(([k, v]) => <tr key={k}><td><b>{k}</b></td><td className="small">{v.split(":")[0]}</td><td className="small muted">{v.split(":").slice(1).join(":").trim()}</td></tr>)}
+              </tbody>
+            </table>
+          )}
+          <div className="row small mb">
+            {!promptSet && (
+              <label className="row">State size <select value={ps} onChange={(e) => setPs(e.target.value)}>
+                {Object.entries(info.sizes as Record<string, any>).map(([k, z]) => <option key={k} value={k}>{z.label}</option>)}
+              </select></label>
+            )}
             <button className="btn sm" onClick={() => setSeed(seed + 1)}>Other examples</button>
           </div>
         </>
@@ -177,6 +197,14 @@ export default function DataPreview({ useCase, promptSet, workloads, directions,
         <details key={x.id} className="doc" open={compact ? undefined : true}>
           <summary><span className="hd" style={{ display: "inline-flex" }}><Badge>{{ en: "English", de: "German", es: "Spanish" }[x.lang as string] ?? x.lang}</Badge><span className="muted">{x.id} · {x.domain} · {x.words} words · {x.chars} characters</span></span></summary>
           <pre style={{ marginTop: 8 }}>{x.text}</pre>
+        </details>
+      )) : useCase === "decision" ? items.map((x) => (
+        <details key={x.id} className="doc" open={compact ? undefined : true}>
+          <summary><span className="hd" style={{ display: "inline-flex" }}><Badge kind="ok">route: {x.gold?.route}</Badge><Badge kind={x.gold?.urgent ? "warn" : undefined}>{x.gold?.urgent ? "urgent" : "not urgent"}</Badge><Badge>severity: {x.gold?.severity}</Badge><span className="muted">{x.id} · {x.words} words</span></span></summary>
+          <div className="grid c2 mt" style={{ gap: 12 }}>
+            <div><div className="tiny muted">The state the model reads</div><pre style={{ marginTop: 4 }}>{x.text}</pre></div>
+            <div><div className="tiny muted">The questions it answers (gold answers in the badges)</div><ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{Object.entries(x.questions as Record<string, string>).map(([k, q]) => <li key={k}><b>{k}</b>: {q}</li>)}</ul></div>
+          </div>
         </details>
       )) : useCase === "intel" ? items.map((x) => (
         <details key={x.id} className="doc">

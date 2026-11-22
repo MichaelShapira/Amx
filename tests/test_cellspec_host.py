@@ -16,7 +16,7 @@ from bench.config import load_models, load_run, load_targets, resolve_cells
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = sorted((ROOT / "config/runs").glob("*.yaml"))
-TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123"}
+TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123", "decider-cpu": "decider-cpu-abc123", "decider-cuda": "decider-cuda-abc123"}
 ECR = "346399954218.dkr.ecr.us-east-1.amazonaws.com/amx-gpu-bench"
 
 
@@ -37,7 +37,7 @@ SPECS = list(all_specs())
 
 def test_every_run_cell_has_a_spec():
     assert len(SPECS) > 10
-    assert {s["engine"] for *_, s in SPECS} == {"vllm"}        # vLLM on every active option since 2026-11-21
+    assert {s["engine"] for *_, s in SPECS} == {"vllm", "decider"}   # vLLM everywhere; the decider serves the decision model (2026-11-22)
 
 
 @pytest.mark.parametrize("name,run,cell,spec", SPECS, ids=[s["cell_id"] + "@" + n for n, _, _, s in SPECS])

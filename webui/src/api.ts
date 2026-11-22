@@ -2,7 +2,7 @@
 // signed-in user's Cognito access token (auth.ts); locally there is no sign-in.
 import { accessToken, authEnabled, signIn } from "./auth";
 
-export type UseCase = "standard" | "dspm" | "translation" | "embedding" | "intel";
+export type UseCase = "standard" | "dspm" | "translation" | "embedding" | "intel" | "decision";
 
 export interface ModelInfo {
   id: string; name: string; description: string; kind: string; type: string; params_b: number; license: string;
@@ -41,6 +41,7 @@ export interface Side { hardware: string; instance_type: string; precisions: str
 export interface Wizard {
   use_case: UseCase; prompt_set: string; answer_tokens: number; workloads: string[]; test_items: number; preset: string;
   directions: string[]; text_size: string; translation_items: number; embedding_items: number; intel_io: string;
+  decision_size: string; decision_questions: number[]; decision_items: number;
   depth: "quick" | "full" | "custom"; requests: number | null; passes: number | null; models: string[]; precision: string;
   gpu: Side | null; cpus: Side[]; parallel_targets: boolean; request_mode: "single" | "concurrent" | "batch";
   concurrency: number[]; batch_sizes: number[]; sla: Record<string, number | undefined>; purchase: "spot" | "on-demand";
@@ -52,7 +53,7 @@ export interface Wizard {
 export const defaultWizard: Wizard = {
   use_case: "standard", prompt_set: "short", answer_tokens: 128, workloads: ["W1", "W3"], test_items: 300,
   preset: "inline_standard", directions: ["en-de", "de-en", "en-es", "es-en"], text_size: "sentence", translation_items: 100,
-  embedding_items: 300, intel_io: "128/128",
+  embedding_items: 300, intel_io: "128/128", decision_size: "short", decision_questions: [1, 3], decision_items: 300,
   depth: "quick", requests: null, passes: null, models: [], precision: "bf16",
   gpu: null, cpus: [], parallel_targets: true, request_mode: "concurrent", concurrency: [1, 4, 16], batch_sizes: [8],
   sla: { p99_ttft_ms: 2000, p50_tpot_ms: 150 }, purchase: "spot", spot_fallback: true, spot_wait_minutes: 10, launch_attempts: 30,
@@ -101,7 +102,7 @@ export interface RunDetail {
   cells: { model: string; hardware: string; hardware_label: string; precision: string; engine: string; status: string; status_label: string; measurements: number; error: string }[];
   levels: { model: string; hardware: string; hardware_label: string; what: string; conc: number | null; batch: number; pass: number | null; status: string; status_label: string; completed: number; errors: number; detail: string }[];
 }
-export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; directions?: string[]; io?: string; dataset?: string; policy?: string; requests_per_measurement?: number; repeats?: number; test_items?: number }
+export interface Shape { use_case: UseCase; request_mode: string; concurrency: number[]; grade: string; prompt_set?: string; answer_tokens?: number; workloads?: string[]; directions?: string[]; io?: string; dataset?: string; policy?: string; requests_per_measurement?: number; repeats?: number; test_items?: number; questions?: number[] | null }
 export interface SummaryInfo { run_id: string; shape: Shape; default_sla: Record<string, number | string>; models: string[]; hardware: string[]; instance_types: string[]; smoke: boolean; warnings: string[] }
 
 export interface Accuracy { recall: number; recall_ci: [number, number]; fpr: number; fpr_ci: [number, number]; precision: number; f1: number; format_adherence: number; agreement_with_gpu: number | null; qualifies_vs_gpu: boolean | null; fit: boolean }
@@ -109,12 +110,13 @@ export interface EmbeddingQuality { n: number | null; dim: number | null; cosine
 export interface MechanicsSide { instance_type: string; engine: string; precision: string; weights_gb: number | null; bandwidth_gb_s: number | null; peak_tflops: number | null; bandwidth_source: string | null; cores: number | null; low_conc?: number; implied_bandwidth_gb_s?: number; bandwidth_utilization?: number | null; top_conc?: number; achieved_tflops?: number; compute_utilization?: number | null; best_throughput?: number | null }
 export interface Mechanics { shape?: { input_tokens: number | null; output_tokens: number | null; writing_share: number | null; generation: boolean }; sides?: Record<"gpu" | "cpu", MechanicsSide>; why?: string; error?: string }
 export interface IntelReference { model_id: string; cpu_model: string; sockets: number; total_cores: number; memory_gb: number; ddr5_mt_s: number; io: string; max_concurrency: number; throughput_tok_s: number; tpot_ms: number; ttft_ms: number; vllm_version: string; tested: string | null; tok_s_per_core: number | null }
+export interface DecisionQuality { n: number | null; accuracy_overall: number | null; accuracy_route: number | null; accuracy_urgent: number | null; accuracy_severity: number | null; confidence_mean: number | null; agreement: number | null; prob_gap_mean: number | null; prob_gap_max: number | null; flag: string | null }
 export interface TranslationQuality { chrf: number | null; chrf_p10: number | null; length_ratio: number | null; truncated_pct: number | null; n: number | null; chrf_vs_gpu: number | null; exact_match_vs_gpu: number | null; flag: string | null }
 export interface Saving { basis: string; label: string; usd_per_hour: number; saving_pct: number | null }
-export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; usd_per_hour_on_demand: number | null; price_label: string | null; savings: Saving[]; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; quality_flag: string | null; amx: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
+export interface Card { series: string; instance_type: string; engine: string; precision: string; conc: number; batch: number; usd_per_hour: number; usd_per_hour_on_demand: number | null; price_label: string | null; savings: Saving[]; throughput: number | null; latency: number | null; cost: number | null; quality_delta: number | null; quality_flag: string | null; amx: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; decision: DecisionQuality | null; run_id: string; ttft_p50: number | null; tpot_p50: number | null; e2e_p50: number | null; e2e_p99: number | null }
 /** How busy the hardware was during one measurement (host-level means of 10-second samples). */
 export interface PointUtil { busy_mean: number | null; busy_p95: number | null; busy_max: number | null; mem_max: number | null; gpu_mem_pct: number | null; cpu_mean: number | null; gpu_mean: number | null; cpu_scale?: number }
-export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; quality_flag: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; util: PointUtil | null }
+export interface Point { series: string; side: "gpu" | "cpu"; conc: number; batch: number; throughput: number | null; latency: number | null; cost: number | null; meets: boolean; reason: string; run_id: string; instance_type: string; precision: string; engine: string; e2e_p50: number | null; e2e_p99: number | null; ttft_p99: number | null; tpot_p50: number | null; req_s: number | null; error_pct: number | null; amx: string | null; quality_delta: number | null; quality_flag: string | null; accuracy: Accuracy | null; translation: TranslationQuality | null; embedding: EmbeddingQuality | null; decision: DecisionQuality | null; util: PointUtil | null }
 /** Was the instance the right size for this load? One verdict per hardware option (bench/utilization.py). */
 export interface Suggestion {
   instance_type: string | null; kind: "keep" | "smaller" | "bigger" | "stronger" | "growth" | "none"; why: string;

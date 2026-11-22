@@ -21,6 +21,7 @@ from typing import Any
 from bench import (
     amx,
     cost,
+    decision,
     dspm,
     dspm_scoring,
     embedding,
@@ -107,6 +108,14 @@ def amx_verdicts(inp: RunInputs, cells: dict[str, ResolvedCell], targets: dict) 
     for ck, c in cells.items():
         if targets[c.target].accelerator != "cpu":
             continue
+        if c.engine == "decider":
+            # The decision model's server runs the torso in fp32 on CPU (the project's own setting), so AMX, which
+            # has no fp32 path, cannot be used: not a configuration fault but the model's design. The row stays in
+            # the rankings; the report and the summary say what the CPU side actually used.
+            out[ck] = {"verdict": "NOT_APPLICABLE", "basis": None, "effective_precision": "fp32",
+                       "reason": "the decision model's server runs the torso in fp32 on CPU; AMX has no fp32 path, so the CPU "
+                                 "side uses AVX-512 (the project's own setting, same on every CPU)"}
+            continue
         ev = inp.evidence.get(ck)
         if ev is None:
             out[ck] = {"verdict": "INVALID", "basis": None, "reason": "no AMX evidence collected",
@@ -159,6 +168,46 @@ def quality_scores(inp: RunInputs, cells: dict[str, ResolvedCell], models) -> di
                 else quality.classifier_flag(s.get("vs_fp32"), precision=c.precision))
         s["flag"] = flag
         s["quality_delta"] = quality.quality_delta(s)
+    return out
+
+
+def decision_quality(inp: RunInputs, cells: dict[str, ResolvedCell], models, run: RunConfig) -> dict[str, dict]:
+    """Per cell (decision suite): accuracy against the pool's gold labels per question type, mean confidence, and
+    agreement with the model's GPU reference cell (predictions/<cell>/decide-<size>-accuracy)."""
+    if run.suite != "decision" or not inp.dataset_items:
+        return {}
+    items_by_id = {it["id"]: it for it in inp.dataset_items if it.get("size") == run.prompt_set}
+    records: dict[str, list[dict]] = {}
+    for key, rows in inp.predictions.items():
+        ck, name = key.split("/", 1)
+        if not name.startswith("decide-") or ck not in cells:
+            continue
+        for r in rows:
+            if r.get("error") or not r.get("output"):
+                continue
+            ids = r.get("item_ids") or ([r.get("item_id")] if r.get("item_id") else [])
+            if ids:
+                records.setdefault(ck, []).append({"item_id": ids[0], "output": r["output"]})
+    by_model_ref: dict[str, str] = {}
+    for ck, c in cells.items():
+        ref = models.get(c.model).quality_reference
+        if ref and c.target == ref.target and c.precision == ref.precision:
+            by_model_ref[c.model] = ck
+    out: dict[str, dict] = {}
+    ref_answers: dict[str, dict] = {}
+    for ck in sorted(records, key=lambda k: (k not in by_model_ref.values(), k)):   # reference cells first
+        ref_ck = by_model_ref.get(cells[ck].model)
+        reference = ref_answers.get(ref_ck) if ref_ck and ref_ck != ck else None
+        sc = decision.score_cell(records[ck], items_by_id, reference)
+        if ref_ck == ck:
+            ref_answers[ck] = sc["answers"]
+        sc.pop("answers", None)
+        if ref_ck and ref_ck != ck:
+            sc["reference_cell"] = ref_ck
+        sc["size"] = run.prompt_set
+        sc["flag"] = decision.flag(sc, precision=cells[ck].precision)
+        sc["quality_delta"] = (1 - sc["vs_reference_cell"]["agreement"]) if sc.get("vs_reference_cell", {}).get("agreement") is not None else None
+        out[ck] = sc
     return out
 
 
@@ -333,7 +382,7 @@ def meets_sla(row: dict, sla: dict) -> tuple[bool, str]:
     # A quality flag (`quality_flag`) is a warning, not an exclusion (owner decision 2026-11-19): the generation
     # flag measures divergence from the GPU's text (two BF16 cells of the same weights agree only 0.73-0.76),
     # not a loss, so the row stays in the rankings and the flag travels with it.
-    if row["accelerator"] == "cpu" and row.get("amx") != "VERIFIED":
+    if row["accelerator"] == "cpu" and row.get("amx") not in ("VERIFIED", "NOT_APPLICABLE"):
         return False, "AMX not verified"
     return True, "meets SLA"
 
@@ -351,6 +400,8 @@ def make_row(m: dict, c: ResolvedCell, model: ModelSpec, target, price: dict | N
         qual = (tq or {}).get(name)        # chrF agreement with the GPU reference cell on this direction
     if model.type == "embedding" and tq is not None and "retrieval" in tq:
         qual = tq                          # embedding_quality: one entry per cell
+    if model.type == "decision" and tq is not None and "accuracy_overall" in tq:
+        qual = tq                          # decision_quality: one entry per cell
     row = {
         "model": model.id, "slot": model.slot, "license": model.license, "target": target.id,
         "target_label": target.label, "instance_type": target.instance_type, "accelerator": target.accelerator,
@@ -492,6 +543,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     qual = quality_scores(inp, cells, models)
     tq = translation_quality(inp, cells, models, run)
     eq = embedding_quality(inp, cells, models, run)
+    dq = decision_quality(inp, cells, models, run)
     smoke = bool(res.get("smoke", run.is_smoke))
     rows = []
     for m in pooled_levels(inp):
@@ -501,7 +553,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if actual and actual != t.instance_type:
             t = t.model_copy(update={"instance_type": actual})
         row = make_row(m, c, models.get(c.model), t, prices.get(t.instance_type), amx_v.get(m["cell_key"]),
-                       qual.get(m["cell_key"]), smoke, tq.get(m["cell_key"]) or eq.get(m["cell_key"]))
+                       qual.get(m["cell_key"]), smoke, tq.get(m["cell_key"]) or eq.get(m["cell_key"]) or dq.get(m["cell_key"]))
         sla, preset = sla_for(row, run)
         row["meets_sla"], row["sla_reason"] = meets_sla(row, sla)
         row["sla_preset"] = preset
@@ -519,6 +571,13 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
     for ck, sc in sorted(eq.items()):
         if sc.get("flag"):
             warnings.append(f"{cells[ck].cell_id}: embedding quality flag: {sc['flag']}")
+    for ck, sc in sorted(dq.items()):
+        if sc.get("flag"):
+            warnings.append(f"{cells[ck].cell_id}: decision quality flag: {sc['flag']} (warning only; the row stays in the rankings)")
+    for ck, c in cells.items():
+        if models.get(c.model).type == "decision" and targets[c.target].accelerator == "cpu":
+            warnings.append(f"{c.cell_id}: the decision model's server runs the torso in fp32 on CPU (the project's own setting), "
+                            "so this cell uses AVX-512, not AMX; its AMX verdict is not applicable.")
     for ck, per in sorted(tq.items()):
         for name, sc in sorted(per.items()):
             if sc.get("flag"):
@@ -540,7 +599,7 @@ def build_summary(inp: RunInputs, config_dir: Path = ROOT / "config") -> dict:
         if j["fair"] is False:
             warnings.append(f"UNFAIR PAIRING {j['cpu_target']} vs {j['gpu_target']}: {j['reason']}")
     return {"run_id": res["run_id"], "run": res["run"], "smoke": smoke, "rows": rows, "per_model": per_model,
-            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "translation_quality": tq, "embedding_quality": eq,
+            "amx": amx_v, "quality": qual, "dspm_accuracy": acc, "translation_quality": tq, "embedding_quality": eq, "decision_quality": dq,
             "intel_reference": intel_reference(run, models, config_dir), "prices": prices,
             "capacity_errors": inp.capacity, "bringup": inp.bringup, "hosts": inp.hosts, "warnings": warnings,
             "not_run": not_run, "dspm_hashes": res.get("dspm_hashes") or {}, "pairing": pairs,
@@ -644,6 +703,8 @@ def collect_warnings(rows, cells, models, amx_v, qual, smoke) -> list[str]:
         if m.non_commercial:
             w.append(f"{mid}: license {m.license} is non-commercial; results are for evaluation only.")
     for ck, v in sorted(amx_v.items()):
+        if v["verdict"] == "NOT_APPLICABLE":
+            continue                        # said once, in the decision warning below
         if v["verdict"] != "VERIFIED":
             w.append(f"{cells[ck].cell_id}: AMX {v['verdict']} ({v.get('reason')}); excluded from SLA and cost rankings.")
         if v.get("precision_flag"):
