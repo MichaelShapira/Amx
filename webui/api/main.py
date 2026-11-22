@@ -535,7 +535,87 @@ def _ai_context(w: Wizard) -> dict:
     watched = {t for t, _ in allowed["gpu"]} | {t for t, _ in allowed["cpu"]}
     return {"region": REGION, "az": "use1-az1", "price_snapshot": cat.get("price_snapshot"), "test": test, "models": models_ctx,
             "allowed": allowed, "fair_ratio": list(pairing.FAIR_RATIO), "current": current,
-            "capacity_notes": {k: v for k, v in _capacity_notes().items() if k in watched}, "_module": ai_propose}
+            "capacity_notes": {k: v for k, v in _capacity_notes().items() if k in watched},
+            "history": _run_history(list(w.models), w.use_case), "_module": ai_propose}
+
+
+def _run_history(model_ids: list[str], use_case: str, limit: int = 6) -> list[dict]:
+    """Finished runs that bear on this proposal, newest first: runs of the same model (any test), then runs of the
+    same test with another model, up to `limit`. Each is digested for the reasoning model (ai_propose.build_history_prompt):
+    the sizes that ran, per question the verdict and the best measurement on each side, the utilization sizing verdict
+    with its suggested size, capacity refusals and sides that never ran. Cached 10 minutes; a run whose report cannot
+    be read is skipped (the proposal must never fail because an old run is broken)."""
+    key = f"history:{','.join(sorted(model_ids))}:{use_case}"
+    hit = _CACHE.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    def fmt(v, unit=""):
+        return "-" if v is None else (f"{v:,.0f}{unit}" if abs(v) >= 100 else f"{v:.2f}{unit}")
+    same_model, same_test = [], []
+    try:
+        runs = [r for r in list_runs() if r.get("status") == "complete"]
+    except Exception:  # noqa: BLE001 - no history is not an error
+        runs = []
+    for r in runs:
+        if len(same_model) + len(same_test) >= limit * 2:
+            break
+        try:
+            sm = _summary(r["run_id"])
+        except Exception:  # noqa: BLE001
+            continue
+        run = sm.get("run") or {}
+        models = run.get("models") or []
+        if any(m in model_ids for m in models):
+            same_model.append((r, sm))
+        elif run.get("suite") == use_case:
+            same_test.append((r, sm))
+    picked = (same_model + same_test)[:limit]
+    out = []
+    for r, sm in picked:
+        run = sm.get("run") or {}
+        try:
+            an = compare.analyze([sm], compare.default_sla([sm]))
+        except Exception:  # noqa: BLE001
+            continue
+        rows = sm.get("rows") or []
+        gpu_types = sorted({x["instance_type"] for x in rows if x.get("accelerator") == "gpu"})
+        cpu_types = sorted({x["instance_type"] for x in rows if x.get("accelerator") == "cpu"})
+        questions = []
+        for g in an["groups"]:
+            u = g["units"]
+            def best(c):
+                if not c:
+                    return None
+                load = f"{c['conc']} at a time" + (f", batch {c['batch']}" if (c.get("batch") or 1) > 1 else "")
+                return {"instance_type": c["instance_type"], "load": load, "throughput": f"{fmt(c.get('throughput'))} {u['thr_label']}",
+                        "latency": f"{fmt(c.get('latency'))} ms {u['lat_label']}", "cost": f"${fmt(c.get('cost'))} {u['cost_label'][2:]}"}
+            sizing = []
+            for z in g.get("sizing") or []:
+                sug = z.get("suggestion") or None
+                sizing.append({"side": z["side"], "instance_type": z.get("instance_type"), "label": z.get("label"),
+                               "busy": f"{z['util_top']:.0f}%" if z.get("util_top") is not None else "unknown",
+                               "suggestion": {"instance_type": sug.get("instance_type"), "kind": sug.get("kind")} if sug else None})
+            questions.append({"label": g["label"], "verdict": (g.get("verdict") or {}).get("text") or "-",
+                              "best_gpu": best(g.get("best_gpu")), "best_cpu": best(g.get("best_cpu")), "sizing": sizing})
+        notes = []
+        for nr in sm.get("not_run") or []:
+            notes.append(f"{nr.get('side')} side ({nr.get('instance_type')}) did not run: {str(nr.get('reason'))[:160]}")
+        caps = sm.get("capacity_errors") or {}
+        refused = {}
+        for lst in caps.values():
+            for c in lst or []:
+                refused[c.get("instance_type")] = refused.get(c.get("instance_type"), 0) + 1
+        if refused:
+            notes.append("AWS refused for capacity: " + ", ".join(f"{t} x{n}" for t, n in sorted(refused.items())))
+        for w in (sm.get("warnings") or [])[:3]:
+            if "SMOKE" not in w:
+                notes.append(str(w)[:200])
+        out.append({"run_id": r["run_id"], "date": (r.get("updated_at") or "")[:10], "grade": r.get("grade"),
+                    "use_case": C.USE_CASES.get(run.get("suite"), {}).get("name", run.get("suite")),
+                    "models": [C.model_name(m) for m in run.get("models") or []], "gpu_type": ", ".join(gpu_types) or None,
+                    "cpu_type": ", ".join(cpu_types) or None, "questions": questions[:4], "notes": notes[:5]})
+    _CACHE[key] = (time.time(), out)
+    return out
 
 
 @app.post("/api/propose/ai")

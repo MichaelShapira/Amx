@@ -79,8 +79,14 @@ Answer with ONE fenced ```json block and nothing else, with exactly these keys:
   "checked": ["<one line per fact verified: what the web says and the source URL>"],
   "caveats": ["<one line each: unverified points, price differences, unproven serving support, risks>"],
   "confidence": "high" | "medium" | "low",
-  "sources": ["<URL>", "..."]
+  "sources": ["<URL>", "..."],
+  "history": "<only when EARLIER RUNS were given: 2-4 plain sentences on what they showed and whether they changed the choice>"
 }
+When the request is followed by EARLIER RUNS (finished measurements of this model, or of this test, on this very
+tool), weigh them against the web facts and give the FINAL verdict: those runs are measured facts about this exact
+setup and outrank general web claims when the two disagree. A size that ran saturated and missed the targets is
+too small; one that sat mostly idle is bigger than needed; a size AWS refused for capacity needs alternates; a
+size that ran well is a safe choice. Say in "history" what changed and why, or that the runs confirm the proposal.
 Keep "why" and "summary" free of instance-family jargon unless explained (e.g. "m8i, the current Intel
 generation with AMX"). Never name a size that is not in the allowed lists. Keep the whole answer short:
 each "why" and the "summary" at most 80 words, each list at most 6 items, nothing outside the JSON block."""
@@ -172,6 +178,33 @@ def build_prompt(ctx: dict) -> str:
     return "\n".join(L)
 
 
+HISTORY_LIMIT = 6            # earlier runs handed to the model, newest first
+
+
+def build_history_prompt(history: list[dict]) -> str:
+    """The earlier runs' facts (webui/api/main.py _run_history), compact, newest first: what ran, on which sizes, how
+    busy each side was, what the sizing verdict suggested, what AWS refused. Then the request for the final verdict."""
+    L = [f"EARLIER RUNS ON THIS TOOL ({len(history[:HISTORY_LIMIT])}, newest first). Measured here, same account and region:"]
+    for h in history[:HISTORY_LIMIT]:
+        L.append(f"\n- Run {h['run_id']} ({h.get('date') or '?'}; {h.get('grade') or 'full'} grade; {h.get('use_case')}; "
+                 f"model(s) {', '.join(h.get('models') or [])}; sizes: GPU {h.get('gpu_type') or 'none'}, CPU {h.get('cpu_type') or 'none'})")
+        for q in h.get("questions") or []:
+            L.append(f"  question: {q['label']}: {q['verdict']}")
+            for side in ("gpu", "cpu"):
+                b = q.get(f"best_{side}")
+                if b:
+                    L.append(f"    best {side.upper()}: {b['instance_type']} at {b['load']}: {b['throughput']}, {b['latency']}, {b['cost']}")
+            for z in q.get("sizing") or []:
+                sug = z.get("suggestion")
+                sug_txt = f"; suggests {sug['instance_type']} ({sug['kind']})" if sug and sug.get("instance_type") else ""
+                L.append(f"    sizing {z['side'].upper()} {z['instance_type']}: {z['label']} ({z['busy']} busy at the heaviest load){sug_txt}")
+        for n in h.get("notes") or []:
+            L.append(f"  note: {n}")
+    L.append("\nFINAL VERDICT: with the web facts you verified above AND these earlier runs, which GPU size and which CPU size "
+             "should this run use? Keep or change your proposal; answer with the same JSON block, including the \"history\" key.")
+    return "\n".join(L)
+
+
 # ----------------------------------------------------------------------------- the answer
 
 def parse_proposal(text: str, allowed: dict) -> tuple[dict | None, str | None]:
@@ -201,7 +234,8 @@ def parse_proposal(text: str, allowed: dict) -> tuple[dict | None, str | None]:
     conf = str(raw.get("confidence") or "").lower()
     return {"gpu": gpu, "cpu": cpu, "summary": _text(raw.get("summary")), "checked": _strs(raw.get("checked")),
             "caveats": _strs(raw.get("caveats")), "confidence": conf if conf in ("high", "medium", "low") else "medium",
-            "sources": [u for u in _strs(raw.get("sources")) if u.startswith(("http://", "https://"))]}, None
+            "sources": [u for u in _strs(raw.get("sources")) if u.startswith(("http://", "https://"))],
+            "history": _text(raw.get("history")) or None}, None
 
 
 def _extract_json(text: str) -> tuple[dict | None, str | None]:
@@ -276,13 +310,11 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
         stop = r.get("stopReason")
         return r
 
-    for _ in range(MAX_ROUNDS + 1):
-        r = turn()
-        msg = messages[-1]
-        if r.get("stopReason") != "tool_use":
-            break
+    def tool_round() -> None:
+        """Run every web_search the model asked for in its last message, within the budget; append the results."""
+        nonlocal calls
         results = []
-        for block in msg["content"]:
+        for block in messages[-1]["content"]:
             if "toolUse" not in block:
                 continue
             tu = block["toolUse"]
@@ -296,17 +328,47 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
             results.append({"toolResult": {"toolUseId": tu["toolUseId"], "content": [{"json": out}]}})
         messages.append({"role": "user", "content": results})
         job["tool_calls"] = calls
+
+    for _ in range(MAX_ROUNDS + 1):
+        if turn().get("stopReason") != "tool_use":
+            break
+        tool_round()
     else:
         text = text or "The reasoning model did not finish within its search budget. Try again."
-    proposal, problem = parse_proposal(text, ctx["allowed"])
-    repaired = False
-    if proposal is None:
-        # One repair round: a cut-off or malformed answer is asked again, shorter and JSON only.
-        repaired = True
+    def answer() -> tuple[dict | None, str | None, bool]:
+        """Parse the latest answer; one repair round when it is cut off or malformed (asked again, JSON only)."""
+        proposal, problem = parse_proposal(text, ctx["allowed"])
+        if proposal is not None:
+            return proposal, None, False
         job["steps"].append({"kind": "repair", "text": problem, "n": 0})
         messages.append({"role": "user", "content": [{"text": REPAIR_PROMPT.format(problem=problem)}]})
         turn()
         proposal, problem = parse_proposal(text, ctx["allowed"])
+        return proposal, problem, True
+
+    proposal, problem, repaired = answer()
+    # Second phase: the web facts are in the conversation; now the earlier runs of this model or test on this tool.
+    # The model weighs both and gives the final verdict. Only when something has run here, and only on a readable
+    # first proposal (the history cannot rescue an answer that never named allowed sizes).
+    first_proposal, history_n = None, 0
+    history = (ctx.get("history") or [])[:HISTORY_LIMIT]
+    if proposal is not None and history:
+        first_proposal, history_n = proposal, len(history)
+        job["steps"].append({"kind": "history", "n": history_n,
+                             "text": ", ".join(f"{h['run_id']} ({h.get('cpu_type') or '-'} vs {h.get('gpu_type') or '-'})" for h in history)})
+        messages.append({"role": "user", "content": [{"text": build_history_prompt(history)}]})
+        for _ in range(3):           # the verdict may still ask for a search or two within the budget
+            if turn().get("stopReason") != "tool_use":
+                break
+            tool_round()
+        final, final_problem, rep2 = answer()
+        repaired = repaired or rep2
+        if final is None:
+            # The verdict could not be read: keep the web-only proposal and say so, rather than lose a usable answer.
+            job["steps"].append({"kind": "repair", "text": f"final verdict unreadable ({final_problem}); kept the web-only proposal", "n": 0})
+            proposal["history"] = "Earlier runs were considered but the final verdict could not be read; this is the web-only proposal."
+        else:
+            proposal = final
     # Sources: what the proposal cites, then every result the model saw, titled from the search results.
     cited = list(proposal["sources"]) if proposal else [u.rstrip(").,") for u in re.findall(r"https?://[^\s)\]\"']+", text)]
     seen_urls: list[str] = []
@@ -314,9 +376,13 @@ def propose(ctx: dict, job: dict, *, bedrock=None, runtime=None, search=None) ->
         if u not in seen_urls:
             seen_urls.append(u)
     sources = [{"url": u, "title": job["seen"].get(u) or u} for u in seen_urls]
+    changed = bool(first_proposal and proposal and (first_proposal["gpu"]["instance_type"] != proposal["gpu"]["instance_type"]
+                                                     or first_proposal["cpu"]["instance_type"] != proposal["cpu"]["instance_type"]))
     return {"proposal": proposal, "problem": problem, "markdown": text if proposal is None else "", "model": model, "usage": usage,
             "tool_calls": calls, "seconds": round(time.time() - t0, 1), "sources": sources, "steps": job["steps"],
-            "repaired": repaired, "stop_reason": stop, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            "repaired": repaired, "stop_reason": stop, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "history_runs": history_n,
+            "web_only_proposal": ({"gpu": first_proposal["gpu"]["instance_type"], "cpu": first_proposal["cpu"]["instance_type"]} if changed else None)}
 
 
 # ----------------------------------------------------------------------------- jobs

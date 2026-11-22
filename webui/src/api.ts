@@ -61,16 +61,17 @@ export const defaultWizard: Wizard = {
 };
 
 // The AI hardware proposal (webui/api/ai_propose.py): reasoned per model with web search, validated against the allowed sizes.
-export interface AiStep { kind: "search" | "repair"; text: string; n?: number; error?: string | null }
+export interface AiStep { kind: "search" | "repair" | "history"; text: string; n?: number; error?: string | null }
 export interface AiProposal {
   gpu: { instance_type: string; why: string; alternates: string[] };
   cpu: { instance_type: string; why: string };
-  summary: string; checked: string[]; caveats: string[]; confidence: "high" | "medium" | "low"; sources: string[];
+  summary: string; checked: string[]; caveats: string[]; confidence: "high" | "medium" | "low"; sources: string[]; history?: string | null;
 }
 export interface AiResult {
   proposal: AiProposal | null; problem: string | null; markdown: string;
   model: { model_id: string; call_id: string; name: string; provider?: string }; usage: { inputTokens: number; outputTokens: number };
   tool_calls: number; seconds: number; sources: { url: string; title: string }[]; steps: AiStep[]; generated_at: string;
+  history_runs?: number; web_only_proposal?: { gpu: string; cpu: string } | null;
   repaired?: boolean; stop_reason?: string | null;
 }
 export interface AiJob { id: string; status: "running" | "done" | "error"; steps: AiStep[]; tool_calls: number; model: AiResult["model"] | null; seconds: number; error: string | null; result: AiResult | null }

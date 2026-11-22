@@ -417,7 +417,9 @@ function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applie
   const cat = useCatalog()!;
   const r = job.result;
   const p = r?.proposal ?? null;
-  const stepLine = (s: AiStep) => s.kind === "repair" ? `Asked again for a shorter, JSON-only answer (${s.text})` : `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})`;
+  const stepLine = (s: AiStep) => s.kind === "repair" ? `Asked again for a shorter, JSON-only answer (${s.text})`
+    : s.kind === "history" ? `Weighed ${s.n} earlier run${s.n === 1 ? "" : "s"} of this model or test on this tool against the web facts: ${s.text}`
+    : `Searched: “${s.text}” (${s.n ?? 0} results${s.error ? `, ${s.error}` : ""})`;
   const spec = (t: string) => cat.instances[t];
   const ratio = p && spec(p.gpu.instance_type) && spec(p.cpu.instance_type) ? spec(p.gpu.instance_type).usd_per_hour / spec(p.cpu.instance_type).usd_per_hour : null;
   const confKind = p?.confidence === "high" ? "ok" : p?.confidence === "low" ? "warn" : "accent";
@@ -458,6 +460,13 @@ function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applie
               <div className="small mt">{p.cpu.why}</div>
             </div>
           </div>
+          {p.history && (
+            <Note kind="ok">
+              <b>What earlier runs here showed.</b> {p.history}
+              {r.web_only_proposal && <span> From the web alone the proposal was {r.web_only_proposal.gpu} and {r.web_only_proposal.cpu}; the measured runs changed it.</span>}
+              {!r.web_only_proposal && r.history_runs ? <span> ({r.history_runs} finished run{r.history_runs === 1 ? "" : "s"} considered; they confirm the sizes.)</span> : null}
+            </Note>
+          )}
           <Note kind="ok">
             <b>Why this is a fair comparison.</b> {p.summary}
             {ratio != null && <span> The GPU costs <b>{ratio.toFixed(2)}x</b> as much per hour as the CPU{ratio >= cat.fair_ratio[0] && ratio <= cat.fair_ratio[1] ? ", inside this tool's fair band" : ", OUTSIDE this tool's fair band (half to double)"}.</span>}
@@ -469,7 +478,7 @@ function AiProposalView({ job, applied, onAgain, onApply }: { job: AiJob; applie
           {p.caveats.length > 0 && (
             <div className="mt"><div className="label">Good to know</div><ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{p.caveats.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
           )}
-          <details className="mt"><summary className="small">What was checked ({p.checked.length} facts, {r.tool_calls} web searches, {r.seconds} s)</summary>
+          <details className="mt"><summary className="small">What was checked ({p.checked.length} facts, {r.tool_calls} web searches{r.history_runs ? `, ${r.history_runs} earlier runs` : ""}, {r.seconds} s)</summary>
             <ul className="small muted mt">{p.checked.map((x, i) => <li key={i}>{x}</li>)}</ul>
             <div className="label mt">Searches</div>
             <ul className="small muted">{r.steps.map((s, i) => <li key={i}>{stepLine(s)}</li>)}</ul>

@@ -228,3 +228,69 @@ def test_ai_job_lifecycle_through_the_api(monkeypatch):
     assert c.get("/api/propose/ai/nope").status_code == 404
     assert c.post("/api/propose/ai", json={"models": []}).status_code == 400
     json.dumps(s)   # the status is plain JSON
+
+
+HISTORY = [{"run_id": "gemma-dspm-20261122T085327Z", "date": "2026-11-22", "grade": "full", "use_case": "Sensitive-data detection (DSPM / DLP)",
+            "models": ["Gemma 4 E4B Instruct"], "gpu_type": "g6.2xlarge", "cpu_type": "m8i.4xlarge",
+            "questions": [{"label": "Gemma 4 E4B · Inline DLP", "verdict": "To match one g6.2xlarge you need 15 x m8i.4xlarge.",
+                           "best_gpu": {"instance_type": "g6.2xlarge", "load": "16 at a time", "throughput": "79.5 documents/s", "latency": "207 ms", "cost": "$7.72 per GB"},
+                           "best_cpu": {"instance_type": "m8i.4xlarge", "load": "16 at a time", "throughput": "5.6 documents/s", "latency": "3,789 ms", "cost": "$94.84 per GB"},
+                           "sizing": [{"side": "gpu", "instance_type": "g6.2xlarge", "label": "Bigger than this load needs", "busy": "29%",
+                                       "suggestion": {"instance_type": "g6.xlarge", "kind": "smaller"}},
+                                      {"side": "cpu", "instance_type": "m8i.4xlarge", "label": "Too small for this load", "busy": "100%",
+                                       "suggestion": {"instance_type": "m8i.8xlarge", "kind": "bigger"}}]}],
+            "notes": ["AWS refused for capacity: g6.xlarge x4"]}]
+
+
+class HistoryRuntime(FakeRuntime):
+    """Searches once, proposes g6.2xlarge / m8i.4xlarge from the web, then changes the CPU to m8i.8xlarge once it sees the runs."""
+    def __init__(self):
+        super().__init__()
+        self.prompts: list[str] = []
+    def converse(self, **kw):
+        last = kw["messages"][-1]["content"]
+        if "text" in last[0]:
+            self.prompts.append(last[0]["text"])
+        if self.calls >= 1 and any("EARLIER RUNS ON THIS TOOL" in t for t in self.prompts[-1:]):
+            self.calls += 1
+            final = {**PROPOSAL, "cpu": {"instance_type": "m8i.8xlarge", "why": "The 4xlarge ran saturated at 100% in the earlier run."},
+                     "history": "The earlier DSPM run saturated the m8i.4xlarge and left the g6.2xlarge mostly idle; the CPU moves up one size."}
+            return {"stopReason": "end_turn", "usage": {"inputTokens": 500, "outputTokens": 150},
+                    "output": {"message": {"role": "assistant", "content": [{"text": "```json\n" + json.dumps(final) + "\n```"}]}}}
+        return super().converse(**kw)
+
+
+def test_history_prompt_carries_sizes_verdicts_sizing_and_refusals():
+    txt = A.build_history_prompt(HISTORY)
+    for part in ("EARLIER RUNS ON THIS TOOL (1", "gemma-dspm-20261122T085327Z", "GPU g6.2xlarge, CPU m8i.4xlarge", "Inline DLP",
+                 "best GPU: g6.2xlarge at 16 at a time: 79.5 documents/s", "sizing CPU m8i.4xlarge: Too small for this load (100% busy",
+                 "suggests m8i.8xlarge (bigger)", "AWS refused for capacity: g6.xlarge x4", "FINAL VERDICT"):
+        assert part in txt, part
+
+
+def test_propose_weighs_earlier_runs_after_the_web_search_and_reports_what_changed(settings_default):
+    from webui.api import main as M
+    ctx = M._ai_context(wizard())
+    ctx.pop("_module")
+    ctx["history"] = HISTORY
+    job, rt = A._new_job(), HistoryRuntime()
+    out = A.propose(ctx, job, bedrock=FakeBedrock(), runtime=rt, search=FakeSearch())
+    kinds = [s["kind"] for s in out["steps"]]
+    assert kinds == ["search", "search", "history"] and out["steps"][2]["n"] == 1 and "m8i.4xlarge vs g6.2xlarge" in out["steps"][2]["text"]
+    assert any("EARLIER RUNS ON THIS TOOL" in t for t in rt.prompts)        # the history went to the model AFTER the searches
+    assert rt.prompts.index(next(t for t in rt.prompts if "EARLIER RUNS" in t)) > 0
+    p = out["proposal"]
+    assert p["cpu"]["instance_type"] == "m8i.8xlarge" and p["gpu"]["instance_type"] == "g6.2xlarge"
+    assert "saturated" in p["history"]
+    assert out["history_runs"] == 1 and out["web_only_proposal"] == {"gpu": "g6.2xlarge", "cpu": "m8i.4xlarge"}
+
+
+def test_propose_without_earlier_runs_asks_once_and_has_no_history(settings_default):
+    from webui.api import main as M
+    ctx = M._ai_context(wizard())
+    ctx.pop("_module")
+    ctx["history"] = []
+    job, rt = A._new_job(), HistoryRuntime()
+    out = A.propose(ctx, job, bedrock=FakeBedrock(), runtime=rt, search=FakeSearch())
+    assert not any("EARLIER RUNS" in t for t in rt.prompts) and out["history_runs"] == 0 and out["web_only_proposal"] is None
+    assert out["proposal"]["cpu"]["instance_type"] == "m8i.4xlarge" and out["proposal"]["history"] is None
