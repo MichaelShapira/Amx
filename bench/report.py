@@ -663,6 +663,10 @@ def analysis_key(r: dict) -> str:
     return key
 
 
+def shown_precision(r: dict) -> str:
+    """What the cell actually ran, when the AMX evidence relabelled it (an fp16 cell that ran bf16, an OpenVINO bf16
+    cell that ran f32, the decision model's fp32 torso on CPU); otherwise the configured precision."""
+    return r.get("effective_precision") or r["precision"]
 def _row_ref(r: dict | None) -> dict | None:
     if r is None:
         return None
@@ -787,18 +791,18 @@ def to_markdown(s: dict, chart_names: list[str]) -> str:
                 mark = "**best GPU**"
             e2e = f"{_fmt(r['e2e_p1'], 0)}/{_fmt(r['e2e_p50'], 0)}/{_fmt(r['e2e_p99'], 0)}"
             if r.get("direction"):
-                body.append([r["target"], r["instance_type"], r["engine"], r["precision"], str(r["conc"]), e2e,
+                body.append([r["target"], r["instance_type"], r["engine"], shown_precision(r), str(r["conc"]), e2e,
                              _fmt(r["ttft_p50"], 0), _fmt(r["tpot_p50"]), _fmt(r["chars_s"], 0), _fmt(r["agg_out_tok_s"], 0),
                              _fmt(r["req_s"], 2), _fmt(r["error_pct"], 2), _fmt(r["usd_per_hour"], 3),
                              _fmt(r["usd_per_1m_chars"], 2), r["amx"] or "-", _fmt(r.get("chrf")), _fmt(r["quality_delta"], 3), mark])
             elif gen and not r["workload"]:
-                body.append([r["target"], r["instance_type"], r["engine"], r["precision"], str(r["conc"]), e2e,
+                body.append([r["target"], r["instance_type"], r["engine"], shown_precision(r), str(r["conc"]), e2e,
                              f"{_fmt(r['ttft_p1'], 0)}/{_fmt(r['ttft_p50'], 0)}/{_fmt(r['ttft_p99'], 0)}",
                              _fmt(r["tpot_p50"]), _fmt(r["prefill_tok_s_p50"], 0), _fmt(r["agg_out_tok_s"], 0),
                              _fmt(r["req_s"], 2), _fmt(r["error_pct"], 2), _fmt(r["usd_per_hour"], 3),
                              _fmt(r["usd_per_1m_tokens"], 2), r["amx"] or "-", _fmt(r["quality_delta"], 3), mark])
             else:
-                body.append([r["target"], r["instance_type"], r["engine"], r["precision"], str(r["conc"]), e2e,
+                body.append([r["target"], r["instance_type"], r["engine"], shown_precision(r), str(r["conc"]), e2e,
                              _fmt(r["docs_s"] if r["workload"] else r["cls_s"], 1), _fmt(r["error_pct"], 2),
                              _fmt(r["usd_per_hour"], 3),
                              _fmt(r["usd_per_1m_docs"] if r["workload"] else r["usd_per_1m_items"], 2),

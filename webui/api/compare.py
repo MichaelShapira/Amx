@@ -220,8 +220,9 @@ def _unit(r: dict) -> dict:
 
 def _series_name(r: dict) -> str:
     side = "GPU" if r["accelerator"] == "gpu" else "CPU"
-    eng = {"vllm": "vLLM", "ovms": "OpenVINO", "thin-openvino": "OpenVINO", "thin-torch": "PyTorch"}.get(r["engine"], r["engine"])
-    return f"{side} · {r['instance_type']} · {eng} · {r['precision']}"
+    eng = {"vllm": "vLLM", "ovms": "OpenVINO", "thin-openvino": "OpenVINO", "thin-torch": "PyTorch",
+           "decider": "Strands Decider"}.get(r["engine"], r["engine"])
+    return f"{side} · {r['instance_type']} · {eng} · {report.shown_precision(r)}"
 
 
 def _util_point(r: dict) -> dict | None:

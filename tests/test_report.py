@@ -185,3 +185,9 @@ def test_markdown_table_names_the_item_the_model_produces():
         per_model = {report.analysis_key(r): pm for r in rows}
         md = report.render({**s, "rows": rows, "per_model": per_model}, with_charts=False)["summary.md"].decode()
         assert f"| {item}/s |" in md and f"| $/1M {item} |" in md, (mt, md[:600])
+
+
+def test_shown_precision_is_what_the_cell_ran():
+    assert report.shown_precision({"precision": "bf16", "effective_precision": "fp32"}) == "fp32"
+    assert report.shown_precision({"precision": "bf16", "effective_precision": None}) == "bf16"
+    assert report.shown_precision({"precision": "w8a8"}) == "w8a8"
