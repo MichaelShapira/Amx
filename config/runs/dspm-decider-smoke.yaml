@@ -1,0 +1,28 @@
+# Smoke: the Strands Decider E4B on the DSPM/DLP suite, inline DLP (W3, Allow/Block) and the short bulk scan (W1),
+# both sides. The policy question is asked as one typed decision (bench/dspm.py decision_questions) and scored
+# against the same gold labels as the chat models. ~40 minutes; the CPU side runs the torso in fp32.
+run:
+  name: dspm-decider-smoke
+  suite: dspm
+  mode: smoke
+  account: "346399954218"
+  region: us-east-1
+  az_id: use1-az1
+  models: [d1-strands-decider-e4b]
+  cells:
+    - {target: t1-g6, precision: bf16}
+    - {target: t2-m8i-4xl, precision: bf16}
+  prompt_set: dspm
+  dspm: {workloads: [W3, W1], sla_preset: inline_standard, test_items: 200, prefix_caching: true}
+  concurrency: [1, 4]
+  per_level: {requests: 50}
+  repeats: 1
+  warmup_requests: 20
+  request_timeout_s: 300
+  quality: {enabled: false}
+  sla: {p99_e2e_ms: 1000, max_error_pct: 1.0}
+  capacity: {max_cpu_instances_per_gpu: 4}
+  purchase: {type: spot, spot_fallback_on_demand: true}
+  instance_types: {t1-g6: g6.xlarge, t2-m8i-4xl: m8i.4xlarge}
+  alternates: {t1-g6: [g5.xlarge, g6.2xlarge]}
+  stop_targets_after_run: true

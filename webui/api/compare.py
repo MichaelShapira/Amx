@@ -199,9 +199,6 @@ def _group_key(r: dict) -> tuple[str, str]:
 
 
 def _unit(r: dict) -> dict:
-    if r.get("model_type") == "decision":
-        return {"thr": "cls_s", "thr_label": "decisions/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M decisions",
-                "lat": "e2e_p99", "lat_label": "whole decision, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("model_type") == "embedding":
         return {"thr": "cls_s", "thr_label": "embeddings/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M embeddings",
                 "lat": "e2e_p99", "lat_label": "whole request, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
@@ -210,6 +207,9 @@ def _unit(r: dict) -> dict:
                 "lat": "e2e_p99", "lat_label": "whole translation, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("workload"):
         return {"thr": "docs_s", "thr_label": "documents/s", "cost": "usd_per_gb", "cost_label": "$ per GB scanned",
+                "lat": "e2e_p99", "lat_label": "whole decision, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
+    if r.get("model_type") == "decision":          # after the workload: in the DSPM suite a decision model's rows are documents
+        return {"thr": "cls_s", "thr_label": "decisions/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M decisions",
                 "lat": "e2e_p99", "lat_label": "whole decision, 99th pct (ms)", "lat_sla": "p99_e2e_ms"}
     if r.get("kind") == "classifier":
         return {"thr": "cls_s", "thr_label": "classifications/s", "cost": "usd_per_1m_items", "cost_label": "$ per 1M classifications",

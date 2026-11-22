@@ -155,8 +155,15 @@ class ModelSpec(Strict):
     # so no DSPM rules (standard suite only).
     DSPM_SHIPPED: ClassVar[frozenset[str]] = frozenset({"M1", "M2", "M3", "M4", "M5", "D1", "D2"})
 
+    # Decision models (Strands Decider) answer the policy question as a typed decision (bench/dspm.py
+    # decision_questions): one profile for every size. Their slots are A1, A2, ... (A for agent decisions): the
+    # D-slots are the DSPM design's span detectors, and a decision model on slot D1 was planned as one.
+    DSPM_DECISION: ClassVar[str] = "DEC"
+
     @property
     def dspm_profile(self) -> str | None:
+        if self.type == "decision":
+            return self.DSPM_DECISION
         base = self.slot.split("-")[0]
         if base in self.DSPM_SHIPPED:
             return base

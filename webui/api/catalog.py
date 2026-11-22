@@ -109,7 +109,12 @@ MODELS = {
     "d1-strands-decider-e4b": ("Strands Decider E4B", "AWS Strands Labs' decision model on Gemma 4 E4B: a LoRA adapter and a pointer "
                                                       "readout replace the text-writing head, so it picks between options and rates on "
                                                       "scales with a calibrated confidence (81% on JevBench). Served by the official "
-                                                      "strands-decider server on both sides; fp32 on CPU."),
+                                                      "strands-decider server on both sides; fp32 on CPU. In the DSPM/DLP suite it answers "
+                                                      "the policy question as one typed decision. Fits one L4 (g6.xlarge) and an m8i.4xlarge."),
+    "d2-strands-decider-12b": ("Strands Decider 12B", "The same decision model on Gemma 4 12B (87% on JevBench): 24 GB of bf16 weights, "
+                                                      "so the GPU side needs an L40S (pick the g6e.xlarge size) and the CPU side, which "
+                                                      "holds the torso in fp32, an m8i.8xlarge (128 GiB): a fair pair at about $1.9 and "
+                                                      "$1.7 per hour. Agent decisions and DSPM/DLP."),
     "e1-embeddinggemma-300m": ("EmbeddingGemma 300M", "Google's embedding model (Gemma-3-based), 0.3 billion parameters, "
                                                        "768-dimensional vectors, 100+ languages. The embedding model Intel's "
                                                        "catalog lists for Xeon. Embeddings use case only."),

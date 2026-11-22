@@ -433,7 +433,7 @@ def post_plan(w: Wizard):
                                           models.get(c.model), c.precision)
             except ValueError as e:
                 problems.append(str(e))
-        if c.engine == "decider" and tmap[c.target].accelerator == "cpu":
+        if c.engine == "decider":                    # host memory on CPU, GPU memory on GPU
             from bench import cellspec
             try:
                 cellspec.decider_host_check(models.get(c.model), tmap[c.target], rtypes[c.target])

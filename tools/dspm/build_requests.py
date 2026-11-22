@@ -38,7 +38,7 @@ def read_jsonl_gz(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-WINDOW = {"M5": 512, "M3": 512, "D2": 512}
+WINDOW = {"M5": 512, "M3": 512, "D2": 512, "DEC": 4096}     # DEC: the decider's validated max_length
 
 
 def _order(item_id: str, seed: int) -> str:
@@ -69,6 +69,12 @@ def render_line(model, tok, policy: dspm.Policy, item: dict, workload: str) -> d
     elif slot == "D2":
         s = roblox_format(text)
         line.update(input=s, prompt_tokens_expected=count_tokens(tok, s))
+    elif slot == "DEC":
+        # The decider's own request shape (state + typed questions, bench/decision.request_body); the token count
+        # covers the state and the question text the server appends.
+        state, qs = dspm.decision_state(text, workload, policy), dspm.decision_questions(workload)
+        q_text = " ".join(f"{q['instructions']} {' '.join(q.get('criteria') or [])}" for q in qs.values())
+        line.update(state=state, questions=qs, prompt_tokens_expected=count_tokens(tok, state + " " + q_text))
     else:
         raise ValueError(f"no DSPM request shape for slot {slot}")
     return line
@@ -140,6 +146,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", default="data/dspm/v1")
     ap.add_argument("--hf-token-secret", default=None)
+    ap.add_argument("--models", default=None,
+                    help="comma-separated model ids: build these pools only and merge them into the existing manifest "
+                         "(a new model added to the catalog); default: every enabled DSPM model, manifest from scratch")
     a = ap.parse_args(argv)
     token = None
     if a.hf_token_secret:
@@ -148,7 +157,14 @@ def main(argv=None) -> int:
         token = boto3.client("secretsmanager", region_name="us-east-1").get_secret_value(
             SecretId=a.hf_token_secret)["SecretString"]
     ds = ROOT / a.dataset
-    man = build(ds, ds / "requests", load_tokenizers(token))
+    if a.models:
+        from bench.config import load_models
+        from bench.prompts import tokenizer_for
+        cat = load_models(ROOT / "config/models.yaml")
+        models = [cat.get(mid) for mid in a.models.split(",")]
+        man = build_for_models(ds, ds / "requests", models, {m.id: tokenizer_for(m, token) for m in models}, merge=True)
+    else:
+        man = build(ds, ds / "requests", load_tokenizers(token))
     print(json.dumps({"pools": len(man["pool_sizes"]), "lines": sum(man["pool_sizes"].values())}))
     return 0
 

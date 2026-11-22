@@ -120,3 +120,52 @@ def test_decision_suite_refuses_other_models_and_wrong_prompt_set():
         resolve_cells(RunConfig.model_validate(base), MODELS, TARGETS)
     with pytest.raises(ValueError, match="short .* or long"):
         RunConfig.model_validate({**base, "models": ["d1-strands-decider-e4b"], "prompt_set": "medium"})
+
+
+def test_12b_needs_an_l40s_and_an_m8i_8xlarge_e4b_fits_the_defaults():
+    """The size check names the size that fits: g6.xlarge (L4, 22 GiB) cannot hold the 12B's 24 GB of bf16 weights,
+    g6e.xlarge (L40S) can; on CPU the fp32 torso wants ~51 GiB, so m8i.2xlarge (32 GiB) is refused."""
+    import pytest
+    e4b, b12 = MODELS.get("d1-strands-decider-e4b"), MODELS.get("d2-strands-decider-12b")
+    assert b12.slot == "A2" and b12.decision.base_repo == "google/gemma-4-12B-it" and "dspm" in b12.suites
+    cellspec.decider_host_check(e4b, TMAP["t1-g6"], "g6.xlarge")
+    cellspec.decider_host_check(e4b, TMAP["t2-m8i-4xl"], "m8i.4xlarge")
+    with pytest.raises(ValueError, match="GPU memory.*g6e.xlarge"):
+        cellspec.decider_host_check(b12, TMAP["t1-g6"], "g6.xlarge")
+    cellspec.decider_host_check(b12, TMAP["t1-g6"], "g6e.xlarge")
+    with pytest.raises(ValueError, match="host memory"):
+        cellspec.decider_host_check(b12, TMAP["t2-m8i-4xl"], "m8i.2xlarge")
+    cellspec.decider_host_check(b12, TMAP["t2-m8i-8xl"], "m8i.8xlarge")
+
+
+def test_decision_models_run_the_dspm_suite_as_one_typed_question():
+    """Profile DEC: every classification workload, never W5; the pool line is the server's own request shape and the
+    label is read from the answer block (noul at 0.5, choice among the policy's categories)."""
+    from bench import dspm
+    m = MODELS.get("d1-strands-decider-e4b")
+    assert m.dspm_profile == "DEC" and m.slot == "A1"            # not the DSPM design's D1 span detector
+    assert all("DEC" in plan.WORKLOAD_SLOTS[w] for w in ("W1", "W2", "W3", "W4")) and "DEC" not in plan.WORKLOAD_SLOTS["W5"]
+    pol = dspm.load_policy()
+    state = dspm.decision_state("Card 4111 1111 1111 1111", "W1", pol)
+    assert state.startswith(pol.text) and state.endswith("CONTENT:\n<<<\nCard 4111 1111 1111 1111\n>>>")
+    assert dspm.decision_questions("W1") == {"sensitive": {"type": "noul", "instructions": dspm.decision_questions("W1")["sensitive"]["instructions"]}}
+    assert list(dspm.decision_questions("W3")) == ["block"]
+    cat = dspm.decision_questions("W2")["category"]
+    assert cat["type"] == "choice" and tuple(cat["criteria"]) == dspm.CATEGORY_LABELS
+    line = {"id": "x", "item_id": "x", "bytes": 10, "state": state, "questions": dspm.decision_questions("W1")}
+    assert decision.request_body(line, 1) == {"state": state, "questions": line["questions"]}
+    assert dspm.decide("DEC", "W1", {"answers": {"sensitive": {"type": "noul", "noul": 0.51}}}) == "SENSITIVE"
+    assert dspm.decide("DEC", "W1", {"answers": {"sensitive": {"type": "noul", "noul": 0.49}}}) == "NOT_SENSITIVE"
+    assert dspm.decide("DEC", "W3", [{"answers": {"block": {"type": "noul", "noul": 0.9}}}]) == "BLOCK"
+    assert dspm.decide("DEC", "W2", {"answers": {"category": {"type": "choice", "choice": "GOV_ID", "confidence": 0.8}}}) == "GOV_ID"
+    assert dspm.decide("DEC", "W2", {"answers": {"category": {"type": "choice", "choice": "OTHER"}}}) is None  # fail closed
+    assert dspm.decide("DEC", "W1", {"answers": {}}) is None and dspm.decide("DEC", "W1", None) is None
+    run = load_run(ROOT / "config/runs/dspm-decider-smoke.yaml")
+    cells = resolve_cells(run, MODELS, TARGETS)
+    sizes = {plan.dspm_pool(m, "W1", "short"): 1000, plan.dspm_pool(m, "W1", "long"): 400, plan.dspm_pool(m, "W3", None): 900}
+    levels = plan.levels_for_cell(run, cells[0], m, run_id="r", bucket="b", pool_sizes=sizes)
+    acc = [lv for lv in levels if lv["accuracy"]]
+    assert {lv["name"] for lv in acc} == {"W1-short-accuracy", "W1-long-accuracy", "W3-accuracy"}
+    assert all(lv["api_task"] == "decide" and lv["payload"] == {"questions": 1} and lv["batch"] == 1 for lv in levels)
+    assert acc[0]["pool"]["size"] == run.dspm.test_items
+    assert len(cells) == 2 and {c.engine for c in cells} == {"decider"}

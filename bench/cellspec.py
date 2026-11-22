@@ -83,16 +83,29 @@ def weights_gib(model: ModelSpec, precision: str) -> float:
     return model.params * per / 2**30
 
 
+GPU_HEADROOM_GIB = 4           # CUDA context, the adapter, the readout head and activations at max_batch
+
+
 def decider_host_check(model: ModelSpec, target: TargetSpec, instance_type: str | None) -> None:
-    """A decision model's server holds the whole torso in fp32 on CPU (the project's setting): refuse a host that
-    cannot hold it with headroom, with the size it needs (the plan and the pre-check both show the message)."""
+    """A decision model's server holds the whole torso: in fp32 on CPU (the project's setting), in bf16 on one GPU
+    (no tensor split). Refuse a size that cannot hold it, naming the size it needs (the plan and the pre-check both
+    show the message): the 12B's 24 GB of bf16 weights do not fit an L4 (g6.xlarge, 22 GiB) but fit an L40S (g6e)."""
     from bench.pairing import spec
     assert model.decision is not None
-    host = spec(instance_type or target.instance_type or "") or {}
+    itype = instance_type or target.instance_type or ""
+    host = spec(itype) or {}
+    if target.accelerator == "gpu":
+        need = model.params * 2 / 2**30 + GPU_HEADROOM_GIB
+        have = host.get("gpu_memory_gib")
+        if have and have < need:
+            raise ValueError(f"{model.id} needs about {need:.0f} GiB of GPU memory (the decision model's server holds the "
+                             f"{model.params / 1e9:.1f}B torso in bf16 on one GPU); {itype} has {have:.0f} GiB. Pick a size with a "
+                             f"larger GPU (g6e.xlarge, L40S 45 GiB, pairs fairly with m8i.8xlarge).")
+        return
     need = model.params * (4 if model.decision.cpu_dtype == "fp32" else 2) / 2**30 + HOST_HEADROOM_GIB
     if host.get("memory_gib") and host["memory_gib"] < need:
         raise ValueError(f"{model.id} needs about {need:.0f} GiB of host memory on CPU (the decision model's server holds the "
-                         f"{model.params / 1e9:.1f}B torso in {model.decision.cpu_dtype}); {instance_type or target.instance_type} has "
+                         f"{model.params / 1e9:.1f}B torso in {model.decision.cpu_dtype}); {itype} has "
                          f"{host['memory_gib']:.0f} GiB. Pick a larger size.")
 
 
@@ -182,8 +195,7 @@ def docker_argv(cell: ResolvedCell, model: ModelSpec, target: TargetSpec, run: R
         # The official strands-decider server (servers/decider): the adapter dir is {MODEL_DIR}, the Gemma torso
         # {BASE_DIR}; the entrypoint lays both into an offline Hub cache and runs `strands-decider serve`.
         assert model.decision is not None
-        if not gpu:
-            decider_host_check(model, target, instance_type)
+        decider_host_check(model, target, instance_type)
         env = {
             "DECIDER_CHECKPOINT": "{MODEL_DIR}", "DECIDER_BASE_DIR": "{BASE_DIR}", "DECIDER_BASE_REPO": model.decision.base_repo,
             "DECIDER_BASE_REVISION": model.decision.base_revision, "DECIDER_MODEL_ID": model.id,

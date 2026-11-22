@@ -273,7 +273,7 @@ def test_live_catalog_takes_shipped_definitions_from_the_seed_and_keeps_setup_ch
     assert "m7-gemma-4-e2b" not in ids                                                     # removed in Setup stays removed
     assert "m6-gemma-4-e4b" in ids                                                           # new in the seed: present
     assert ids[-1] == "u-added" and live.models[-1].hf_repo == "org/added"                   # Setup's addition kept
-    assert live.size_cap_b == seed.size_cap_b == 8.0 and live.removed == ["m7-gemma-4-e2b"]
+    assert live.size_cap_b == seed.size_cap_b == 12.0 and live.removed == ["m7-gemma-4-e2b"]
 
 
 # ------------------------------------------------------------------------- the prompt corpus

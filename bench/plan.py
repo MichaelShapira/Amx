@@ -15,8 +15,9 @@ GENERATIVE = ("decoder", "encoder-decoder")
 CLASSIFIER_SETS = {"short": "short", "medium": "cls512", "long": "cls512", "xlong": "cls512"}
 
 # DSPM/DLP workloads (design 24.1): models and concurrency levels per workload.
-WORKLOAD_SLOTS = {"W1": {"M1", "M2", "M4", "M5", "M3", "D1"}, "W2": {"M1", "M2", "M4", "M5"},
-                  "W3": {"M1", "M2", "M4", "M5", "M3", "D1", "D2"}, "W4": {"M1", "M2", "M4"},
+# DEC = decision models (Strands Decider): every classification workload, never W5 (free-text redaction).
+WORKLOAD_SLOTS = {"W1": {"M1", "M2", "M4", "M5", "M3", "D1", "DEC"}, "W2": {"M1", "M2", "M4", "M5", "DEC"},
+                  "W3": {"M1", "M2", "M4", "M5", "M3", "D1", "D2", "DEC"}, "W4": {"M1", "M2", "M4", "DEC"},
                   "W5": {"M1", "M2", "M4"}}
 WORKLOAD_LEVELS = {"W1": (8, 16, 32, 64), "W2": (16, 32), "W3": (1, 4, 8, 16), "W4": (8, 32), "W5": (4, 16)}
 WORKLOAD_BUCKETS = {"W1": ("short", "long"), "W2": ("short",), "W3": (None,), "W4": (None,), "W5": (None,)}
@@ -236,7 +237,12 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             if bkt == "long" and (model.dspm_profile in SHORT_ONLY_SLOTS or model.max_input_tokens < 2560):
                 continue
             key = dspm_pool(model, wl, bkt)
-            payload = dspm_payload(model, wl, variant) if model.type in GENERATIVE else {"model": model.id}
+            if model.type in GENERATIVE:
+                payload = dspm_payload(model, wl, variant)
+            elif model.type == "decision":
+                payload = {"questions": 1}            # the pool line carries the one question of the workload
+            else:
+                payload = {"model": model.id}
             name = wl if bkt is None else f"{wl}-{bkt}"
             add(f"{name}-accuracy", key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl)
             if model.dspm_profile in DEV_THRESHOLD_SLOTS:

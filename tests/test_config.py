@@ -27,7 +27,7 @@ def targets():
 
 
 def test_catalogs_load(models, targets):
-    assert {m.slot for m in models.models} == {"M1", "M3", "M5", "M6", "M7", "E1", "D1"}
+    assert {m.slot for m in models.models} == {"M1", "M3", "M5", "M6", "M7", "E1", "A1", "A2"}
     resolved = targets.resolved()
     assert resolved["t2-c8i-4xl"].instance_type == "c8i.4xlarge"
     # inherited env survives a partial override
@@ -57,7 +57,7 @@ def test_unpinned_revision_rejected():
 def test_size_cap_enforced():
     raw = _strip_anchors(load_yaml("config/models.yaml"))
     bad = copy.deepcopy(raw)
-    bad["models"][0]["nominal_size_b"] = 9.0          # the cap is 8B since Gemma 4 E4B (M6)
+    bad["models"][0]["nominal_size_b"] = 13.0         # the cap is 12B since the Strands Decider 12B (A2)
     with pytest.raises(ValidationError, match="exceeds cap"):
         ModelCatalog.model_validate(bad)
 
@@ -137,7 +137,7 @@ def test_retired_options_and_models_are_disabled_not_deleted(models, targets):
     assert not tmap["t3-m8i-4xl-ov"].enabled and not tmap["t4-m8i-4xl-torch"].enabled and tmap["t2-m8i-4xl"].enabled
     assert not models.get("m5-flan-t5-xl").enabled
     assert {m.id for m in models.models if m.enabled} == {"m1-qwen3-1.7b", "m3-roberta-large-mnli", "m6-gemma-4-e4b",
-                                                           "m7-gemma-4-e2b", "e1-embeddinggemma-300m", "d1-strands-decider-e4b"}
+                                                           "m7-gemma-4-e2b", "e1-embeddinggemma-300m", "d1-strands-decider-e4b", "d2-strands-decider-12b"}
     for m in models.models:
         if m.enabled:
             want = ["decider"] if m.type == "decision" else ["vllm"]

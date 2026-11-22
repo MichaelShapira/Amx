@@ -89,6 +89,51 @@ D2_GIVING_PII = 1            # roblox-pii-classifier-v2 label order
 D2_THRESHOLD = 0.55          # model card recommendation for privacy_giving_pii
 
 
+# Decision models (Strands Decider, profile DEC): the same policy and content as the chat models get, but asked
+# as ONE typed question instead of a label to generate. Binary workloads are a yes/no (noul) question read at
+# 0.5; the category workloads a choice over the policy's categories, each option carrying the policy's own
+# definition as its criterion. The model writes no text, so there is no format failure to parse.
+DECISION_CRITERIA = {
+    "GOV_ID": "a social security, passport, driver's license, national ID or tax ID number",
+    "PERSONAL": "a person identified by full name together with a birth date, home address, personal phone or email, "
+                "precise location, or a special-category fact (ethnicity, religion, politics, sexual orientation, biometrics)",
+    "FINANCIAL": "a payment card number or security code, a bank account number or IBAN, or routing and account numbers together",
+    "HEALTH": "a diagnosis, treatment, medical record number, blood type or health insurance ID tied to a person",
+    "CREDENTIALS": "an API key, access token, password, PIN, private key, session cookie, JWT or a connection string with a password",
+    "CONFIDENTIAL": "business content marked confidential or internal only: unannounced deals, unreleased results, roadmaps, "
+                    "customer lists, internal-only source code",
+    "NONE": "nothing in the content is sensitive under the policy (masked, placeholder, documentation and public values included)",
+}
+DECISION_QUESTION = {"W1": "sensitive", "W2": "category", "W3": "block", "W4": "category"}
+def decision_state(text: str, workload: str, policy: Policy) -> str:
+    """The decider's state: the full policy (what the chat models get as their system prompt), the workload's framing
+    and the content, fenced the same way as decoder_user_message."""
+    return f"{policy.text}\n\n{INSTRUCTIONS[workload]}\n\nCONTENT:\n<<<\n{text}\n>>>"
+def decision_questions(workload: str) -> dict[str, dict]:
+    """The one question per workload, in the server's request shape (bench/decision.request_body)."""
+    if workload in CATEGORY_WORKLOADS:
+        return {"category": {"type": "choice", "criteria": dict(DECISION_CRITERIA),
+                             "instructions": "Which sensitive category does the CONTENT fall under? When several apply, pick the "
+                                             "one listed first in the policy; NONE if nothing in it is sensitive."}}
+    if workload == "W3":
+        return {"block": {"type": "noul", "instructions": "Should this message be blocked before it leaves the company "
+                                                           "because it contains sensitive data under the policy?"}}
+    return {"sensitive": {"type": "noul", "instructions": "Does the CONTENT contain sensitive data under the policy?"}}
+def decide_decision(workload: str, output: dict | list | None) -> str | None:
+    """The label from a decider answer block ({"answers": ...}, as lambdas/worker.py keeps it). An unexpected answer
+    shape or an unknown category is None, which the scorer counts as positive (fail closed), like a format failure."""
+    from bench.decision import parse_answers
+    if isinstance(output, list):          # a one-row prediction list (aggregate wraps batched outputs)
+        output = output[0] if output else None
+    if not isinstance(output, dict):
+        return None
+    a = parse_answers(output).get(DECISION_QUESTION[workload])
+    if a is None or a.get("value") is None:
+        return None
+    if workload in CATEGORY_WORKLOADS:
+        return a["value"] if a["value"] in CATEGORY_LABELS else None
+    pos, neg = BINARY[workload]
+    return pos if float(a["value"]) >= 0.5 else neg
 def answer_line(workload: str) -> str:
     if workload in CATEGORY_WORKLOADS:
         return "Answer with exactly one label from: " + ", ".join(CATEGORY_LABELS) + \
@@ -185,4 +230,6 @@ def decide(slot: str, workload: str, output: list[dict] | None, *, threshold: fl
         return decide_d1(workload, output)
     if slot == "D2":
         return decide_d2(workload, output)
+    if slot == "DEC":
+        return decide_decision(workload, output)
     raise ValueError(f"no DSPM decision rule for slot {slot}")
