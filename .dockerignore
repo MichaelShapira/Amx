@@ -5,6 +5,7 @@
 !servers/__init__.py
 !servers/thin/**
 !servers/export/**
+!servers/decider/**
 !bench/**
 !lambdas/**
 !tools/**
