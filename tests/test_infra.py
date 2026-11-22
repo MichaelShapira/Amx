@@ -248,3 +248,18 @@ def test_webapp_role_is_least_privilege(templates):
     task_roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"
                   and r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] == "ecs-tasks.amazonaws.com"]
     assert len(task_roles) == 2 and all("ManagedPolicyArns" not in r["Properties"] for r in task_roles)   # task + execution
+
+
+def test_aggregate_run_can_read_every_label_source(templates):
+    """The run aggregator scores against labels: DSPM's dataset (datasets/*) and the decision pools, whose gold
+    labels live in the prompt artifact (plan.decision_pool). Missing the latter failed the first decision run's
+    aggregation with AccessDenied (2026-11-22)."""
+    core = templates["core"].to_json()["Resources"]
+    pol = [r for lid, r in core.items() if r["Type"] == "AWS::IAM::Policy" and "FnAggregateRun" in lid]
+    assert pol, "aggregate-run role policy not found"
+    gets = [s for p in pol for s in p["Properties"]["PolicyDocument"]["Statement"]
+            if "s3:GetObject" in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])]
+    text = json.dumps([s["Resource"] for s in gets])
+    for prefix in ("datasets/*", "artifacts/prompts/*", "runs/*"):
+        assert prefix in text, prefix
+    assert "artifacts/*" not in text  # labels only, not the whole artifact tree

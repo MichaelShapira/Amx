@@ -216,7 +216,8 @@ class CoreStack(Stack):
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["cloudwatch:GetMetricData"], resources=["*"]))
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         agg_run.add_to_role_policy(s3_list)
-        agg_run.add_to_role_policy(s3_get("runs/*", "datasets/*", "config/models.yaml"))   # the live model catalog
+        # datasets/*: the DSPM labels; artifacts/prompts/*: the decision pools carry their gold labels (plan.decision_pool).
+        agg_run.add_to_role_policy(s3_get("runs/*", "datasets/*", "artifacts/prompts/*", "config/models.yaml"))
         agg_run.add_to_role_policy(s3_put("runs/*/report/*"))
         agg_run.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         preflight.add_to_role_policy(s3_list)
