@@ -12,6 +12,7 @@ Icons are draw.io's AWS 2024 resource icons (mxgraph.aws4.*); the export needs
 from __future__ import annotations
 
 import html
+import re
 import shutil
 import subprocess
 import sys
@@ -23,11 +24,11 @@ DRAWIO_APP = Path("/Applications/draw.io.app/Contents/MacOS/draw.io")
 
 AWS = {"compute": "#ED7100", "storage": "#7AA116", "database": "#3B48CC", "network": "#8C4FFF", "security": "#DD344C",
        "management": "#E7157B", "integration": "#E7157B", "ml": "#01A88D"}
-GROUP = ("outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=0;container=1;pointerEvents=0;"
+GROUP = ("outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=18;fontStyle=1;container=1;pointerEvents=0;"
          "collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;verticalAlign=top;align=left;spacingLeft=30;")
-TEXT = "text;html=1;whiteSpace=wrap;align=center;verticalAlign=top;fontSize=10;fontColor=#232F3E;"
-BOX = "rounded=1;whiteSpace=wrap;html=1;fontSize=11;"
-EDGE = "edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;fontColor=#232F3E;strokeColor=#232F3E;labelBackgroundColor=#FFFFFF;"
+TEXT = "text;html=1;whiteSpace=wrap;align=center;verticalAlign=top;fontSize=15;fontColor=#232F3E;"
+BOX = "rounded=1;whiteSpace=wrap;html=1;fontSize=15;"
+EDGE = "edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=14;fontColor=#232F3E;strokeColor=#232F3E;strokeWidth=2;labelBackgroundColor=#FFFFFF;"
 
 
 def _label(text: str) -> str:
@@ -53,20 +54,20 @@ class Diagram:
 
     def plain_group(self, cid: str, label: str, x: int, y: int, w: int, h: int, stroke: str, parent: str = "1") -> str:
         style = (f"rounded=1;whiteSpace=wrap;html=1;dashed=1;strokeColor={stroke};fillColor=none;verticalAlign=top;align=left;"
-                 f"fontStyle=1;fontSize=12;spacingLeft=8;spacingTop=2;fontColor={stroke};container=1;")
+                 f"fontStyle=1;fontSize=18;spacingLeft=8;spacingTop=4;fontColor={stroke};container=1;")
         self.cells.append(f'<mxCell id="{cid}" value="{_label(label)}" style="{style}" vertex="1" parent="{parent}">'
                           f'<mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry"/></mxCell>')
         return cid
 
-    def icon(self, cid: str, name: str, color: str, label: str, x: int, y: int, *, parent: str = "1", label_w: int = 150) -> str:
+    def icon(self, cid: str, name: str, color: str, label: str, x: int, y: int, *, parent: str = "1", label_w: int = 190) -> str:
         style = (f"sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor={color};strokeColor=none;dashed=0;"
-                 f"verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;aspect=fixed;"
+                 f"verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=15;aspect=fixed;"
                  f"shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.{name};")
         self.cells.append(f'<mxCell id="{cid}" value="" style="{style}" vertex="1" parent="{parent}">'
-                          f'<mxGeometry x="{x}" y="{y}" width="52" height="52" as="geometry"/></mxCell>')
+                          f'<mxGeometry x="{x}" y="{y}" width="64" height="64" as="geometry"/></mxCell>')
         tid = self._id("t")
         self.cells.append(f'<mxCell id="{tid}" value="{_label(label)}" style="{TEXT}" vertex="1" parent="{parent}">'
-                          f'<mxGeometry x="{x + 26 - label_w // 2}" y="{y + 56}" width="{label_w}" height="60" as="geometry"/></mxCell>')
+                          f'<mxGeometry x="{x + 32 - label_w // 2}" y="{y + 68}" width="{label_w}" height="80" as="geometry"/></mxCell>')
         return cid
 
     def box(self, cid: str, label: str, x: int, y: int, w: int, h: int, style: str = "", parent: str = "1") -> str:
@@ -95,77 +96,68 @@ class Diagram:
 
 
 def build() -> Diagram:
+    """Labels are a name and one short line: at page width a 15 px label renders at about 11 px, and the Technical
+    details page carries the long explanations. Every cell is a child of the root layer so edges route freely."""
     d = Diagram()
-    # ---- containers (absolute coordinates: every cell is a child of the root layer, so edges route freely)
-    d.group("cloud", "AWS account · us-east-1 (CDK stacks AmxBench-Network, -Core, -WebApp)", 240, 20, 1270, 940,
+    # ---- containers
+    d.group("cloud", "AWS account · us-east-1 (CDK stacks AmxBench-Network, -Core, -WebApp)", 300, 20, 1560, 1120,
             icon="group_aws_cloud_alt", stroke="#232F3E")
-    d.plain_group("entry", "Public entry", 270, 60, 300, 230, "#8C4FFF")
-    d.plain_group("orch", "Run orchestration (Core stack)", 600, 60, 520, 230, "#E7157B")
-    d.plain_group("data", "State, data and images", 1150, 60, 340, 540, "#7AA116")
-    d.plain_group("ai", "Reasoning", 1150, 630, 340, 300, "#01A88D")
-    d.group("vpc", "Bench VPC: private subnets with NAT egress; nothing has a public IP", 270, 320, 850, 610,
+    d.plain_group("entry", "Public entry", 330, 70, 400, 260, "#8C4FFF")
+    d.plain_group("orch", "Run orchestration (Core stack)", 760, 70, 640, 260, "#E7157B")
+    d.plain_group("data", "State, data and images", 1430, 70, 410, 640, "#7AA116")
+    d.plain_group("ai", "Reasoning", 1430, 750, 410, 350, "#01A88D")
+    d.group("vpc", "Bench VPC: private subnets, NAT egress, no public IPs", 330, 370, 1070, 730,
             icon="group_vpc2", stroke="#8C4FFF", font="#8C4FFF")
-    d.group("subnet", "Private subnet", 290, 360, 810, 550, icon="group_security_group", stroke="#00A4A6", fill="#E6F6F7", font="#147EBA")
-    d.plain_group("web", "Web application (WebApp stack)", 310, 400, 270, 220, "#147EBA")
-    d.group("hosts", "Test hosts: one EC2 instance per hardware option, per run (Spot, On-Demand fallback)",
-            600, 400, 480, 480, icon="group_spot_fleet", stroke="#D86613")
-
+    d.group("subnet", "Private subnet", 355, 420, 1020, 655, icon="group_security_group", stroke="#00A4A6", fill="#E6F6F7", font="#147EBA")
+    d.plain_group("web", "Web application (WebApp stack)", 380, 470, 350, 260, "#147EBA")
+    d.group("hosts", "Test hosts: one EC2 instance per hardware option, per run", 760, 470, 590, 580,
+            icon="group_spot_fleet", stroke="#D86613")
     # ---- outside AWS
-    d.box("user", "Operator's browser\n(any network; identity from the Cognito user pool, operators group may start runs)", 40, 120, 170, 90,
-          "fillColor=#F5F5F5;strokeColor=#666666;")
-    d.box("hf", "Hugging Face Hub\npinned model revisions; token only for gated models", 40, 760, 170, 80, "fillColor=#FFF2CC;strokeColor=#D6B656;")
-
+    d.box("user", "Operator's browser\nsigned in through Cognito", 40, 130, 220, 90, "fillColor=#F5F5F5;strokeColor=#666666;")
+    d.box("hf", "Hugging Face Hub\npinned model revisions", 40, 900, 220, 80, "fillColor=#FFF2CC;strokeColor=#D6B656;")
     # ---- public entry
-    d.icon("cf", "cloudfront", AWS["network"], "CloudFront + WAF\nHTTPS only; rate limit, IP reputation, common rules", 300, 100)
-    d.icon("cognito", "cognito", AWS["security"], "Cognito user pool\nhosted login, code + PKCE; no self sign-up", 460, 100)
-
+    d.icon("cf", "cloudfront", AWS["network"], "CloudFront + WAF\nHTTPS, rate limits", 370, 120)
+    d.icon("cognito", "cognito", AWS["security"], "Cognito user pool\nhosted login, no self sign-up", 570, 120)
     # ---- orchestration
-    d.icon("sfn", "step_functions", AWS["integration"], "Step Functions\nrun state machine; one level state machine per measurement", 640, 100)
-    d.icon("lambda", "lambda", AWS["compute"], "Lambdas\npreflight · target_control · init_level · plan_wave · worker ×N (load) · warmup · quality · perf_counters · amx_probe · aggregate_level/run · reaper", 800, 100, label_w=190)
-    d.icon("ssm", "systems_manager", AWS["management"], "Systems Manager\nRun Command carries the host scripts' commands; parameters hold target launch templates", 990, 100)
-
+    d.icon("sfn", "step_functions", AWS["integration"], "Step Functions\nrun and level state machines", 800, 120)
+    d.icon("lambda", "lambda", AWS["compute"], "Lambdas\nplan, load workers, probes, aggregate", 1010, 120)
+    d.icon("ssm", "systems_manager", AWS["management"], "Systems Manager\nRun Command to the hosts", 1220, 120)
     # ---- data
-    d.icon("s3", "s3", AWS["storage"], "S3 bench bucket\nruns/<id>/ (plan, raw records, metrics, report) · artifacts/ (prompt pools, host scripts) · models/ (HF + OpenVINO IR cache) · config/models.yaml (live catalog) · datasets/", 1180, 100, label_w=160)
-    d.icon("ddb", "dynamodb", AWS["database"], "DynamoDB run table\nRUN# · CELL# · LEVEL# rows; SETTINGS (reasoning model, token status)", 1350, 100)
-    d.icon("secrets", "secrets_manager", AWS["security"], "Secrets Manager\nHugging Face token (written from Setup; read by hosts and the onboarding job)", 1180, 280)
-    d.icon("cw", "cloudwatch", AWS["management"], "CloudWatch\nAmxGpuBench metrics (CPU, memory, GPU per host, 10 s); Lambda and app logs", 1350, 280)
-    d.icon("ecr", "ecr", AWS["compute"], "ECR (CDK assets)\nthin-torch-cpu · thin-torch-cuda · thin-openvino · export · web app images", 1180, 460)
-    d.box("pub", "Public registries (pinned by digest)\nvLLM GPU (ECR Public DLC) · vLLM CPU (Docker Hub) · OpenVINO Model Server (Docker Hub)", 1300, 470, 170, 90,
-          "fillColor=#FFFFFF;strokeColor=#7AA116;fontSize=10;")
-
+    d.icon("s3", "s3", AWS["storage"], "S3 bucket\nruns, prompt pools, model cache, catalog", 1470, 120)
+    d.icon("ddb", "dynamodb", AWS["database"], "DynamoDB\nrun, cell and level status", 1680, 120)
+    d.icon("secrets", "secrets_manager", AWS["security"], "Secrets Manager\nHugging Face token", 1470, 320)
+    d.icon("cw", "cloudwatch", AWS["management"], "CloudWatch\nhost metrics every 10 s, logs", 1680, 320)
+    d.icon("ecr", "ecr", AWS["compute"], "ECR\nengine and web app images", 1470, 520)
+    d.box("pub", "Public registries\nvLLM GPU and CPU images, pinned by digest", 1640, 540, 180, 100,
+          "fillColor=#FFFFFF;strokeColor=#7AA116;")
     # ---- reasoning
-    d.icon("bedrock", "bedrock", AWS["ml"], "Amazon Bedrock\nClaude Opus (default; Setup → Reasoning model): hardware proposal, executive summary. AgentCore web search (InvokeWebSearch) grounds the proposal", 1290, 680, label_w=200)
-
+    d.icon("bedrock", "bedrock", AWS["ml"], "Amazon Bedrock\nClaude: hardware proposal, executive summary\nAgentCore web search", 1570, 810, label_w=260)
     # ---- web app
-    d.icon("nlb", "network_load_balancer", AWS["network"], "Internal NLB\nport 80 from CloudFront's origin-facing addresses only", 335, 450, label_w=120)
-    d.icon("fargate", "fargate", AWS["compute"], "ECS Fargate task (×1, task role)\nFastAPI API + React UI: wizard, Setup (catalog, token, model onboarding), Results, utilization, AI jobs", 485, 450, label_w=150)
-
+    d.icon("nlb", "network_load_balancer", AWS["network"], "Internal NLB\nreached only from CloudFront", 400, 530, label_w=150)
+    d.icon("fargate", "fargate", AWS["compute"], "ECS Fargate task\nFastAPI API + React UI", 580, 530, label_w=150)
     # ---- hosts
-    d.icon("gpu", "ec2", AWS["compute"], "GPU host (g6 L4, g6e L40S)\nvLLM GPU image or thin-torch-cuda", 640, 450)
-    d.icon("cpu", "ec2", AWS["compute"], "AMX CPU host (m8i, c8i: Xeon 6)\nvLLM CPU · OpenVINO Model Server · thin-openvino · thin-torch-cpu", 820, 450)
-    d.icon("agent", "cloudwatch", AWS["management"], "CloudWatch agent\non every host: cpu-total, memory, nvidia_smi every 10 s", 1000, 450)
-    d.box("flow", "On every host, per model × number format (scripts synced from s3://…/artifacts/host/ at boot):\n"
-                  "1. stage_model.sh — pinned weights from the S3 cache, else from Hugging Face (sha256-checked), then cached\n"
-                  "2. OpenVINO formats only: export container (optimum-intel / OVMS export_model.py) → IR, cached under models/ov/<hash>\n"
-                  "3. serve.sh — docker run of the engine image with the cell's options; health check; one real request\n"
-                  "4. Lambdas drive the load over HTTP inside the VPC; perf counters prove AMX use; raw records → S3",
-          620, 610, 440, 250, "align=left;verticalAlign=top;spacing=8;fontSize=10;fillColor=#FFFFFF;strokeColor=#9673A6;")
-
-    # ---- flows (short labels; the Technical details page explains each)
+    d.icon("gpu", "ec2", AWS["compute"], "GPU host\ng6 (L4) or g6e (L40S); vLLM", 800, 530, label_w=180)
+    d.icon("cpu", "ec2", AWS["compute"], "AMX CPU host\nm8i / c8i Xeon 6; vLLM CPU", 1020, 530, label_w=180)
+    d.icon("agent", "cloudwatch", AWS["management"], "CloudWatch agent\nCPU, memory, GPU samples", 1230, 530, label_w=150)
+    d.box("flow", "On every host, per model and number format:\n"
+                  "1. stage the pinned weights (S3 cache, else Hugging Face)\n"
+                  "2. start the engine container, check its health\n"
+                  "3. Lambdas send the load over HTTP inside the VPC\n"
+                  "4. perf counters prove AMX use; raw records go to S3",
+          790, 740, 530, 270, "align=left;verticalAlign=top;spacing=12;fillColor=#FFFFFF;strokeColor=#9673A6;")
+    # ---- flows
     d.edge("user", "cf", "HTTPS")
     d.edge("cf", "cognito", "sign-in", dashed=True)
     d.edge("cf", "nlb", "VPC origin", exit=(0.5, 1), entry=(0.5, 0))
     d.edge("nlb", "fargate", "HTTP 8080")
-    d.edge("web", "orch", "start / stop runs", exit=(0.75, 0), entry=(0.25, 1), via=[(512, 300), (730, 300)])
-    d.edge("web", "data", "state, data, secret, metrics", exit=(0.3, 0), entry=(0, 0.6), via=[(391, 340), (1125, 340), (1125, 384)])
-    d.edge("web", "ai", "proposal, summary", exit=(0.5, 1), entry=(0, 0.5), via=[(445, 900), (1125, 900), (1125, 780)])
-    d.edge("orch", "hosts", "launch, SSM commands, HTTP load", exit=(0.75, 1), entry=(0.5, 0))
+    d.edge("web", "orch", "start / stop runs", exit=(0.75, 0), entry=(0.25, 1), via=[(642, 350), (920, 350)])
+    d.edge("web", "data", "state, data, metrics", exit=(0.3, 0), entry=(0, 0.6), via=[(485, 395), (1410, 395), (1410, 454)])
+    d.edge("web", "ai", "proposal, summary", exit=(0.5, 1), entry=(0, 0.5), via=[(555, 1085), (1410, 1085), (1410, 925)])
+    d.edge("orch", "hosts", "launch, commands, load", exit=(0.75, 1), entry=(0.5, 0))
     d.edge("orch", "data", "plan, metrics, state", exit=(1, 0.3), entry=(0, 0.08))
-    d.edge("hosts", "data", "model cache, records, metrics, images", exit=(1, 0.5), entry=(0, 0.85))
+    d.edge("hosts", "data", "model cache, records, images", exit=(1, 0.5), entry=(0, 0.85))
     d.edge("hosts", "hf", "cache miss", dashed=True, exit=(0, 0.95), entry=(1, 0.5))
     return d
-
-
 def main() -> int:
     OUT.mkdir(exist_ok=True)
     d = build()
@@ -178,10 +170,24 @@ def main() -> int:
         return 0
     for fmt, extra in (("svg", []), ("png", ["-s", "2"])):
         out = OUT / f"architecture.{fmt}"
-        subprocess.run([str(app), "-x", "-f", fmt, "-b", "10", *extra, "-o", str(out), str(drawio)], check=True,
+        subprocess.run([str(app), "-x", "-f", fmt, "-b", "16", *extra, "-o", str(out), str(drawio)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if fmt == "svg":
+            out.write_text(fixed_light(out.read_text()))
         print(f"wrote {out} ({out.stat().st_size} bytes)")
     return 0
+
+
+def fixed_light(svg: str) -> str:
+    """The export declares `color-scheme: light dark` and a light-dark() foreground, so a browser in dark mode drew the
+    text light grey on the light fills and the groups' dark fills (unreadable, 2026-11-22). Pin the picture to its
+    light colours and give it a white background; the page shows it in a white frame either way."""
+    svg = re.sub(r"color-scheme:\s*light dark;?", "", svg)
+    svg = re.sub(r"<style type=\"text/css\">@supports \(color: light-dark\(#000, #fff\)\)[^<]*</style>", "", svg)
+    svg = re.sub(r"var\(--ge-adaptive-fg(?:, *(#[0-9a-fA-F]{3,6}))?\)", lambda m: m.group(1) or "#000000", svg)
+    # keep the light colour of every pair; a colour may itself be a function call (rgb(...))
+    svg = re.sub(r"light-dark\(((?:[^,()]|\([^()]*\))+), *(?:[^()]|\([^()]*\))+\)", r"\1", svg)
+    return svg.replace("background: transparent; background-color: transparent;", "background: #FFFFFF; background-color: #FFFFFF;")
 
 
 if __name__ == "__main__":
