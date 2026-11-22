@@ -168,6 +168,7 @@ def test_decision_models_run_the_dspm_suite_as_one_typed_question():
     assert {lv["name"] for lv in acc} == {"W1-short-accuracy", "W1-long-accuracy", "W3-accuracy"}
     assert all(lv["api_task"] == "decide" and lv["payload"] == {"questions": 1} and lv["batch"] == 1 for lv in levels)
     assert acc[0]["pool"]["size"] == run.dspm.test_items
+    assert {lv["conc"] for lv in acc} == {plan.DECISION_ACCURACY_CONC}     # not vLLM's 16: the server answers 2 at a time
     assert len(cells) == 2 and {c.engine for c in cells} == {"decider"}
 
 

@@ -244,11 +244,15 @@ def levels_for_cell(run: RunConfig, cell: ResolvedCell, model: ModelSpec, *, run
             else:
                 payload = {"model": model.id}
             name = wl if bkt is None else f"{wl}-{bkt}"
-            add(f"{name}-accuracy", key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl)
+            # A decision model's server answers 2-4 requests at a time (DECIDER max_concurrency); 16 clients queue
+            # behind it and the long documents (~2,500 tokens, fp32 on CPU) ran past the 300 s limit (3 timeouts in
+            # the first DSPM smoke, 2026-11-22). Same accuracy pass, fewer clients waiting.
+            acc_conc = DECISION_ACCURACY_CONC if model.type == "decision" else ACCURACY_CONC
+            add(f"{name}-accuracy", key, payload, acc_conc, 0, accuracy=True, workload=wl)
             if model.dspm_profile in DEV_THRESHOLD_SLOTS:
                 # M3's decision threshold is chosen on dev items only (design 24.4, Requirement 23).
                 dev_key = dspm_pool(model, f"dev-{wl}", bkt)
-                add(f"dev-{name}-accuracy", dev_key, payload, ACCURACY_CONC, 0, accuracy=True, workload=wl,
+                add(f"dev-{name}-accuracy", dev_key, payload, acc_conc, 0, accuracy=True, workload=wl,
                     extra={"split": "dev"})
             # The run's concurrency list applies to every scenario; WORKLOAD_LEVELS are the
             # suggested defaults per scenario, not a filter (a chosen level must never be dropped).
