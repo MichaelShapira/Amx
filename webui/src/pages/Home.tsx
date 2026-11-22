@@ -14,6 +14,7 @@ export default function Home() {
         <div className="row" style={{ marginTop: 14 }}>
           <Link className="btn" to="/new">Start a benchmark →</Link>
           <Link className="btn outline" to="/results">See results</Link>
+          <Link className="btn outline" to="/guide">Read the user guide</Link>
         </div>
       </div>
 

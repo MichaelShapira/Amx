@@ -255,6 +255,7 @@ export const api = {
   wizardFrom: (id: string) => j<Wizard>(`/api/runs/${id}/wizard`),
   wizardRecommended: (id: string) => j<Wizard & { changes: string[] }>(`/api/runs/${id}/wizard/recommended`),
   technical: () => j<Technical>("/api/technical"),
+  guide: () => j<{ markdown: string; harness_commit: string | null }>("/api/guide"),
   deleteRun: (id: string) => j<{ deleted: string; objects: number; rows: number; status_was: string; terminated_instances: string[] }>(`/api/runs/${id}`, { method: "DELETE" }),
   slug: (name: string, use_case: string) => j<{ slug: string; run_id: string }>(`/api/runs/slug?name=${encodeURIComponent(name)}&use_case=${encodeURIComponent(use_case)}`),
   plan: (w: Wizard) => j<Plan>("/api/plan", { method: "POST", body: JSON.stringify(w) }),

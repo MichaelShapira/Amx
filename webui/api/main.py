@@ -1972,6 +1972,16 @@ def technical():
     return out
 
 
+@app.get("/api/guide")
+def get_guide():
+    """The user guide (docs/USER_GUIDE.md), rendered by the User guide page. Part of the build, so the guide a reader
+    sees is the one written for the code that is running."""
+    path = ROOT / "docs" / "USER_GUIDE.md"
+    if not path.exists():
+        raise HTTPException(404, "the user guide is not part of this build")
+    return {"markdown": path.read_text(encoding="utf-8"), "harness_commit": os.environ.get("HARNESS_COMMIT")}
+
+
 @app.get("/api/technical/architecture.{ext}")
 def technical_diagram(ext: str):
     if ext not in ("svg", "drawio", "png"):

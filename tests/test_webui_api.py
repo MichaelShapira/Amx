@@ -727,3 +727,31 @@ def test_a_decision_models_dspm_rows_are_grouped_and_labelled_as_the_workload():
     assert compare._unit(w3)["thr_label"] == "documents/s" and compare._unit(w3)["cost"] == "usd_per_gb"
     assert compare._unit(own)["thr_label"] == "decisions/s"
     assert compare._series_name(w3) == "CPU · m8i.4xlarge · Strands Decider · fp32"
+
+
+def test_user_guide_is_served_and_names_what_the_app_shows():
+    """The guide ships with the build and must keep up with it: every use case, every menu item, every run status
+    word and every DSPM preset the app shows has to be named in it, so a renamed screen fails here, not in front of
+    a reader."""
+    from pathlib import Path
+    from webui.api import catalog as C, main as M
+    r = c.get("/api/guide")
+    assert r.status_code == 200
+    md = r.json()["markdown"]
+    assert md == (Path(M.ROOT) / "docs/USER_GUIDE.md").read_text(encoding="utf-8") and len(md.split()) > 5000
+    for uc in C.USE_CASES.values():
+        assert uc["name"] in md, uc["name"]
+    for item in ("Start here", "New benchmark", "Test data", "Runs", "Results", "Setup", "Technical details", "User guide"):
+        assert item in md, item
+    for label in M.RUN_STATUS.values():
+        assert label in md, label
+    for p in C.PRESETS.values():
+        assert p[0].split(",")[0] in md, p[0]
+    for part in ("Where the CPU is the better choice", "Executive summary", "Can these be compared?", "Your load and your prices",
+                 "Was the hardware the right size?", "Use typical tests", "Re-run with recommended sizes", "AMX", "crossover"):
+        assert part in md, part
+    # every section heading has a unique anchor (the contents column links by slug)
+    import re
+    heads = re.findall(r"^#{2,3} (.+)$", md, flags=re.M)
+    slugs = [re.sub(r"[^a-z0-9]+", "-", h.lower()).strip("-") for h in heads]
+    assert len(slugs) == len(set(slugs)) and len(slugs) > 40

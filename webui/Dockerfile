@@ -26,7 +26,7 @@ COPY servers/thin/Dockerfile.torch servers/thin/Dockerfile.openvino /app/servers
 COPY servers/export/Dockerfile servers/export/export.py servers/export/optimum_export.py /app/servers/export/
 COPY host/stage_model.sh host/serve.sh /app/host/
 COPY webui/Dockerfile /app/webui/Dockerfile
-COPY docs/architecture.svg docs/architecture.drawio /app/docs/
+COPY docs/architecture.svg docs/architecture.drawio docs/USER_GUIDE.md /app/docs/
 COPY webui/__init__.py /app/webui/__init__.py
 COPY webui/api /app/webui/api
 COPY --from=ui /ui/dist /app/webui/dist

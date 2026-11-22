@@ -8,6 +8,7 @@ import Results from "./pages/Results";
 import DataPage from "./pages/Data";
 import Setup from "./pages/Setup";
 import Technical from "./pages/Technical";
+import Guide from "./pages/Guide";
 import ErrorBoundary from "./components/ErrorBoundary";
 import AuthGate, { useSession } from "./components/AuthGate";
 import { Help } from "./components/ui";
@@ -63,6 +64,7 @@ function Shell() {
             <NavLink to="/results"><span className="ico">📊</span> Results</NavLink>
             <NavLink to="/setup"><span className="ico">⚙️</span> Setup</NavLink>
             <NavLink to="/technical"><span className="ico">🧩</span> Technical details</NavLink>
+            <NavLink to="/guide"><span className="ico">📖</span> User guide</NavLink>
           </nav>
           <div className="spacer" />
           <div className={"status-pill " + (aws?.ok ? "" : "off")} title={aws?.ok ? `The application calls AWS as ${aws.identity} (${aws.credentials ?? "task role"}) in account ${aws.account}.` : aws?.error ?? ""}>
@@ -95,6 +97,7 @@ function Shell() {
             <Route path="/results" element={<Results />} />
             <Route path="/setup" element={<Setup />} />
             <Route path="/technical" element={<Technical />} />
+            <Route path="/guide" element={<Guide />} />
             <Route path="/callback" element={<Home />} />
           </Routes>
           </ErrorBoundary>
