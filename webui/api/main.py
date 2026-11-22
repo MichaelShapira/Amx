@@ -712,7 +712,7 @@ def _git_contains(deployed: str, feature: str) -> bool | None:
     import subprocess
 
     try:
-        r = subprocess.run(["git", "merge-base", "--is-ancestor", feature, deployed], cwd=ROOT, capture_output=True, timeout=10)
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", feature, deployed], cwd=ROOT, capture_output=True, timeout=10)  # nosec B603 (argv list, no shell)
     except Exception:  # noqa: BLE001 - no git, no repo
         return None
     return True if r.returncode == 0 else (False if r.returncode == 1 else None)
@@ -737,7 +737,7 @@ def deployed_backend() -> dict:
     try:
         import subprocess
 
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip() or None
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip() or None  # nosec B603 (argv list, no shell)
     except Exception:  # noqa: BLE001
         head = None
     behind = bool(commit and head and commit != head and _git_contains(head, commit) is True and _git_contains(commit, head) is False)

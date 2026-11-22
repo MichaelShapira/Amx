@@ -650,7 +650,7 @@ def read_jsonl_gz(path: Path) -> list[dict]:
 
 def _git_commit() -> str | None:
     try:
-        return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+        return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,  # nosec B603 (argv list, no shell)
                               check=True).stdout.strip()
     except Exception:  # noqa: BLE001
         return None

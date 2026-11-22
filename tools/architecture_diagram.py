@@ -170,7 +170,7 @@ def main() -> int:
         return 0
     for fmt, extra in (("svg", []), ("png", ["-s", "2"])):
         out = OUT / f"architecture.{fmt}"
-        subprocess.run([str(app), "-x", "-f", fmt, "-b", "16", *extra, "-o", str(out), str(drawio)], check=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit (argv list, local tool)
+        subprocess.run([str(app), "-x", "-f", fmt, "-b", "16", *extra, "-o", str(out), str(drawio)], check=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit (argv list, local tool)  # nosec B603 (argv list, no shell)
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if fmt == "svg":
             out.write_text(fixed_light(out.read_text()))

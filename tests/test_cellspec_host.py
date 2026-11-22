@@ -104,7 +104,7 @@ def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path)
     spec = _pick(engine, target)
     f = tmp_path / "cell.json"
     f.write_text(json.dumps(spec))
-    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env=dry_env, capture_output=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env=dry_env, capture_output=True,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit  # nosec B603 (argv list, no shell)
                          text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     run_line = next(line for line in out.stderr.splitlines() if line.startswith("DRY-RUN: docker run -d"))
@@ -118,7 +118,7 @@ def test_serve_dry_run_prints_private_publish(engine, target, dry_env, tmp_path)
 def test_serve_refuses_public_address(dry_env, tmp_path):
     f = tmp_path / "cell.json"
     f.write_text(json.dumps(_pick("vllm", "t2-")))
-    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env={**dry_env, "PRIVATE_IP": "54.1.2.3"},  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    out = subprocess.run([str(ROOT / "host/serve.sh"), "start", str(f)], env={**dry_env, "PRIVATE_IP": "54.1.2.3"},  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit  # nosec B603 (argv list, no shell)
                          capture_output=True, text=True, timeout=60)
     assert out.returncode != 0 and "non-private" in out.stderr
 
@@ -140,5 +140,5 @@ def test_shellcheck_clean():
     if not Path(sc).exists():
         pytest.skip("shellcheck not installed")
     scripts = sorted(str(p) for p in (ROOT / "host").glob("*.sh"))
-    out = subprocess.run([sc, "-x", "-P", str(ROOT / "host"), *scripts], capture_output=True, text=True)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    out = subprocess.run([sc, "-x", "-P", str(ROOT / "host"), *scripts], capture_output=True, text=True)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit  # nosec B603 (argv list, no shell)
     assert out.returncode == 0, out.stdout

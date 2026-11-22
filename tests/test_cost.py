@@ -20,7 +20,7 @@ def _product(price="0.8467200000", unit="Hrs"):
 
 def _client():
     return boto3.client("pricing", region_name="us-east-1", aws_access_key_id="x",
-                        aws_secret_access_key="x")
+                        aws_secret_access_key="x")  # nosec B106 (moto placeholder credentials)
 
 
 def test_fetch_price_parses_on_demand():

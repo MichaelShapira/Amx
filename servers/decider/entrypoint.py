@@ -106,7 +106,7 @@ def main() -> int:
     log("exec: " + " ".join(cmd))
     os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_HOME": str(hf_home)})
     sys.stdout.flush()
-    return subprocess.call(cmd)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args (values validated above; argv list, no shell)
+    return subprocess.call(cmd)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args (values validated above; argv list, no shell)  # nosec B603 (argv list, no shell)
 
 
 if __name__ == "__main__":
