@@ -24,6 +24,13 @@ GEMM_KINDS = {"matmul", "inner_product", "convolution", "brgemm"}
 # highest ISA the CPU offers; the primitive lines of the same trace say brg:avx512_core_amx).
 UKERNEL_IMPL = "ukernel:brgemm"
 OV_GEMM_TYPES = {"FullyConnected", "MatMul", "Convolution", "FullyConnectedCompressed"}
+# CPU engines whose cells get the software probe (host/probe_amx.sh has a case for each). A CPU cell on
+# any other engine runs no probe and its verdict comes from report.amx_verdicts alone: `decider` runs its
+# torso in fp32, which AMX cannot execute, so it is NOT_APPLICABLE, not INVALID. Scheduling the probe for
+# such an engine failed the whole cell ("no software AMX probe for engine decider", 2026-11-22).
+PROBED_ENGINES = frozenset({"vllm", "thin-torch", "ovms", "thin-openvino"})
+def has_software_probe(engine: str) -> bool:
+    return engine in PROBED_ENGINES
 
 
 def parse_cpu_flags(text: str) -> set[str]:

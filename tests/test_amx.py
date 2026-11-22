@@ -160,3 +160,21 @@ def test_w8a8_through_the_brgemm_micro_kernel_is_amx_verified():
     assert tr2["gemm_amx"] == 2 and tr2["ukernel"]["bf16_counted_as_amx"] is False
     # The old parse of the same lines saw nothing: the regression this guards against.
     assert amx.parse_onednn_verbose(UKERNEL_INT8.replace(",ukernel,", ",primitive,"), flags)["gemm_total"] == 0
+
+
+def test_probe_is_scheduled_only_for_engines_the_host_script_handles():
+    """Every engine in PROBED_ENGINES has a case in host/probe_amx.sh, and the decision model's server has
+    none: scheduling the probe for it failed the whole CPU cell on 2026-11-22."""
+    import re
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "host" / "probe_amx.sh"
+    cases = set()
+    for line in script.read_text().splitlines():
+        m = re.match(r"\s*([a-z0-9|_-]+)\)\s*$", line)
+        if m and m.group(1) != "*":
+            cases.update(m.group(1).split("|"))
+    assert amx.PROBED_ENGINES <= cases
+    assert not amx.has_software_probe("decider")
+    assert "decider" in cases  # by hand the script is a no-op, not a failure
+    assert amx.has_software_probe("vllm")

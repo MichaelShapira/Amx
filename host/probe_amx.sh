@@ -68,6 +68,11 @@ case "$engine" in
     fi
     s3_put "$work/probe_ov.json" "$dest/probe_ov.json"
     ;;
+  decider)
+    # fp32 torso on CPU: no AMX path exists, the report marks the cell NOT_APPLICABLE from the engine
+    # alone (bench/amx.py PROBED_ENGINES). Preflight does not schedule this probe; by hand it is a no-op.
+    log "probe_amx: engine $engine has no AMX path; flags only"
+    ;;
   *) die "no software AMX probe for engine $engine" ;;
 esac
 log "probe_amx: evidence for $key uploaded to $dest"

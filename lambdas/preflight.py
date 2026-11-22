@@ -18,7 +18,7 @@ from typing import Any
 import yaml
 
 from bench import catalog_store, cellspec, cost, pairing, plan
-from bench.amx import parse_cpu_flags
+from bench.amx import has_software_probe, parse_cpu_flags
 from bench.config import (
     RunConfig,
     config_hash,
@@ -271,7 +271,8 @@ def handler(event: dict, context: Any = None) -> dict:
                                       "alternates": alts[c.target], "cells": []})["cells"].append({
             "cell_id": c.cell_id, "cell_key": spec["cell_key"], "engine": c.engine, "cpu": cpu,
             "spec_uri": f"s3://{common.bucket()}/{prefix}/cells/{spec['cell_key']}.json",
-            "amx": cpu, "membw": membw, "quality": qual is not None, "n_levels": len(levels)})
+            "amx": cpu and has_software_probe(c.engine), "membw": membw, "quality": qual is not None,
+            "n_levels": len(levels)})
         common.set_status(run_id, f"CELL#{c.cell_id}", "planned", engine=c.engine, n_levels=len(levels))
     resolved = {"run_id": run_id, "run": run.model_dump(mode="json"), "run_hash": config_hash(run),
                 "models_hash": config_hash(models), "targets_hash": config_hash(targets),

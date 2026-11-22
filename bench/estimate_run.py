@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 
+from bench import amx
 from bench.config import ModelCatalog, ResolvedCell, RunConfig, TargetSpec
 from bench.plan import levels_for_cell
 
@@ -80,7 +81,9 @@ def estimate(run: RunConfig, cells: list[ResolvedCell], models: ModelCatalog, ta
                 level_s = per_worker + waves * BARRIER_AND_MAP_S + lvl.get("warmup_requests", 20) * rs / min(8, lvl["conc"])
             secs += level_s
             lambda_gb_s += lvl["conc"] * level_s * WORKER_GB
-        secs += sum(CELL_OVERHEAD_S.values()) if t.accelerator == "cpu" else CELL_OVERHEAD_S["fetch_and_load"]
+        secs += CELL_OVERHEAD_S["fetch_and_load"]
+        if t.accelerator == "cpu" and amx.has_software_probe(c.engine):
+            secs += CELL_OVERHEAD_S["amx_probe"]
         if run.quality.enabled and run.suite == "standard":
             secs += QUALITY_S
         per_cell.append({"cell_id": c.cell_id, "levels": len(levels), "hours": round(secs / 3600, 2),
