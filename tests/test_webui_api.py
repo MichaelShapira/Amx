@@ -707,3 +707,23 @@ def test_a_stored_run_without_repeats_still_plans(monkeypatch):
     pl2 = c.post("/api/plan", json={**w, "name": "again", "depth": "custom", "requests": None, "passes": None}).json()
     assert pl2["ok"], pl2.get("problems")
     assert pl2["run"]["repeats"] == 1 and pl2["run"]["per_level"] == {"requests": 50}
+
+
+def test_a_decision_models_dspm_rows_are_grouped_and_labelled_as_the_workload():
+    """In the DSPM suite a Strands Decider row is a document decision like every other model's: grouped per workload
+    and bucket, measured in documents/s and $/GB. Its own suite's rows keep the decisions grouping (first live DSPM
+    run showed three workloads collapsed into 'decisions, short messages', 2026-11-22)."""
+    from webui.api import compare
+    base = {"model": "d1-strands-decider-e4b", "model_type": "decision", "kind": "classifier", "batch": 1, "direction": None,
+            "accelerator": "cpu", "instance_type": "m8i.4xlarge", "engine": "decider", "precision": "bf16", "effective_precision": "fp32"}
+    w3 = {**base, "workload": "W3", "bucket": None}
+    w1l = {**base, "workload": "W1", "bucket": "long"}
+    own = {**base, "workload": None, "bucket": None, "text_size": "short"}
+    k3, l3 = compare._group_key(w3)
+    k1, l1 = compare._group_key(w1l)
+    ko, lo = compare._group_key(own)
+    assert k3 != k1 != ko and "|W3" in k3 and "|W1|long" in k1 and "|decide|short" in ko
+    assert "Inline DLP" in l3 and "(long documents)" in l1 and "1 question per request" in lo
+    assert compare._unit(w3)["thr_label"] == "documents/s" and compare._unit(w3)["cost"] == "usd_per_gb"
+    assert compare._unit(own)["thr_label"] == "decisions/s"
+    assert compare._series_name(w3) == "CPU · m8i.4xlarge · Strands Decider · fp32"

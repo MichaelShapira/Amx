@@ -171,7 +171,7 @@ def _group_key(r: dict) -> tuple[str, str]:
         label += " · " + DIRECTIONS.get(r["direction"], (r["direction"],))[0]
         label += f" ({TEXT_SIZES.get(r.get('text_size') or '', (r.get('text_size'),))[0]})"
         return key, label
-    if r.get("model_type") == "decision":
+    if r.get("model_type") == "decision" and not r.get("workload"):      # in the DSPM suite its rows are the workload's
         size = r.get("text_size") or "short"
         key += "|decide|" + str(size) + (f"|q{r['batch']}" if r.get("batch", 1) > 1 else "")
         label += f" · decisions, {DECISION_SIZES.get(size, size)}"
