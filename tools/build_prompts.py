@@ -55,7 +55,7 @@ def fetch(url: str) -> bytes:
     if not url.startswith("https://"):
         raise ValueError(f"refusing non-https URL {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "amx-gpu-bench/0.1"})  # noqa: S310 - https only
-    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 - https only, checked above  # nosec B310
+    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 - https only, checked above  # nosec B310  # nosemgrep (urllib: https only, checked above)
         return r.read()
 
 

@@ -9,3 +9,9 @@ description = "synthetic DSPM test-data generators"
 paths = [
   '''tools/dspm/fakes\.py$''',
 ]
+# gitleaks runs over the git history, where an inline `gitleaks:allow` added later cannot reach the old commits:
+# an empty shell variable initialisation and a benchmark level key, both matched by generic-api-key.
+regexes = [
+  '''PASSWORD="" FROM_STDIN=0''',
+  '''m1__t2__bf16__W3-accuracy__c4''',
+]

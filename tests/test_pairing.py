@@ -82,7 +82,7 @@ def test_cellspec_scales_kv_cache_for_the_override():
     tmap = targets.resolved()
     run = load_run("config/runs/smoke-m1.yaml")
     cell = next(c for c in resolve_cells(run, models, targets) if c.target == "t2-m8i-4xl")
-    kw = {"run_id": "r", "bucket": "b", "hf_token_secret": "arn"}
+    kw = {"run_id": "r", "bucket": "b", "hf_token_secret": "arn"}  # nosec B105 (a secret NAME)
     base = cellspec.build(cell, models.get(cell.model), tmap[cell.target], run, **kw)
     big = cellspec.build(cell, models.get(cell.model), tmap[cell.target], run, instance_type="m8i.8xlarge", **kw)
 

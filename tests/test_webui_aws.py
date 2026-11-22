@@ -35,7 +35,7 @@ def creds_file(tmp_path, monkeypatch):
 
 def test_env_file_parsing_keeps_only_the_three_credential_values():
     vals = aws.parse_env_file(CREDS)
-    assert vals == {"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE000000001", "AWS_SECRET_ACCESS_KEY": "secret/one+two",
+    assert vals == {"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE000000001", "AWS_SECRET_ACCESS_KEY": "secret/one+two",  # nosec B105 (made-up test values)
                     "AWS_SESSION_TOKEN": "IQoJtoken1"}  # nosec B105 (a made-up test value)
     assert aws.parse_env_file("AWS_ACCESS_KEY_ID=  \n# AWS_SECRET_ACCESS_KEY=x\n") == {}
 

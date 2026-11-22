@@ -57,7 +57,7 @@ def _hf_access(repo: str, revision: str, token: str) -> int:
     req = urllib.request.Request(f"https://huggingface.co/api/models/{repo}/revision/{revision}",
                                  headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 - fixed https host  # nosec B310
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 - fixed https host  # nosec B310  # nosemgrep (urllib: fixed https host; path parts validated above)
             return r.status
     except urllib.error.HTTPError as e:
         return e.code

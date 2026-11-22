@@ -83,7 +83,7 @@ T5_CATEGORIES = {"government id": "GOV_ID", "personal data": "PERSONAL", "financ
 
 # D1 (openai/privacy-filter) span labels to policy categories. A person counts as PERSONAL
 # only together with one of the personal attributes, as in the policy.
-D1_DIRECT = {"account_number": "FINANCIAL", "secret": "CREDENTIALS"}
+D1_DIRECT = {"account_number": "FINANCIAL", "secret": "CREDENTIALS"}  # nosec B105 (a span label mapped to a category)
 D1_PERSONAL_ATTRS = {"private_address", "private_email", "private_phone", "private_date"}
 D2_GIVING_PII = 1            # roblox-pii-classifier-v2 label order
 D2_THRESHOLD = 0.55          # model card recommendation for privacy_giving_pii

@@ -33,7 +33,7 @@ def build(raw: bytes) -> dict:
 
 
 def main() -> int:
-    with urllib.request.urlopen(URL, timeout=30) as r:  # noqa: S310 - fixed https URL, checksum verified  # nosec B310
+    with urllib.request.urlopen(URL, timeout=30) as r:  # noqa: S310 - fixed https URL, checksum verified  # nosec B310  # nosemgrep (urllib: constant URL, checksum verified)
         prof = build(r.read())
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(prof, indent="\t") + "\n")
