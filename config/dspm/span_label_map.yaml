@@ -16,6 +16,7 @@ nemotron-pii:
     medical_record_number: HEALTH
     health_plan_beneficiary_number: HEALTH
     blood_type: HEALTH
+    # checkov:skip=CKV_SECRET_6: span-label names mapped to policy categories, not credential values
     password: CREDENTIALS
     api_key: CREDENTIALS
     pin: CREDENTIALS

@@ -125,7 +125,7 @@ def test_accuracy_level_covers_every_item_once_across_waves(aws, server):
 
     pool = _pool(aws, "artifacts/dspm/v1/requests/m1/W3.jsonl", 23)
     lvl = _level(server, pool, accuracy=True, keep_output=True, max_items_per_worker=4, workload="W3",
-                 level_key="m1__t2__bf16__W3-accuracy__c4", name="W3-accuracy", quota=None)
+                 level_key="m1__t2__bf16__W3-accuracy__c4", name="W3-accuracy", quota=None)  # gitleaks:allow (a level key)
     lvl.pop("quota")
     waves.init_level({"level": lvl})
     seen = []
@@ -595,3 +595,15 @@ def test_bringup_error_leads_with_the_root_cause_not_the_wrapper():
     # No exception line: no invented cause, and the old tail behaviour is unchanged.
     assert root_cause("stage: downloading\nERROR: not healthy after 2400s\n") is None
     assert stderr_tail("a\nb\nfailed to run commands: exit status 1") == "a\nb\nfailed to run commands: exit status 1"
+
+
+def test_hf_access_admits_only_repo_ids_and_revisions():
+    """The Hub URL is built from catalog strings: anything that could reshape the path is refused before any request."""
+    import pytest
+    from lambdas import preflight
+    for repo, rev in (("google/gemma-4-E4B-it", "main"), ("StrandsAgents/strands-decider-E4B-gemma4-v1-2610", "0fd76a6eac253cbd2cde06015734e987d979e28c")):
+        assert preflight._HF_REPO.match(repo) and preflight._HF_REVISION.match(rev)
+    for repo, rev in (("../../api", "main"), ("google/gemma?x=1", "main"), ("google/gemma", "main/../x"), ("google//gemma", "main"),
+                      ("google/gemma", ""), ("/google/gemma", "main")):
+        with pytest.raises(ValueError):
+            preflight._hf_access(repo, rev, "t")

@@ -25,6 +25,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 
 def log(msg: str) -> None:
@@ -82,9 +83,12 @@ def main() -> int:
     repo, revision = env["DECIDER_BASE_REPO"], env["DECIDER_BASE_REVISION"]
     device = env.get("DECIDER_DEVICE", "cpu")
     port = env.get("DECIDER_PORT", "8000")
-    hf_home = pathlib.Path(env.get("HF_HOME", "/tmp/cache/huggingface"))
+    # A private, freshly created working directory (mode 0700) rather than fixed names under /tmp: nothing else in the
+    # container can pre-create or symlink the path. The image's HF_HOME is kept when set (the offline Hub cache).
+    work = pathlib.Path(tempfile.mkdtemp(prefix="decider-"))
+    hf_home = pathlib.Path(env["HF_HOME"]) if env.get("HF_HOME") else work / "huggingface"
     lay_hub_cache(repo, revision, base_dir, hf_home / "hub")
-    ckpt = pin_base_revision(checkpoint, pathlib.Path("/tmp/decider-checkpoint"), repo, revision)
+    ckpt = pin_base_revision(checkpoint, work / "checkpoint", repo, revision)
     cmd = ["strands-decider", "serve", str(ckpt), "--host", "0.0.0.0", "--port", port, "--device", device,  # noqa: S104 - in-container bind; published on the private IP only
            "--max-batch", env.get("DECIDER_MAX_BATCH", "8"), "--max-concurrency", env.get("DECIDER_MAX_CONCURRENCY", "4")]
     log("exec: " + " ".join(cmd))

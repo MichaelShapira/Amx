@@ -1,0 +1,11 @@
+# Secret scanning (gitleaks, run by ProtoShield). The one allowlisted path generates the synthetic sensitive values of
+# the DSPM dataset (fake API keys, card numbers, PEM blocks) on purpose: that dataset exists to test detectors, and
+# every value is random at build time. Nothing real is in the repository; real tokens live in Secrets Manager.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "synthetic DSPM test-data generators"
+paths = [
+  '''tools/dspm/fakes\.py$''',
+]

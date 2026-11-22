@@ -169,6 +169,9 @@ class CoreStack(Stack):
         ssm_send_inst = iam.PolicyStatement(
             actions=["ssm:SendCommand"], resources=[f"arn:aws:ec2:{self.region}:{self.account}:instance/*"],
             conditions={"StringEquals": {"ssm:resourceTag/bench:managed": "true"}})
+        # Read-only follow-up of the commands sent above. Neither action supports a resource ARN or a tag condition
+        # (IAM reference: GetCommandInvocation and Describe* take only "*"); the write side, SendCommand, is pinned to
+        # the one document and to bench-managed instances.
         ssm_read = iam.PolicyStatement(actions=["ssm:GetCommandInvocation", "ssm:DescribeInstanceInformation"],
                                        resources=["*"])
         for f in (perf, amx_probe, membw, control):
@@ -179,6 +182,8 @@ class CoreStack(Stack):
         ec2_tagged = {"StringEquals": {"aws:ResourceTag/bench:managed": "true"}}
         inst_arn = f"arn:aws:ec2:{self.region}:{self.account}:instance/*"
         for f in (control, reaper):
+            # ec2:Describe* supports no resource ARN and no aws:ResourceTag condition (a condition would deny every
+            # call); the actions that change state below are all conditioned on the bench:managed tag.
             f.add_to_role_policy(iam.PolicyStatement(
                 actions=["ec2:DescribeInstances", "ec2:DescribeLaunchTemplateVersions"], resources=["*"]))
             # Stop On-Demand instances, terminate one-time Spot ones; only bench-tagged instances either way.
@@ -213,6 +218,8 @@ class CoreStack(Stack):
         agg_level.add_to_role_policy(s3_list)
         agg_level.add_to_role_policy(s3_get("runs/*"))
         agg_level.add_to_role_policy(s3_put("runs/*/metrics/*", "runs/*/predictions/*"))
+        # Host utilization per measurement (AmxGpuBench namespace). GetMetricData supports no resource ARN and no
+        # condition key (cloudwatch:namespace applies to PutMetricData only): read-only, "*".
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["cloudwatch:GetMetricData"], resources=["*"]))
         agg_level.add_to_role_policy(iam.PolicyStatement(actions=["dynamodb:UpdateItem"], resources=[t.table_arn]))
         agg_run.add_to_role_policy(s3_list)
@@ -453,5 +460,7 @@ class CoreStack(Stack):
         for a in self.image_assets.values():
             a.repository.grant_pull(role)
         if self.image_assets:
+            # The registry login token: GetAuthorizationToken takes only "*" (it names no repository); which
+            # repositories the host may then pull from is the grant_pull above, per image asset.
             role.add_to_principal_policy(iam.PolicyStatement(actions=["ecr:GetAuthorizationToken"], resources=["*"]))
 

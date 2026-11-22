@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -44,7 +45,15 @@ def _param(name: str) -> str | None:
         return None
 
 
+_HF_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_HF_REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _hf_access(repo: str, revision: str, token: str) -> int:
+    # The two path parts come from the model catalog (operator-edited, or a repo id typed in Setup): admit only the
+    # characters a Hub repo id and revision can contain, so neither can reshape the URL (no '/', '?', '#' or '..').
+    if not _HF_REPO.match(repo) or not _HF_REVISION.match(revision) or ".." in repo or ".." in revision:
+        raise ValueError(f"not a Hugging Face repo id and revision: {repo!r} @ {revision!r}")
     req = urllib.request.Request(f"https://huggingface.co/api/models/{repo}/revision/{revision}",
                                  headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:

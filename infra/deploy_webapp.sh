@@ -13,7 +13,7 @@
 # The user pool admits nobody on its own: this script is the only way an account gets created.
 set -euo pipefail
 
-EMAIL="" PASSWORD="" FROM_STDIN=0 DEPLOY=1 REGION="${AWS_REGION:-us-east-1}"
+EMAIL="" PASSWORD="" FROM_STDIN=0 DEPLOY=1 REGION="${AWS_REGION:-us-east-1}"  # gitleaks:allow (empty, filled from stdin or the prompt)
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in

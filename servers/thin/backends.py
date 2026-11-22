@@ -126,8 +126,9 @@ class Backend:
             elif t.endswith("Dense"):
                 cfg = _json.loads((folder / "config.json").read_text())
                 lin = torch.nn.Linear(cfg["in_features"], cfg["out_features"], bias=bool(cfg.get("bias", True)))
+                # weights_only: tensors only, no pickled code, for a checkpoint that was not shipped as safetensors
                 weights = load_file(str(folder / "model.safetensors")) if (folder / "model.safetensors").exists() \
-                    else torch.load(folder / "pytorch_model.bin", map_location="cpu")
+                    else torch.load(folder / "pytorch_model.bin", map_location="cpu", weights_only=True)
                 lin.load_state_dict({k.replace("linear.", ""): v for k, v in weights.items()})
                 act = cfg.get("activation_function", "torch.nn.modules.linear.Identity")
                 layer: torch.nn.Module = lin
@@ -177,12 +178,12 @@ class TorchBackend(Backend):
         cls = {"seq2seq": AutoModelForSeq2SeqLM, "causal": AutoModelForCausalLM,
                "seq-cls": AutoModelForSequenceClassification, "token-cls": AutoModelForTokenClassification,
                "embed": AutoModel}[s.task]
-        self.tok = AutoTokenizer.from_pretrained(s.model_dir)
+        self.tok = AutoTokenizer.from_pretrained(s.model_dir)  # nosec B615 - a local directory staged at the catalog's pinned revision (host/stage_model.sh), never the Hub
         if s.task == "causal":
             self.tok.padding_side = "left"
             if self.tok.pad_token is None:
                 self.tok.pad_token = self.tok.eos_token
-        self.model = cls.from_pretrained(s.model_dir, dtype=TORCH_DTYPES[s.dtype]).to(s.device).eval()
+        self.model = cls.from_pretrained(s.model_dir, dtype=TORCH_DTYPES[s.dtype]).to(s.device).eval()  # nosec B615 - local staged dir
         self.encoder_decoder = bool(getattr(self.model.config, "is_encoder_decoder", False))
         if s.task == "embed":
             self._load_st_modules()
@@ -202,8 +203,8 @@ class OpenVINOBackend(Backend):
         if s.ov_precision_hint:
             ov_config["INFERENCE_PRECISION_HINT"] = s.ov_precision_hint
         cls = {"seq2seq": OVModelForSeq2SeqLM, "seq-cls": OVModelForSequenceClassification}[s.task]
-        self.tok = AutoTokenizer.from_pretrained(s.model_dir)
-        self.model = cls.from_pretrained(s.model_dir, ov_config=ov_config, device="CPU", compile=True)
+        self.tok = AutoTokenizer.from_pretrained(s.model_dir)  # nosec B615 - a local directory staged at the catalog's pinned revision (host/stage_model.sh), never the Hub
+        self.model = cls.from_pretrained(s.model_dir, ov_config=ov_config, device="CPU", compile=True)  # nosec B615 - local staged dir
         self.encoder_decoder = s.task == "seq2seq"
         self.ov_config = ov_config
         log.info("openvino backend: %s, ov_config %s", s.task, json.dumps(ov_config))

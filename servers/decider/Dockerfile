@@ -3,6 +3,7 @@
 #   docker build -f servers/decider/Dockerfile --build-arg BASE_IMAGE=<cpu or cuda digest> .
 # torch/torchvision come from the base; everything else is pinned with hashes in requirements.lock, and the
 # decider itself is pinned to a commit of its main branch (Gemma 4 support is not on PyPI yet).
+# checkov:skip=CKV_DOCKER_7: BASE_IMAGE is always a digest-pinned reference (the default below, or config/images.yaml)
 ARG BASE_IMAGE=public.ecr.aws/deep-learning-containers/pytorch:2.14.0-cpu-amzn2023@sha256:e9aa07c11afc5f7eff183782cf3dde397012e2f08ab700dffd2828203688c159
 FROM ${BASE_IMAGE}
 WORKDIR /app
@@ -24,5 +25,8 @@ ENV PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 RUN useradd --uid 10001 --no-create-home --shell /sbin/nologin bench && mkdir -p /tmp/cache && chmod 1777 /tmp /tmp/cache
 USER 10001
 EXPOSE 8000
+# The model takes minutes to load (start-period); afterwards /health answers once the server is up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('DECIDER_PORT', '8000')}/health\", timeout=4)"]
 ENTRYPOINT []
 CMD ["python", "/app/entrypoint.py"]
