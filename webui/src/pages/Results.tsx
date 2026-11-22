@@ -174,31 +174,47 @@ const COST_KIND: Record<CpuCaseCost["kind"], { badge: "ok" | "warn" | "bad" | un
 
 /** The section the reader came for: exactly where the CPU is the better choice, computed from the measurements, and where it is not. */
 function WhereCpuWinsCard({ w }: { w: WhereCpuWins }) {
-  const money = (m: number) => `$${Math.round(m).toLocaleString()}/month`;
+  const money = (m: number) => `$${Math.round(m).toLocaleString()}`;
   return (
     <div className="card mt" style={{ borderColor: w.any_benefit ? "var(--ok)" : "var(--bad)", borderWidth: 2 }}>
       <h2 style={{ margin: 0 }}>Where the CPU is the better choice <Help text="Computed from the selected runs, never asserted. Cost: from each question's measurements, the load range below which the cheapest CPU option that meets your targets costs less than the cheapest GPU option, with worked examples at typical loads (at the prices chosen above). Availability: the runs' own capacity log, how often each side's launch was refused. Smallest unit: the cheapest instance that held the model and met the targets on each side. Everything the CPU does not win is listed too." /></h2>
       <Note kind={w.any_benefit ? "ok" : "bad"}><b>{w.headline}</b></Note>
       <h3 className="mt">1 · Cost at your kind of load</h3>
-      <table className="tbl">
-        <thead><tr><th>Question</th><th>Finding</th><th>What it means</th></tr></thead>
-        <tbody>
-          {w.cost.map((c) => (
-            <tr key={c.key}>
-              <td style={{ whiteSpace: "nowrap" }}><b>{c.group}</b></td>
-              <td style={{ whiteSpace: "nowrap" }}><Badge kind={COST_KIND[c.kind].badge}>{COST_KIND[c.kind].label}</Badge></td>
-              <td className="small">
-                {c.text}
-                {c.examples.length > 0 && (
-                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                    {c.examples.map((e) => <li key={e.label}>{e.label}: <b>{e.cpu}</b> {money(e.cpu_usd_per_month)}{e.estimated ? " (estimated size)" : ""} vs {e.gpu} {money(e.gpu_usd_per_month)} · <b>{e.ratio?.toFixed(1)}x cheaper</b></li>)}
-                  </ul>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {w.cost.map((c) => {
+          const range = c.crossover_rpm && (c.kind === "cpu_below_crossover") ? `CPU cheaper below ~${Math.round(c.crossover_rpm).toLocaleString()} requests/minute; GPU cheaper above` : COST_KIND[c.kind].label;
+          return (
+            <div key={c.key} className="tile" style={{ cursor: "default" }}>
+              <div className="row between" style={{ alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                <div className="t" style={{ margin: 0 }}>{c.group}</div>
+                <Badge kind={COST_KIND[c.kind].badge}>{range}</Badge>
+              </div>
+              {c.examples.length > 0 ? (
+                <table className="tbl mt" style={{ fontSize: 13 }}>
+                  <thead><tr><th>Load</th><th>Cheapest CPU option</th><th className="num">per month</th><th>Cheapest GPU option</th><th className="num">per month</th><th className="num">CPU saves</th></tr></thead>
+                  <tbody>
+                    {c.examples.map((e) => (
+                      <tr key={e.label}>
+                        <td>{e.label.replace(/:.*$/, "")} <span className="muted">· {e.rpm.toLocaleString()} req/min</span></td>
+                        <td><b>{e.cpu}</b>{e.estimated && <> <Badge kind="warn">estimated</Badge></>}</td>
+                        <td className="num">{money(e.cpu_usd_per_month)}</td>
+                        <td>{e.gpu}</td>
+                        <td className="num">{money(e.gpu_usd_per_month)}</td>
+                        <td className="num"><b>{e.ratio ? `${e.ratio.toFixed(1)}x` : "–"}</b></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="small mt">{c.text}</div>
+              )}
+              {c.examples.length > 0 && c.examples.some((e) => e.estimated) && (
+                <div className="tiny muted mt">"estimated" = a smaller size of the measured CPU family, sized by core count and checked for memory, not yet measured; one run at that size confirms it.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
       <h3 className="mt">2 · Availability <Badge kind={w.availability.kind.startsWith("gpu_scarcer") ? "ok" : undefined}>{w.availability.kind === "gpu_scarcer" ? "real benefit in these runs" : w.availability.kind === "gpu_scarcer_spot" ? "mild edge (Spot only)" : w.availability.kind === "none" ? "no evidence" : "no advantage"}</Badge></h3>
       <div className="small">{w.availability.text}</div>
       {w.granularity && (<><h3 className="mt">3 · Smallest unit you can buy <Badge kind="ok">{w.granularity.ratio.toFixed(0)}x smaller</Badge></h3><div className="small">{w.granularity.text}</div></>)}
