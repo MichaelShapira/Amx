@@ -162,7 +162,11 @@ class CoreStack(Stack):
         after the first deploy), and the API refuses an unknown key with a ValidationException, so that error is
         tolerated here and the call is repeated on demand: `cdk deploy AmxBench-Core -c cost_tag_revision=<N+1>`,
         or by hand `aws ce update-cost-allocation-tags-status --cost-allocation-tags-status TagKey=Amx,Status=Active`.
-        Cost Explorer actions take no resource ARN (the policy below is the narrowest grant there is)."""
+        An account that has never opened Cost Explorer answers AccessDeniedException ("User not enabled for cost
+        explorer access") until someone opens it once in the console; that too must not stop a deploy (it did, on the
+        first create in such an account, 2026-11-23). Every error is tolerated: this is billing bookkeeping, and the
+        call's log group keeps the message. Cost Explorer actions take no resource ARN (the policy below is the
+        narrowest grant there is)."""
         from bench.tags import COST_ALLOCATION_TAG
         call = cr.AwsSdkCall(
             service="CostExplorer", action="updateCostAllocationTagsStatus",
@@ -170,7 +174,7 @@ class CoreStack(Stack):
                         "Revision": revision},    # a changed property re-runs the call on the next deploy
             physical_resource_id=cr.PhysicalResourceId.of(f"cost-allocation-tag-{COST_ALLOCATION_TAG}"),
             region="us-east-1",                   # Cost Explorer's single endpoint
-            ignore_error_codes_matching="ValidationException")
+            ignore_error_codes_matching=".*")                # best effort: see the docstring
         cr.AwsCustomResource(
             self, "CostAllocationTag", on_create=call, on_update=call, install_latest_aws_sdk=False,
             policy=cr.AwsCustomResourcePolicy.from_statements([iam.PolicyStatement(

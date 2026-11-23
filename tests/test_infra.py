@@ -142,7 +142,7 @@ def test_cost_allocation_tag_is_activated_and_fargate_tasks_inherit_the_tags(tem
     create = json.loads(custom[0]["Properties"]["Create"]) if isinstance(custom[0]["Properties"]["Create"], str) else custom[0]["Properties"]["Create"]
     assert create["service"] == "CostExplorer" and create["action"] == "updateCostAllocationTagsStatus"
     assert create["parameters"]["CostAllocationTagsStatus"] == [{"TagKey": COST_ALLOCATION_TAG, "Status": "Active"}]
-    assert create["ignoreErrorCodesMatching"] == "ValidationException"
+    assert create["ignoreErrorCodesMatching"] == ".*"          # billing bookkeeping never fails a deploy
     stmts = [s for r in core.values() if r["Type"] == "AWS::IAM::Policy" for s in r["Properties"]["PolicyDocument"]["Statement"]]
     assert any(s["Action"] == "ce:UpdateCostAllocationTagsStatus" for s in stmts)
     svc = next(r for r in _web(templates).values() if r["Type"] == "AWS::ECS::Service")["Properties"]

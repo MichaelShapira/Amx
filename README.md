@@ -387,7 +387,8 @@ resource misses one of the tags.
 Report can group and filter by it. The Core stack activates it with a small custom resource
 (`CostExplorer.UpdateCostAllocationTagsStatus`). Billing only learns a tag key after a resource carrying it
 has been billed, which takes up to 24 hours after the first tagged deploy, and the API refuses a key it has
-not met yet, so on a fresh account the first activation attempt is tolerated to fail. Re-run it once the key
+not met yet, so on a fresh account the first activation attempt is tolerated to fail (as is an account that has
+never opened Cost Explorer: open it once in the console, which enables the API). Re-run it once the key
 has appeared:
 
 ```bash
