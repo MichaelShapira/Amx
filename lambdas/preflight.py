@@ -283,6 +283,8 @@ def handler(event: dict, context: Any = None) -> dict:
             "amx": cpu and has_software_probe(c.engine), "membw": membw, "quality": qual is not None,
             "n_levels": len(levels)})
         common.set_status(run_id, f"CELL#{c.cell_id}", "planned", engine=c.engine, n_levels=len(levels))
+    if not run.account:       # recorded for the report: the account that actually ran this
+        run = run.model_copy(update={"account": common.client("sts").get_caller_identity()["Account"]})
     resolved = {"run_id": run_id, "run": run.model_dump(mode="json"), "run_hash": config_hash(run),
                 "models_hash": config_hash(models), "targets_hash": config_hash(targets),
                 "cells": [c.model_dump() for c in cells], "launch_templates": templates, "amis": amis,

@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 import aws_cdk as cdk  # noqa: E402
 
+from bench import deployment  # noqa: E402
 from bench.config import load_targets  # noqa: E402
 from bench.tags import PROJECT_TAGS  # noqa: E402
 from infra.stacks.core import CoreStack  # noqa: E402
@@ -28,7 +29,9 @@ from infra.stacks.network import NetworkStack  # noqa: E402
 from infra.stacks.target import TargetStack  # noqa: E402
 from infra.stacks.webapp import WebAppStack  # noqa: E402
 
-ACCOUNT, REGION, AZ_ID = "346399954218", "us-east-1", "use1-az1"
+# The account is whatever the active credentials belong to (the CDK CLI exports CDK_DEFAULT_ACCOUNT from them;
+# bench.deployment asks STS otherwise). Region and AZ id are configuration (see bench/deployment.py).
+REGION, AZ_ID = deployment.REGION, deployment.AZ_ID
 
 
 def resolve_az_name(app: cdk.App) -> str:
@@ -53,7 +56,7 @@ def harness_commit() -> str:
 
 
 def build(app: cdk.App) -> dict:
-    env = cdk.Environment(account=ACCOUNT, region=REGION)
+    env = cdk.Environment(account=deployment.account_id(), region=REGION)   # None = environment-agnostic (tests)
     flag = lambda k, d: str(app.node.try_get_context(k) if app.node.try_get_context(k) is not None else d).lower() \
         in ("1", "true", "yes")  # noqa: E731
     net = NetworkStack(app, "AmxBench-Network", az_name=resolve_az_name(app), env=env)

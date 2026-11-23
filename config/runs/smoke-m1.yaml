@@ -4,7 +4,6 @@ run:
   name: smoke-m1-t1-t2
   suite: standard
   mode: smoke
-  account: "346399954218"
   region: us-east-1
   az_id: use1-az1
   models: [m1-qwen3-1.7b]

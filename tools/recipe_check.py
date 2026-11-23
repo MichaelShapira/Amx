@@ -188,12 +188,15 @@ def main(argv=None) -> int:
     ap.add_argument("--models", default="Qwen/Qwen3-4B", help="space-separated Hugging Face ids")
     ap.add_argument("--configs", default="intel_v023 ours_v033 intel_v033", help="space-separated subset")
     ap.add_argument("--kv-ours-gib", type=int, default=32, help="what cellspec gives the t2 target on this size")
-    ap.add_argument("--bucket", default="amx-gpu-bench-346399954218-us-east-1")
+    ap.add_argument("--bucket", default=None, help="the Core stack's bucket (default: looked up from the deployment)")
     ap.add_argument("--instance-id", default=None, help="reuse a running instance instead of launching")
     ap.add_argument("--keep", action="store_true", help="do not terminate the instance at the end")
     ap.add_argument("--terminate", metavar="INSTANCE_ID", default=None)
     ap.add_argument("--summarize", metavar="PREFIX", default=None)
     args = ap.parse_args(argv)
+    if not args.bucket:
+        from bench.deployment import bucket_name
+        args.bucket = bucket_name()
     ec2 = boto3.client("ec2", region_name=REGION)
     if args.terminate:
         ec2.terminate_instances(InstanceIds=[args.terminate])

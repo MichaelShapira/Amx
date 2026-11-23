@@ -129,13 +129,16 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--instance-type", default="m8i.4xlarge")
     ap.add_argument("--kv-gib", type=int, default=25, help="what cellspec gives Gemma 4 E4B on a 64 GiB host")
-    ap.add_argument("--bucket", default="amx-gpu-bench-346399954218-us-east-1")
+    ap.add_argument("--bucket", default=None, help="the Core stack's bucket (default: looked up from the deployment)")
     ap.add_argument("--instance-id", default=None, help="reuse a running instance instead of launching")
     ap.add_argument("--keep", action="store_true", help="neither terminate nor shut the instance down")
     ap.add_argument("--terminate", metavar="INSTANCE_ID", default=None)
     ap.add_argument("--summarize", metavar="PREFIX", default=None)
     ap.add_argument("--print-script", action="store_true", help="print the remote script and exit")
     args = ap.parse_args(argv)
+    if not args.bucket:
+        from bench.deployment import bucket_name
+        args.bucket = bucket_name()
     prefix = f"runs/gemma4-splitkv-ab-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}/hosts/{args.instance_type}"
     if args.print_script:
         print(render(args.bucket, prefix, args.kv_gib, not args.keep))

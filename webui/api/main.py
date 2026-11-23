@@ -26,7 +26,14 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import catalog_store, demand, pairing, report, utilization  # noqa: E402
+from bench import (  # noqa: E402
+    catalog_store,
+    demand,
+    deployment,  # noqa: E402
+    pairing,
+    report,
+    utilization,
+)
 from bench.config import RunConfig, load_targets, resolve_cells, run_instance_types  # noqa: E402
 from bench.estimate_run import estimate  # noqa: E402
 from bench.plan import GENERATIVE, levels_for_cell  # noqa: E402
@@ -34,7 +41,7 @@ from bench.pools import local_pool_sizes  # noqa: E402
 from webui.api import auth, aws, compare, headers  # noqa: E402
 from webui.api import catalog as C  # noqa: E402
 
-REGION, ACCOUNT = "us-east-1", "346399954218"
+REGION = deployment.REGION
 app = FastAPI(title="GPU vs AMX CPU benchmark", docs_url=None, redoc_url=None)
 _CACHE: dict[str, Any] = {}
 catalog_store.s3_factory = lambda: aws.client("s3")       # the live catalog is read with the app's (file-refreshed) credentials
@@ -224,7 +231,7 @@ def _run_dict(w: Wizard, notes: list[str] | None = None) -> dict:
             alts[side["hardware"]] = list(side["alternates"])
     run: dict = {
         "name": run_slug(w.name) or f"{w.use_case}-{time.strftime('%m%d-%H%M')}", "suite": w.use_case,
-        "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": ACCOUNT, "region": REGION,
+        "mode": "full" if (requests >= 200 and passes >= 3) else "smoke", "account": aws.account_id(), "region": REGION,
         "az_id": "use1-az1", "models": w.models, "cells": cells,
         "prompt_set": (w.prompt_set if w.use_case == "standard" else w.text_size if w.use_case in ("translation", "embedding")
                        else (w.decision_size if w.decision_size in ("short", "long") else "short") if w.use_case == "decision"

@@ -17,7 +17,7 @@ from bench.config import load_models, load_run, load_targets, resolve_cells
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = sorted((ROOT / "config/runs").glob("*.yaml"))
 TAGS = {"thin-torch-cuda": "thin-torch-cuda-abc123", "decider-cpu": "decider-cpu-abc123", "decider-cuda": "decider-cuda-abc123"}
-ECR = "346399954218.dkr.ecr.us-east-1.amazonaws.com/amx-gpu-bench"
+ECR = "123456789012.dkr.ecr.us-east-1.amazonaws.com/amx-gpu-bench"
 
 
 def all_specs():
@@ -28,7 +28,7 @@ def all_specs():
         for cell in resolve_cells(run, models, targets):
             yield path.stem, run, cell, cellspec.build(
                 cell, models.get(cell.model), tmap[cell.target], run, run_id=f"{path.stem}-001",
-                bucket="amx-gpu-bench-346399954218-us-east-1", hf_token_secret="amx-gpu-bench/hf-token",  # nosec B106 (a Secrets Manager secret NAME, not a value)
+                bucket="amx-gpu-bench-123456789012-us-east-1", hf_token_secret="amx-gpu-bench/hf-token",  # nosec B106 (a Secrets Manager secret NAME, not a value)
                 ecr_repo_uri=ECR, built_tags=TAGS,
                 instance_type=run.instance_types.get(cell.target))      # the size the run picked, as preflight passes it
 

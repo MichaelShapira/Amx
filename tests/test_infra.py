@@ -154,7 +154,7 @@ def test_instance_role_scopes(templates):
     stmts = [st for r in t.values() if r["Type"] == "AWS::IAM::Policy"
              for st in r["Properties"]["PolicyDocument"]["Statement"]]
     text = json.dumps(stmts)
-    assert "secretsmanager:GetSecretValue" in text and "hf-token-naqygX" in text
+    assert "secretsmanager:GetSecretValue" in text and "HfToken" in text        # the stack's own secret, by reference
     assert "cloudwatch:namespace" in text
     puts = [st for st in stmts if st["Action"] == "s3:PutObject"]
     assert puts and all("runs/*/raw" not in json.dumps(st["Resource"]) for st in puts)
@@ -251,7 +251,7 @@ def test_webapp_role_is_least_privilege(templates):
                 text.count("config/models.yaml") == 1 and "artifacts/prompts/*" in text and "artifacts/dspm/v1/requests/*" in text)
         if any(a.startswith("secretsmanager:") for a in acts):  # the one secret, by complete ARN; no create/delete/list
             assert set(acts) == {"secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"}
-            assert "hf-token-naqygX" in json.dumps(s["Resource"])
+            assert "HfToken" in json.dumps(s["Resource"])                 # the stack's secret, never a literal ARN
         if "bedrock:InvokeModel" in acts:                       # Claude and OpenAI only (settings.ALLOWED_PROVIDERS)
             text = json.dumps(s["Resource"])
             assert "anthropic.claude-*" in text and "openai.*" in text and "foundation-model/*" not in text
@@ -263,7 +263,7 @@ def test_webapp_role_is_least_privilege(templates):
             "bedrock:InvokeModel", "bedrock-agentcore:InvokeWebSearch", "secretsmanager:PutSecretValue"} <= actions
     env = {e["Name"]: e["Value"] for r in res.values() if r["Type"] == "AWS::ECS::TaskDefinition"
            for e in r["Properties"]["ContainerDefinitions"][0]["Environment"]}
-    assert "hf-token-naqygX" in env["AMXBENCH_HF_SECRET_ARN"]
+    assert "HfToken" in json.dumps(env["AMXBENCH_HF_SECRET_ARN"])          # the Core stack's secret, cross-stack reference
     task_roles = [r for r in res.values() if r["Type"] == "AWS::IAM::Role"
                   and r["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] == "ecs-tasks.amazonaws.com"]
     assert len(task_roles) == 2 and all("ManagedPolicyArns" not in r["Properties"] for r in task_roles)   # task + execution

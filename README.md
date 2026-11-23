@@ -51,10 +51,13 @@ Every results page carries a computed "why it came out this way" (`bench/mechani
 share, bytes per token, bandwidth reached against bandwidth available, arithmetic against peak), and the
 executive summary ends with a technical section built from it.
 
-**Deploying in your own account.** The CDK app, the web API and the run configurations currently name one AWS
-account (`346399954218`, `us-east-1`); search for it and replace it with yours before the first deploy (see
-[Setup](#setup)). Every resource the project creates carries the `Amx` tag, activated as a cost allocation
-tag, so the whole project's spend can be read from Cost Explorer (see [Tags and cost allocation](#tags-and-cost-allocation)).
+**Deploying in your own account.** Nothing in the code names an AWS account: the CDK app deploys to the
+account of the credentials it runs with (`CDK_DEFAULT_ACCOUNT`), the web application and the CLI ask STS, and a
+run's report records the account that ran it. Region and Availability Zone id are configuration
+(`bench/deployment.py`: `us-east-1` / `use1-az1`, overridable with `AMXBENCH_REGION` / `AMXBENCH_AZ_ID` together
+with the instance catalog). Every resource the project creates carries the `Amx` tag, activated as a cost
+allocation tag, so the whole project's spend can be read from Cost Explorer (see [Tags and cost
+allocation](#tags-and-cost-allocation)).
 
 ## Repository layout
 
@@ -74,7 +77,8 @@ tag, so the whole project's spend can be read from Cost Explorer (see [Tags and 
 ## Setup
 
 Requirements: Python 3.12, Node.js (for the pinned CDK CLI), Docker (images are built at
-deploy time), `uv` (Lambda bundling), AWS credentials for the account named in `infra/app.py` (`ACCOUNT`; `346399954218` in this checkout; the same id appears in `webui/api/main.py`, `infra/stacks/core.py` and `config/runs/*.yaml`).
+deploy time), `uv` (Lambda bundling), AWS credentials for the target account (the stacks deploy wherever the
+credentials point; `aws sts get-caller-identity` shows which account that is).
 
 ```bash
 python3.12 -m venv .venv
@@ -99,7 +103,7 @@ Tests that need torch, moto, fastapi or shellcheck skip when the package is miss
 ## Operator IAM
 
 Deploying uses the CDK bootstrap roles (the account is bootstrapped, version 32), so the
-operator needs `sts:AssumeRole` on `arn:aws:iam::346399954218:role/cdk-hnb659fds-*`.
+operator needs `sts:AssumeRole` on `arn:aws:iam::<account>:role/cdk-hnb659fds-*`.
 Running and reading results needs:
 
 | Action | Resource | Used by |

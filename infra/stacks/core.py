@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_dynamodb as ddb
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
@@ -23,11 +23,11 @@ from aws_cdk import aws_stepfunctions_tasks as tasks
 from aws_cdk import custom_resources as cr
 from constructs import Construct
 
+from bench.deployment import HF_SECRET_NAME, HF_TOKEN_UNSET
 from infra.stacks.bundling import lambda_code
 from infra.stacks.network import NetworkStack
 
 ROOT = Path(__file__).resolve().parents[2]
-HF_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:346399954218:secret:amx-gpu-bench/hf-token-naqygX"  # noqa: S105 - an ARN, not a value  # nosec B105 (an ARN, the secret's name)
 WORKER_RESERVED = 272         # Intel's benchmark sweeps to 256 concurrent requests (one worker each) plus headroom
 def _built_images() -> dict[str, tuple[str, dict]]:
     """name -> (Dockerfile, build args) for every engine image this project builds, from
@@ -65,7 +65,16 @@ class CoreStack(Stack):
             point_in_time_recovery_specification=ddb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True),
             removal_policy=RemovalPolicy.RETAIN)
-        self.hf_secret = sm.Secret.from_secret_complete_arn(self, "HfToken", HF_SECRET_ARN)
+        # The Hugging Face token slot. Created here with a placeholder; Setup -> Hugging Face token writes the real value
+        # (the web app reads the value to tell "unset" from a token). A deployment whose secret predates this stack
+        # imports it instead: -c hf_secret_arn=arn:aws:secretsmanager:...:secret:amx-gpu-bench/hf-token-XXXXXX.
+        existing = self.node.try_get_context("hf_secret_arn")
+        if existing:
+            self.hf_secret = sm.Secret.from_secret_complete_arn(self, "HfToken", str(existing))
+        else:
+            self.hf_secret = sm.Secret(self, "HfToken", secret_name=HF_SECRET_NAME, removal_policy=RemovalPolicy.RETAIN,
+                                       description="Hugging Face access token for gated models (set from the web app's Setup page)",
+                                       secret_string_value=SecretValue.unsafe_plain_text(HF_TOKEN_UNSET))
 
         # Thin-server and export images (built at deploy time, pushed to the CDK asset repository).
         self.image_assets: dict[str, ecr_assets.DockerImageAsset] = {}
@@ -126,7 +135,7 @@ class CoreStack(Stack):
         reaper = fn("reaper", "lambdas.reaper.handler", memory=256, timeout_min=5,
                     env={"IDLE_MINUTES": "30", "MAX_UPTIME_HOURS": "8"})
         preflight = fn("preflight", "lambdas.preflight.handler", memory=1024, timeout_min=5,
-                       env={"WORKER_FUNCTION_NAME": "amx-gpu-bench-worker", "HF_TOKEN_SECRET_ARN": HF_SECRET_ARN,
+                       env={"WORKER_FUNCTION_NAME": "amx-gpu-bench-worker", "HF_TOKEN_SECRET_ARN": self.hf_secret.secret_arn,
                             "ECR_REPOSITORY_URI": self.ecr_repo_uri, "HARNESS_COMMIT": harness_commit})
 
         self._grant(worker, warmup, quality, init_level, plan_wave, wave_check, perf, amx_probe, membw, agg_level,

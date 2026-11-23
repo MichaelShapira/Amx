@@ -392,7 +392,7 @@ class RunConfig(Strict):
     name: str
     suite: Suite = "standard"
     mode: Literal["smoke", "full"] = "smoke"
-    account: str
+    account: str | None = None       # filled in from the credentials that start the run (CLI, web app, preflight)
     region: str = "us-east-1"
     az_id: str = "use1-az1"
     models: list[str]

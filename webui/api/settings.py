@@ -74,7 +74,8 @@ def hf_token_status() -> dict:
     except Exception as e:  # noqa: BLE001 - say what happened, with the error code only
         return {"configured": False, "available": False, "reason": f"the secret cannot be read: {type(e).__name__}"}
     changed = d.get("LastChangedDate")
-    return {"configured": bool(changed), "available": True, "name": d.get("Name"),
+    # The stack creates the secret with a placeholder value, so "a value exists" is not "a token is stored".
+    return {"configured": hf_token_for_onboarding() is not None, "available": True, "name": d.get("Name"),
             "last_changed": changed.strftime("%Y-%m-%d %H:%M UTC") if changed else None}
 
 
@@ -101,7 +102,8 @@ def hf_token_for_onboarding() -> str | None:
         v = aws.client("secretsmanager").get_secret_value(SecretId=arn).get("SecretString") or ""
     except Exception:  # noqa: BLE001 - not set yet
         return None
-    return v.strip() or None
+    v = v.strip()
+    return v if HF_TOKEN_RE.match(v) else None          # the placeholder the stack seeds is not a token
 
 
 # ------------------------------------------------------------------------- reasoning model

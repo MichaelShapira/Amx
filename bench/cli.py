@@ -23,14 +23,13 @@ from pathlib import Path
 
 import yaml
 
-from bench import pairing
+from bench import deployment, pairing
 from bench.config import load_models, load_run, load_targets, resolve_cells, run_instance_types
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:      # `bench status` reads lambdas.common from the repo checkout
     sys.path.insert(0, str(ROOT))
-REGION = "us-east-1"
-CORE_STACK = "AmxBench-Core"
+REGION, CORE_STACK = deployment.REGION, deployment.CORE_STACK
 
 
 def _outputs() -> dict[str, str]:
@@ -183,6 +182,8 @@ def cmd_run(args) -> int:
     bucket = _resolve(args, "BucketName", "bucket")
     arn = _resolve(args, "RunStateMachineArn", "state_machine")
     run_id = f"{run.name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    if not run.account:
+        run = run.model_copy(update={"account": deployment.account_id()})
     boto3.client("s3", region_name=REGION).put_object(Bucket=bucket, Key=f"runs/{run_id}/run.yaml", Body=body)
     ex = boto3.client("stepfunctions", region_name=REGION).start_execution(
         stateMachineArn=arn, name=run_id, input=json.dumps({"run_id": run_id}))

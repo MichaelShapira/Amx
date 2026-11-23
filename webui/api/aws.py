@@ -96,6 +96,17 @@ def source() -> str:
     return _cache["source"] or "the default AWS credential chain"
 
 
+def account_id() -> str | None:
+    """The account the application's credentials belong to (STS), cached per session; None when AWS does not answer."""
+    key = ("account", id(session()))
+    if key not in _cache:
+        try:
+            _cache[key] = client("sts").get_caller_identity()["Account"]
+        except Exception:  # noqa: BLE001 - reported by /api/aws/status; a run cannot start without it anyway
+            return None
+    return _cache[key]
+
+
 def client(name: str):
     return session().client(name, region_name=REGION)
 
