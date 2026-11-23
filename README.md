@@ -8,8 +8,10 @@ account `346399954218`, `us-east-1`. It has three parts:
   Qwen3-1.7B (M1, the model Intel's Software Catalog publishes Xeon benchmarks for), Gemma 4
   E4B and E2B (M6, M7, from Intel's catalog entries), RoBERTa-large (M3) and EmbeddingGemma 300M (E1),
   on vLLM on both sides (GPU and AMX CPU; Intel's own Xeon recipe). The PyTorch and OpenVINO CPU
-  options and Flan-T5 were retired on 2026-11-20/21 (3-10x and 2.3x below vLLM on the same instance;
-  they compared engines, not CPU with GPU) and stay disabled so earlier runs still render,
+  options and Flan-T5 were retired on 2026-11-20/21: on the same m8i.4xlarge the PyTorch CPU server ran
+  3-10x below vLLM (run `dspm-1119-2241-20261120T053131Z`, the last run carrying its rows) and OpenVINO BF16
+  2.3x below vLLM on RoBERTa (run `roberta-int8-full-20261120T211803Z`, 7.9 vs 18.3 items/s; the Technical
+  page repeats the figure). They compared engines, not CPU with GPU, and stay disabled so earlier runs still render,
   native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50, P99 latency,
   throughput, prefill and decode speed, cost from the Price List API, AMX verification and a
   quality check.
