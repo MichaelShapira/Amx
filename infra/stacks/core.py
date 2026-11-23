@@ -76,6 +76,14 @@ class CoreStack(Stack):
                                        description="Hugging Face access token for gated models (set from the web app's Setup page)",
                                        secret_string_value=SecretValue.unsafe_plain_text(HF_TOKEN_UNSET))
 
+        # Spot launches need EC2's service-linked role AWSServiceRoleForEC2Spot. An account that has never used Spot
+        # does not have it, and RunInstances then fails with AuthFailure.ServiceLinkedRoleCreationNotPermitted (the
+        # first run in a fresh account, 2026-11-23). The stack creates it once; CloudFormation ignores an existing one
+        # on create and never deletes it (RETAIN: other things in the account may rely on it).
+        slr = iam.CfnServiceLinkedRole(self, "Ec2SpotServiceLinkedRole", aws_service_name="spot.amazonaws.com",
+                                       description="EC2 Spot Instances (created by AmxBench-Core for the benchmark hosts)")
+        slr.apply_removal_policy(RemovalPolicy.RETAIN)
+        self.spot_slr = slr
         # Thin-server and export images (built at deploy time, pushed to the CDK asset repository).
         self.image_assets: dict[str, ecr_assets.DockerImageAsset] = {}
         tags: dict[str, str] = {}

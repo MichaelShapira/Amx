@@ -608,3 +608,36 @@ def test_hf_access_admits_only_repo_ids_and_revisions():
                       ("google/gemma", ""), ("/google/gemma", "main")):
         with pytest.raises(ValueError):
             preflight._hf_access(repo, rev, "t")
+
+
+def test_a_non_capacity_launch_error_gives_the_target_up_with_the_real_message(aws, monkeypatch):
+    """RunInstances refused for a reason other than capacity (the first Spot launch in an account without the EC2 Spot
+    service-linked role answered AuthFailure.ServiceLinkedRoleCreationNotPermitted, 2026-11-23). Retrying cannot help:
+    the target is given up at once, every cell is not_run with the message, META.not_run carries it, and the raised
+    error names it. Before this, the ClientError escaped to the state machine's Pass catch and the run ended
+    'complete' with two 'planned' cells and no explanation."""
+    import pytest
+    from botocore.exceptions import ClientError
+
+    from lambdas import target_control as tc
+    monkeypatch.setattr(tc, "find_instance", lambda tid, run_id: None)
+    monkeypatch.setattr(tc, "_param", lambda name: "lt-0123")
+    monkeypatch.setattr(tc, "_template_type", lambda template: "g6.xlarge")
+
+    class Ec2:
+        def run_instances(self, **kw):
+            raise ClientError({"Error": {"Code": "AuthFailure.ServiceLinkedRoleCreationNotPermitted",
+                                         "Message": "The provided credentials do not have permission to create the service-linked role for EC2 Spot Instances."}},
+                              "RunInstances")
+    monkeypatch.setattr(tc, "_ec2", lambda: Ec2())
+    cells = [{"cell_id": "m1|t1-g6|bf16"}]
+    aws.set_status("r10", "CELL#m1|t1-g6|bf16", "planned")
+    aws.set_status("r10", "META", "running")
+    with pytest.raises(RuntimeError, match="ServiceLinkedRoleCreationNotPermitted.*not a capacity shortage"):
+        tc.ensure_running({"run_id": "r10", "target_id": "t1-g6", "purchase": {"type": "spot"}, "instance_type": "g6.xlarge", "cells": cells})
+    row = aws.table().get_item(Key={"pk": "RUN#r10", "sk": "CELL#m1|t1-g6|bf16"})["Item"]
+    assert row["status"] == "not_run" and "AWS refused to launch g6.xlarge" in row["reason"] and "No capacity" not in row["reason"]
+    meta = aws.table().get_item(Key={"pk": "RUN#r10", "sk": "META"})["Item"]
+    assert meta["not_run"][0]["target_id"] == "t1-g6" and "service-linked role" in meta["not_run"][0]["reason"]
+    log = aws.get_json("runs/r10/targets/t1-g6.json")
+    assert [e["event"] for e in log] == ["launch_error", "gave_up"]

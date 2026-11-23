@@ -134,7 +134,7 @@ def capacity_reason(caps: list[dict], attempts: int, purchase: dict, cause: str 
 
 
 def _give_up(run_id: str, tid: str, purchase: dict, attempts: int, cells: list[dict] | None,
-             cause: str | None = None) -> str:
+             cause: str | None = None, reason: str | None = None) -> str:
     """Record that this hardware option will not run in this run: a `gave_up` event on the target
     log, every cell of the target set to `not_run` with the reason, and the run's META row told
     which targets did not run — so the UI and the report can say so instead of a bare 'Not run'."""
@@ -142,7 +142,7 @@ def _give_up(run_id: str, tid: str, purchase: dict, attempts: int, cells: list[d
         caps = common.get_json(f"runs/{run_id}/capacity/{tid}.json")
     except ClientError:
         caps = []
-    reason = capacity_reason(caps, attempts, purchase, cause)
+    reason = reason or capacity_reason(caps, attempts, purchase, cause)      # a full sentence for a non-capacity cause
     _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "gave_up", "attempts": attempts,
                                   "refusals": len(caps), "reason": reason})
     for cell in cells or []:
@@ -216,9 +216,13 @@ def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: s
         inst = _ec2().run_instances(**kw)["Instances"][0]
     except ClientError as e:
         code = e.response["Error"]["Code"]
-        if code not in CAPACITY_CODES:
-            raise
         msg = e.response["Error"].get("Message", "")
+        if code not in CAPACITY_CODES:
+            # Not capacity: permissions, a missing service-linked role, a bad launch template. Retrying will not help;
+            # say so on the target log and give the target up with the real message (the report and the UI show it).
+            _log(run_id, tid, "targets", {"time": common.now_iso(), "event": "launch_error", "code": code,
+                                          "instance_type": instance_type or _template_type(template), "message": msg[:300]})
+            raise LaunchError(f"{code}: {msg[:300]}") from e
         az = re.search(r"Availability Zone you requested \(([a-z0-9-]+)\)", msg)
         _log(run_id, tid, "capacity", {"time": common.now_iso(), "code": code, "market": market,
                                        "instance_type": instance_type or _template_type(template),
@@ -229,6 +233,10 @@ def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: s
                                   "requested": purchase.get("type", "on-demand"),
                                   "availability_zone": inst["Placement"]["AvailabilityZone"]})
     return inst
+
+
+class LaunchError(RuntimeError):
+    """RunInstances refused for a reason other than capacity; the target is given up at once."""
 
 
 def _terminate(iid: str) -> None:
@@ -314,7 +322,13 @@ def ensure_running(event: dict, context: Any = None) -> dict:
             reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"),
                               cause=f"after {window} minutes without Spot capacity (falling back to On-Demand is off)")
             raise RuntimeError(f"{tid}: {reason}") from None
-        inst = _launch(run_id, tid, purchase, market, pick_instance_type(attempts, event.get("alternates"), requested_type))
+        try:
+            inst = _launch(run_id, tid, purchase, market, pick_instance_type(attempts, event.get("alternates"), requested_type))
+        except LaunchError as e:
+            reason = _give_up(run_id, tid, purchase, attempts, event.get("cells"), reason=(
+                f"AWS refused to launch {requested_type or 'the instance'}: {e}. This is not a capacity shortage "
+                f"(retrying would not help); fix the account or the deployment and start the run again."))
+            raise RuntimeError(f"{tid}: {reason}") from None
         if inst is None:
             _set_activity(tid, run_id, launch_attempts=attempts + 1)
             return {"ready": False, "reason": "capacity", "attempt": attempts + 1, "max_attempts": max_attempts}

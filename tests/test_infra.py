@@ -282,3 +282,14 @@ def test_aggregate_run_can_read_every_label_source(templates):
     for prefix in ("datasets/*", "artifacts/prompts/*", "runs/*"):
         assert prefix in text, prefix
     assert "artifacts/*" not in text  # labels only, not the whole artifact tree
+
+
+def test_core_creates_the_ec2_spot_service_linked_role_and_keeps_it():
+    """An account that never used Spot has no AWSServiceRoleForEC2Spot and RunInstances fails; the stack creates it
+    once and never deletes it (other things in the account may rely on it)."""
+    app = cdk.App(context={"az_name": "us-east-1a", "skip_bundling": "true", "build_images": "false",
+                           "@aws-cdk/core:defaultCrossStackReferences": "strong"})
+    core = Template.from_stack(build(app)["core"]).to_json()["Resources"]
+    slr = [r for r in core.values() if r["Type"] == "AWS::IAM::ServiceLinkedRole"]
+    assert len(slr) == 1 and slr[0]["Properties"]["AWSServiceName"] == "spot.amazonaws.com"
+    assert slr[0]["DeletionPolicy"] == "Retain"
