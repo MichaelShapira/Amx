@@ -42,9 +42,30 @@ echo "account $ACCOUNT, region $REGION"
 OUT=../deployment/webapp-outputs.json
 if [[ $DEPLOY == 1 ]]; then
   echo "deploying AmxBench-WebApp (builds the web app image)..."
-  npx cdk deploy AmxBench-WebApp --require-approval never --outputs-file "$OUT"
+  if ! npx cdk deploy AmxBench-WebApp --require-approval never --outputs-file "$OUT"; then
+    # The CLI's monitor can die on a local DNS or network blip while CloudFormation finishes on its own (seen
+    # 2026-11-23: "getaddrinfo ENOTFOUND cloudformation...", stack CREATE_COMPLETE a few minutes later). Wait for
+    # the stack itself before giving up, and take the outputs from CloudFormation.
+    echo "the CDK CLI exited with an error; checking the stack itself..." >&2
+    for _ in $(seq 1 60); do
+      STATUS=$(aws cloudformation describe-stacks --region "$REGION" --stack-name AmxBench-WebApp \
+                 --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo UNKNOWN)
+      case "$STATUS" in
+        CREATE_COMPLETE|UPDATE_COMPLETE) break ;;
+        *IN_PROGRESS*|UNKNOWN) sleep 20 ;;
+        *) echo "AmxBench-WebApp is $STATUS; see the CloudFormation console" >&2; exit 1 ;;
+      esac
+    done
+    [[ "$STATUS" == *COMPLETE ]] || { echo "AmxBench-WebApp still $STATUS after 20 minutes" >&2; exit 1; }
+    echo "the stack is $STATUS; reading its outputs from CloudFormation"
+  fi
 fi
-[[ -f "$OUT" ]] || { echo "no $OUT; run without --no-deploy first" >&2; exit 1; }
+if [[ ! -f "$OUT" ]] || ! python3 -c "import json,sys; json.load(open(sys.argv[1]))['AmxBench-WebApp']['UserPoolId']" "$OUT" 2>/dev/null; then
+  mkdir -p "$(dirname "$OUT")"
+  aws cloudformation describe-stacks --region "$REGION" --stack-name AmxBench-WebApp --query 'Stacks[0].Outputs' --output json \
+    | python3 -c "import json,sys; o=json.load(sys.stdin); json.dump({'AmxBench-WebApp': {x['OutputKey']: x['OutputValue'] for x in o}}, open(sys.argv[1],'w'))" "$OUT" \
+    || { echo "no $OUT and the stack's outputs cannot be read; run without --no-deploy first" >&2; exit 1; }
+fi
 POOL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['AmxBench-WebApp']['UserPoolId'])" "$OUT")
 URL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['AmxBench-WebApp']['ServiceUrl'])" "$OUT")
 GROUP=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['AmxBench-WebApp']['OperatorGroup'])" "$OUT")
