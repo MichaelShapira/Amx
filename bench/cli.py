@@ -277,6 +277,35 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def cmd_hf_token(args) -> int:
+    """`bench hf-token` shows whether a token is stored; `--stdin` (or HF_TOKEN in the environment) stores one after
+    checking its shape and asking huggingface.co whose token it is. The value never reaches stdout or the history."""
+    import os
+
+    import boto3
+
+    from bench import hf_token
+    arn = args.secret or _outputs()["HfSecretArn"]
+    sm = boto3.client("secretsmanager", region_name=REGION)
+    token = None
+    if args.stdin:
+        token = sys.stdin.readline().strip()
+    elif os.environ.get("HF_TOKEN"):
+        token = os.environ["HF_TOKEN"].strip()
+    if token:
+        who = hf_token.verify(token)
+        if not who["ok"] and not args.force:
+            print(f"not stored: {who['error']}. Check the token on huggingface.co (Settings -> Access Tokens) or pass --force.")
+            return 2
+        st = hf_token.store(sm, arn, token)
+        print(f"stored for Hugging Face user {who['name'] or '(unverified)'}; secret {st['name']}, changed {st['last_changed']}")
+        return 0
+    st = hf_token.status(sm, arn)
+    print(f"secret {st['name']}: " + ("a token is stored" if st["configured"] else "NO token stored (gated models cannot be downloaded)")
+          + (f"; last changed {st['last_changed']}" if st["last_changed"] else ""))
+    return 0 if st["configured"] else 1
+
+
 def cmd_estimate(args) -> int:
     from bench import estimator
 
@@ -323,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("run_id")
     sp.add_argument("--yes", action="store_true")
     sp.add_argument("--state-machine", dest="state_machine")
+    ht = sub.add_parser("hf-token", help="show whether a Hugging Face token is stored; --stdin or HF_TOKEN stores one")
+    ht.add_argument("--stdin", action="store_true", help="read the token from the first line of stdin")
+    ht.add_argument("--force", action="store_true", help="store even when huggingface.co does not accept the token")
+    ht.add_argument("--secret", help="the secret's ARN or name (default: the Core stack's HfSecretArn output)")
     es = sub.add_parser("estimate")
     es.add_argument("project")
     es.add_argument("--summary")
@@ -330,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     return {"validate": cmd_validate, "plan": cmd_plan, "upload-artifacts": cmd_upload, "run": cmd_run, "pair": cmd_pair,
             "rejudge-amx": cmd_rejudge,
-            "status": cmd_status, "report": cmd_report, "stop": cmd_stop, "estimate": cmd_estimate}[args.cmd](args)
+            "status": cmd_status, "report": cmd_report, "stop": cmd_stop, "estimate": cmd_estimate,
+            "hf-token": cmd_hf_token}[args.cmd](args)
 
 
 if __name__ == "__main__":

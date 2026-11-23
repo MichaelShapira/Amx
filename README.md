@@ -121,34 +121,61 @@ A read-only role is enough for `bench status`, `bench report` and the UI results
 
 ## Hugging Face token
 
-The token is stored as the Secrets Manager secret `amx-gpu-bench/hf-token` (plain string); the web app's Setup page writes it there too.
-Gemma (M4) is gated; the token's account has accepted its license. Preflight checks that
-the token reaches the pinned revision of every gated model and refuses the run otherwise.
-The token is never written to logs, S3 or the repo: hosts read it in `stage_model.sh`
-through the instance role.
+Needed only for **gated** models: the Gemma family (Gemma 4 E4B / E2B, the Strands Deciders' base weights) and
+EmbeddingGemma. Their licenses are accepted on huggingface.co and their files download only with an access token
+of that account (a *read* token is enough: Hugging Face → Settings → Access Tokens). Qwen3, RoBERTa and the other
+non-gated models run without one.
 
-To rotate it without putting the value in shell history:
+The token lives in the Secrets Manager secret `amx-gpu-bench/hf-token`, which the Core stack creates with the
+placeholder value `unset`. Three ways write the real value, all equivalent:
 
-```bash
-umask 077; read -rs HF_NEW; printf %s "$HF_NEW" > /tmp/hf.txt; unset HF_NEW
-aws secretsmanager put-secret-value --secret-id amx-gpu-bench/hf-token --secret-string file:///tmp/hf.txt
-rm /tmp/hf.txt
-```
+| When | How |
+|---|---|
+| At deploy time (optional) | `HF_TOKEN=hf_… infra/deploy.sh --email …`, or `infra/deploy.sh --hf-token-stdin < token.txt`. The script stores it right after the Core stack exists. |
+| From the application | **Setup → Hugging Face token**: paste it and press *Save token*. The status badge reads *Set · last changed …* or *Not set — gated models cannot be downloaded*. Operators only. |
+| From a shell, any time | `.venv/bin/bench hf-token --stdin < token.txt` (or `HF_TOKEN=hf_… .venv/bin/bench hf-token`). Checks the shape, asks huggingface.co whose token it is, then stores it. `.venv/bin/bench hf-token` alone reports whether one is stored. |
+
+What happens with it: the benchmark hosts read the secret through their instance role when they stage a gated
+model (`host/stage_model.sh`); the model-adding job reads it to fetch a gated model's tokenizer; preflight checks
+that the stored token reaches the pinned revision of every gated model in a run and refuses the run with a plain
+sentence otherwise. The value is never printed, logged, written to S3, put into CloudFormation or committed. To
+rotate it, store the new one by any of the three ways; the hosts pick it up on their next model download.
 
 ## Deploy
+
+One script does the whole deployment, into whichever account the credentials belong to:
+
+```bash
+infra/deploy.sh --email you@example.com                      # prompts for the web app's password (hidden)
+HF_TOKEN=hf_… infra/deploy.sh --email you@example.com         # the same, and store the Hugging Face token (optional)
+```
+
+It deploys the stacks (`AmxBench-Network`, `AmxBench-Core`, one `AmxBench-Target-<id>` per enabled hardware
+option), stores the Hugging Face token when given one (see [Hugging Face token](#hugging-face-token)), deploys
+`AmxBench-WebApp` with its one sign-in user (`infra/deploy_webapp.sh`), and uploads the prompt pools and datasets
+(`bench upload-artifacts`). It prints the application's URL at the end. `--stacks-only` stops after the token;
+`--skip-stacks` runs the later steps against stacks that already exist. The same steps by hand:
 
 ```bash
 cd infra
 npx cdk diff  AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Target-t2-m8i-4xl
 npx cdk deploy AmxBench-Network AmxBench-Core AmxBench-Target-t1-g6 AmxBench-Target-t2-m8i-4xl
+cd .. && .venv/bin/bench hf-token --stdin < token.txt          # optional
+infra/deploy_webapp.sh --email you@example.com
+.venv/bin/bench upload-artifacts
 ```
+
+A deployment that predates the stack-owned secret (the secret `amx-gpu-bench/hf-token` already exists in the
+account, created by hand) imports it instead of creating a new one: `npx cdk deploy AmxBench-Core -c
+hf_secret_arn=<its full ARN>`, on every deploy of that account.
 
 - **What gets created.** A VPC with one private and one public subnet in `use1-az1`, one
   NAT gateway, S3 and DynamoDB gateway endpoints, the bench bucket (Block Public Access,
   TLS only, SSE-S3, retained on destroy), the DynamoDB table (retained), the Lambdas, two
   state machines, a reaper schedule (every 10 minutes) and one launch template plus
-  instance role per target stack. Everything carries the tags `project=amx-gpu-bench`,
-  `owner=operator`, `purpose=cpu-amx-vs-gpu-benchmark`.
+  instance role per target stack, and the Hugging Face token secret (empty until a token is stored).
+  Everything carries the tags `Amx=amx-gpu-bench`, `project=amx-gpu-bench`, `owner=operator`,
+  `purpose=cpu-amx-vs-gpu-benchmark`.
 - **Standing cost while the stacks exist:** the NAT gateway, $0.045/hour (about $1.08 a
   day), plus data processing. No instance runs until a run starts one; the reaper stops
   (On-Demand) or terminates (Spot) any target with no activity for 30 minutes, and any

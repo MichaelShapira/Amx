@@ -20,10 +20,11 @@ import re
 import time
 from typing import Any
 
+from bench import hf_token
 from webui.api import aws
 
 SETTINGS_KEY = {"pk": "SETTINGS", "sk": "app"}
-HF_TOKEN_RE = re.compile(r"^hf_[A-Za-z0-9]{20,}$")
+HF_TOKEN_RE = hf_token.HF_TOKEN_RE
 ALLOWED_PROVIDERS = ("anthropic", "openai")       # what the task role may invoke (infra/stacks/webapp.py)
 _cache: dict[str, Any] = {}          # the settings item (30 s)
 _models: dict[str, Any] = {}         # the Bedrock model list (1 h)
@@ -70,24 +71,17 @@ def hf_token_status() -> dict:
     if not arn:
         return {"configured": False, "available": False, "reason": "no secret is wired to this deployment"}
     try:
-        d = aws.client("secretsmanager").describe_secret(SecretId=arn)
+        # The stack creates the secret with a placeholder value, so "a value exists" is not "a token is stored".
+        return {**hf_token.status(aws.client("secretsmanager"), arn), "available": True}
     except Exception as e:  # noqa: BLE001 - say what happened, with the error code only
         return {"configured": False, "available": False, "reason": f"the secret cannot be read: {type(e).__name__}"}
-    changed = d.get("LastChangedDate")
-    # The stack creates the secret with a placeholder value, so "a value exists" is not "a token is stored".
-    return {"configured": hf_token_for_onboarding() is not None, "available": True, "name": d.get("Name"),
-            "last_changed": changed.strftime("%Y-%m-%d %H:%M UTC") if changed else None}
 
 
 def set_hf_token(token: str, who: str | None) -> dict:
-    token = (token or "").strip()
-    if not HF_TOKEN_RE.match(token):
-        raise ValueError("That does not look like a Hugging Face token: it starts with hf_ followed by letters and digits "
-                         "(Hugging Face → Settings → Access Tokens).")
     arn = hf_secret_arn()
     if not arn:
         raise RuntimeError("no secret is wired to this deployment")
-    aws.client("secretsmanager").put_secret_value(SecretId=arn, SecretString=token)
+    hf_token.store(aws.client("secretsmanager"), arn, token)          # ValueError when it does not look like a token
     put({"hf_token_set_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, who)
     return hf_token_status()
 
@@ -102,8 +96,7 @@ def hf_token_for_onboarding() -> str | None:
         v = aws.client("secretsmanager").get_secret_value(SecretId=arn).get("SecretString") or ""
     except Exception:  # noqa: BLE001 - not set yet
         return None
-    v = v.strip()
-    return v if HF_TOKEN_RE.match(v) else None          # the placeholder the stack seeds is not a token
+    return v.strip() if hf_token.looks_like_token(v) else None     # the placeholder the stack seeds is not a token
 
 
 # ------------------------------------------------------------------------- reasoning model

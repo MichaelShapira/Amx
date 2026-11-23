@@ -149,7 +149,8 @@ class CoreStack(Stack):
         for k, v in {"BucketName": self.bucket.bucket_name, "TableName": self.table.table_name,
                      "RunStateMachineArn": self.run_sm.state_machine_arn,
                      "LevelStateMachineArn": self.level_sm.state_machine_arn,
-                     "EcrRepositoryUri": self.ecr_repo_uri or "none"}.items():
+                     "EcrRepositoryUri": self.ecr_repo_uri or "none",
+                     "HfSecretArn": self.hf_secret.secret_arn}.items():
             CfnOutput(self, k, value=v)
 
     # ------------------------------------------------------------------ IAM
