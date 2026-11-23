@@ -10,7 +10,8 @@ import pytest
 cdk = pytest.importorskip("aws_cdk")
 from aws_cdk.assertions import Match, Template  # noqa: E402
 
-from infra.app import PROJECT_TAGS, build  # noqa: E402
+from bench.tags import COST_ALLOCATION_TAG, PROJECT_TAGS  # noqa: E402
+from infra.app import build  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -128,6 +129,24 @@ def test_every_taggable_resource_has_project_tags(templates):
             if not set(PROJECT_TAGS) <= keys:
                 untagged.append(f"{name}/{lid}")
     assert untagged == []
+    assert COST_ALLOCATION_TAG in PROJECT_TAGS          # the cost allocation key rides on every taggable resource
+
+
+def test_cost_allocation_tag_is_activated_and_fargate_tasks_inherit_the_tags(templates):
+    """Core activates the project's tag key as a cost allocation tag (Cost Explorer takes no resource ARN, so the one
+    statement is '*'; a key billing has not met yet is tolerated and retried on the next deploy); the web service
+    propagates its tags to the tasks the bill meters; the per-run instances get the same tags from bench.tags."""
+    core = templates["core"].to_json()["Resources"]
+    custom = [r for r in core.values() if r["Type"] == "Custom::AWS"]
+    assert len(custom) == 1
+    create = json.loads(custom[0]["Properties"]["Create"]) if isinstance(custom[0]["Properties"]["Create"], str) else custom[0]["Properties"]["Create"]
+    assert create["service"] == "CostExplorer" and create["action"] == "updateCostAllocationTagsStatus"
+    assert create["parameters"]["CostAllocationTagsStatus"] == [{"TagKey": COST_ALLOCATION_TAG, "Status": "Active"}]
+    assert create["ignoreErrorCodesMatching"] == "ValidationException"
+    stmts = [s for r in core.values() if r["Type"] == "AWS::IAM::Policy" for s in r["Properties"]["PolicyDocument"]["Statement"]]
+    assert any(s["Action"] == "ce:UpdateCostAllocationTagsStatus" for s in stmts)
+    svc = next(r for r in _web(templates).values() if r["Type"] == "AWS::ECS::Service")["Properties"]
+    assert svc["PropagateTags"] == "SERVICE" and svc["EnableECSManagedTags"] is True
 
 
 def test_instance_role_scopes(templates):

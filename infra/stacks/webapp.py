@@ -162,7 +162,9 @@ class WebAppStack(Stack):
             desired_count=1, min_healthy_percent=0, max_healthy_percent=100,     # one task; replaced in place
             assign_public_ip=False, vpc_subnets=core.network.private_subnets, security_groups=[sg_task],
             circuit_breaker=ecs.DeploymentCircuitBreaker(enable=True, rollback=True),
-            enable_execute_command=False, health_check_grace_period=Duration.seconds(180))
+            enable_execute_command=False, health_check_grace_period=Duration.seconds(180),
+            # Tags on the service do not reach its tasks by themselves; the tasks are what the bill meters.
+            propagate_tags=ecs.PropagatedTagSource.SERVICE, enable_ecs_managed_tags=True)
         listener = self.lb.add_listener("Http", port=80, protocol=elb.Protocol.TCP)
         listener.add_targets("Web", port=PORT, protocol=elb.Protocol.TCP, targets=[self.service],
                              deregistration_delay=Duration.seconds(30), preserve_client_ip=False,

@@ -1,47 +1,60 @@
-# amx-gpu-bench
+# amx-gpu-bench: should this model run on a GPU or on an Intel AMX CPU?
 
-A benchmark harness that compares small-model inference (at most 4B parameters) on
-NVIDIA GPU instances (g6/g5) with Intel AMX CPU instances (m8i/c8i, m7i as fallback) in
-account `346399954218`, `us-east-1`. It has three parts:
+A benchmark harness that answers that question with measurements in your own AWS account. It runs the same
+model on an NVIDIA GPU instance (g6 L4, g6e L40S) and on an Intel Xeon instance with AMX (m8i, c8i) under the
+same load, with the same serving software on both sides (vLLM), proves that the CPU really used its AMX units,
+and reports throughput, responsiveness, cost per unit of work, accuracy, and the load range in which each option
+is the cheaper choice. A web application drives it: a seven-step wizard, live run progress, a results page whose
+first section is **Where the CPU is the better choice**, and an executive summary written for product readers.
 
-- **Standard suite.** The catalog (reset 2026-11-19 to the models the comparison is about):
-  Qwen3-1.7B (M1, the model Intel's Software Catalog publishes Xeon benchmarks for), Gemma 4
-  E4B and E2B (M6, M7, from Intel's catalog entries), RoBERTa-large (M3) and EmbeddingGemma 300M (E1),
-  on vLLM on both sides (GPU and AMX CPU; Intel's own Xeon recipe). The PyTorch and OpenVINO CPU
-  options and Flan-T5 were retired on 2026-11-20/21: on the same m8i.4xlarge the PyTorch CPU server ran
-  3-10x below vLLM (run `dspm-1119-2241-20261120T053131Z`, the last run carrying its rows) and OpenVINO BF16
-  2.3x below vLLM on RoBERTa (run `roberta-int8-full-20261120T211803Z`, 7.9 vs 18.3 items/s; the Technical
-  page repeats the figure). They compared engines, not CPU with GPU, and stay disabled so earlier runs still render,
-  native PyTorch, driven by a Lambda fan-out load generator. Reports P1, P50, P99 latency,
-  throughput, prefill and decode speed, cost from the Price List API, AMX verification and a
-  quality check.
-- **DSPM/DLP suite.** Narrow-label classification (`SENSITIVE`/`NOT_SENSITIVE`,
-  `ALLOW`/`BLOCK`, one category) on a synthetic dataset built in this repo, plus two
-  purpose-built detectors (D1 openai/privacy-filter, D2 Roblox PII classifier v2).
-- **Translation suite.** English ⇄ German and English ⇄ Spanish on a synthetic parallel
-  corpus built in this repo (`tools/translation`): characters translated per second, cost
-  per million characters, and translation quality (chrF) against the reference and against
-  the GPU's own output. See [Translation suite](#translation-suite).
-- **Embedding suite.** The corpus's texts in all three languages embedded by EmbeddingGemma
-  (vLLM pooling runner on GPU and CPU, PyTorch through the thin server): embeddings per
-  second, cost per million embeddings, cosine agreement with the GPU's vectors and
-  cross-lingual retrieval recall@1 (a German or Spanish text's nearest English neighbour
-  should be its own translation). All prefill, no decode: the CPU's best case.
-- **Intel's benchmark, reproduced.** Intel's Software Catalog method (`vllm bench serve`,
-  random 128-token prompts, 128-token answers with `ignore_eos`, pass at TPOT ≤ 100 ms and
-  TTFT ≤ 3 s) as a suite, with Intel's own published figures for the same model
-  (`config/intel_catalog_benchmarks.json`, 79 rows for Qwen3 1.7B/4B/8B and Llama 3.1 8B on
-  two-socket Xeon 6 servers) shown per core next to the run's. Every results page also
-  carries a computed "why it came out this way" (`bench/mechanics.py`: reading vs writing
-  share, bytes per token, bandwidth reached against bandwidth available, arithmetic against
-  peak), and the executive summary ends with a "Technical details" section built from it.
-- **Migration calculator.** Estimates the engineering effort to move a model from NVIDIA
-  to AMX and recommends a target based on capacity.
+![Architecture](docs/architecture.png)
 
-GPU capacity is the decision driver: a CPU configuration is recommended when it meets the
-SLA, and cost is shown as information. The spec is in
-[.kiro/specs/cpu-amx-vs-gpu-inference/](.kiro/specs/cpu-amx-vs-gpu-inference/)
-(requirements, design and tasks, revision 3).
+**What it has found so far.** On AWS pricing the GPU wins peak throughput per dollar on every workload
+measured (4x to 16x, depending on the task), because one L4 carries about 7.5x the arithmetic and 2.7x the
+memory bandwidth of the eight Xeon cores that cost the same per hour. The CPU wins at low and moderate load
+(below a crossover the results page computes), on availability when GPU launches are refused, on the smallest
+unit you can buy, and on capacity you already pay for. The tool computes all four from each run instead of
+asserting them. Details and sources: [What the CPU can and cannot win](#what-the-cpu-can-and-cannot-win).
+
+**Documentation.**
+- [User guide](docs/USER_GUIDE.md): for product readers; the problem, every screen, how to read the results.
+  The same text is the **User guide** page of the web application.
+- This README: the operator manual (deploy, run, cost, methodology, teardown, security).
+- The **Technical details** page of the web application: the method down to the exact container images.
+- [docs/recipe-check-2026-11-19.md](docs/recipe-check-2026-11-19.md): the CPU side checked against Intel's own recipe.
+- The spec: [.kiro/specs/cpu-amx-vs-gpu-inference/](.kiro/specs/cpu-amx-vs-gpu-inference/) (requirements, design, tasks).
+
+**Use cases (suites).**
+
+- **Chat and text generation.** The catalog: Qwen3-1.7B (the model Intel's Software Catalog publishes Xeon
+  benchmarks for), Gemma 4 E4B and E2B, RoBERTa-large (classifier) and EmbeddingGemma 300M, on vLLM on both
+  sides (Intel's own Xeon recipe on the CPU). Reports P1/P50/P99 latency, throughput, prefill and decode speed,
+  cost from the Price List API, the AMX verdict and an answer-quality check against the GPU. The PyTorch and
+  OpenVINO CPU options and Flan-T5 were retired on 2026-11-20/21: on the same m8i.4xlarge the PyTorch CPU server
+  ran 3-10x below vLLM (run `dspm-1119-2241-20261120T053131Z`) and OpenVINO BF16 2.3x below vLLM on RoBERTa (run
+  `roberta-int8-full-20261120T211803Z`, 7.9 vs 18.3 items/s). They compared engines, not CPU with GPU, and stay
+  disabled so earlier runs still render.
+- **Sensitive-data detection (DSPM/DLP).** Narrow-label classification (`SENSITIVE`/`NOT_SENSITIVE`,
+  `ALLOW`/`BLOCK`, one category) on a synthetic dataset of 3,000 documents built in this repository, scored
+  with confidence intervals; the decision models answer the policy question as one typed decision.
+- **Translation.** English ⇄ German and English ⇄ Spanish on a synthetic parallel corpus (`tools/translation`):
+  characters per second, cost per million characters, chrF against the reference and against the GPU.
+- **Embeddings.** The corpus in three languages embedded by EmbeddingGemma: embeddings per second, cost per
+  million, cosine agreement with the GPU's vectors, cross-lingual retrieval recall@1. All prefill: the CPU's best case.
+- **Agent decisions.** The Strands Decider models (E4B and 12B on Gemma 4): typed decisions (choice, yes/no,
+  scale) with calibrated confidence, decisions per second, accuracy against gold answers, agreement with the GPU.
+- **Intel's benchmark, reproduced.** Intel's Software Catalog method (`vllm bench serve`, 128-token prompts and
+  answers, pass at TPOT ≤ 100 ms and TTFT ≤ 3 s), with Intel's published figures for the same model
+  (`config/intel_catalog_benchmarks.json`) shown per core next to the run's.
+
+Every results page carries a computed "why it came out this way" (`bench/mechanics.py`: reading against writing
+share, bytes per token, bandwidth reached against bandwidth available, arithmetic against peak), and the
+executive summary ends with a technical section built from it.
+
+**Deploying in your own account.** The CDK app, the web API and the run configurations currently name one AWS
+account (`346399954218`, `us-east-1`); search for it and replace it with yours before the first deploy (see
+[Setup](#setup)). Every resource the project creates carries the `Amx` tag, activated as a cost allocation
+tag, so the whole project's spend can be read from Cost Explorer (see [Tags and cost allocation](#tags-and-cost-allocation)).
 
 ## Repository layout
 
@@ -61,7 +74,7 @@ SLA, and cost is shown as information. The spec is in
 ## Setup
 
 Requirements: Python 3.12, Node.js (for the pinned CDK CLI), Docker (images are built at
-deploy time), `uv` (Lambda bundling), AWS credentials for `346399954218`.
+deploy time), `uv` (Lambda bundling), AWS credentials for the account named in `infra/app.py` (`ACCOUNT`; `346399954218` in this checkout; the same id appears in `webui/api/main.py`, `infra/stacks/core.py` and `config/runs/*.yaml`).
 
 ```bash
 python3.12 -m venv .venv
@@ -357,6 +370,33 @@ themes; GPU is always green and CPU always blue.
 `webui/smoke.mjs` drives every page headlessly with Playwright and fails on any console error;
 `tests/test_webui_api.py` covers the API offline.
 
+## Tags and cost allocation
+
+Every taggable resource of every stack carries the tags in `bench/tags.py` (`cdk.Tags.of(app)` in
+`infra/app.py`): `Amx=amx-gpu-bench`, `project`, `owner`, `purpose`. The EC2 instances and volumes a run
+launches are not stack resources; `lambdas/target_control.py` puts the same tags on them at `RunInstances`,
+plus `bench:managed`, `bench:target` and `bench:run`. The web service propagates its tags to its Fargate tasks
+(`propagate_tags`), which is what the bill meters. A test (`tests/test_infra.py`) fails when a taggable
+resource misses one of the tags.
+
+`Amx` is the project's **cost allocation tag**: once active, Cost Explorer, budgets and the Cost and Usage
+Report can group and filter by it. The Core stack activates it with a small custom resource
+(`CostExplorer.UpdateCostAllocationTagsStatus`). Billing only learns a tag key after a resource carrying it
+has been billed, which takes up to 24 hours after the first tagged deploy, and the API refuses a key it has
+not met yet, so on a fresh account the first activation attempt is tolerated to fail. Re-run it once the key
+has appeared:
+
+```bash
+aws ce list-cost-allocation-tags --type UserDefined --region us-east-1 --query 'CostAllocationTags[?TagKey==`Amx`]'
+cd infra && npx cdk deploy AmxBench-Core -c cost_tag_revision=2        # re-runs the activation (any new value)
+# or by hand, same effect:
+aws ce update-cost-allocation-tags-status --region us-east-1 --cost-allocation-tags-status TagKey=Amx,Status=Active
+```
+
+Cost allocation tags are account-wide billing configuration; in an AWS Organization the call must come from
+the management account (or an account delegated for billing). Bedrock model invocations cannot be tagged per
+request and are not attributed; the Lambda, Fargate, EC2, S3, DynamoDB, CloudFront and CloudWatch costs are.
+
 ## Cost per run
 
 ```
@@ -549,3 +589,8 @@ the target security group admits it only from the worker security group. By deci
 the endpoints have no API key; the network controls are the boundary. Access to hosts is
 through SSM. The bucket blocks public access and denies non-TLS requests. The UI binds to
 loopback.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The models, container images and datasets the harness downloads keep their own
+licenses (the catalog records each model's; a research-only license is shown on the model card and in the report).

@@ -20,6 +20,7 @@ from aws_cdk import aws_secretsmanager as sm
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
+from aws_cdk import custom_resources as cr
 from constructs import Construct
 
 from infra.stacks.bundling import lambda_code
@@ -132,6 +133,7 @@ class CoreStack(Stack):
                     agg_run, control, reaper, preflight)
         self.level_sm = self._level_state_machine(init_level, warmup, perf, plan_wave, worker, wave_check, agg_level)
         self.run_sm = self._run_state_machine(preflight, control, amx_probe, membw, quality, agg_run)
+        self._activate_cost_allocation_tag(str(self.node.try_get_context("cost_tag_revision") or "1"))
         self.preflight_fn = preflight                     # the web app reads its HARNESS_COMMIT
         events.Rule(self, "ReaperSchedule", schedule=events.Schedule.rate(Duration.minutes(10)),
                     targets=[targets.LambdaFunction(reaper)])
@@ -144,6 +146,29 @@ class CoreStack(Stack):
     # ------------------------------------------------------------------ IAM
     def _obj(self, *patterns: str) -> list[str]:
         return [self.bucket.arn_for_objects(p) for p in patterns]
+
+    def _activate_cost_allocation_tag(self, revision: str) -> None:
+        """Turn the project's tag key into an AWS cost allocation tag (Cost Explorer, CUR), so the whole project's
+        spend groups under it. Billing only knows a key once a resource carrying it has been billed (up to a day
+        after the first deploy), and the API refuses an unknown key with a ValidationException, so that error is
+        tolerated here and the call is repeated on demand: `cdk deploy AmxBench-Core -c cost_tag_revision=<N+1>`,
+        or by hand `aws ce update-cost-allocation-tags-status --cost-allocation-tags-status TagKey=Amx,Status=Active`.
+        Cost Explorer actions take no resource ARN (the policy below is the narrowest grant there is)."""
+        from bench.tags import COST_ALLOCATION_TAG
+        call = cr.AwsSdkCall(
+            service="CostExplorer", action="updateCostAllocationTagsStatus",
+            parameters={"CostAllocationTagsStatus": [{"TagKey": COST_ALLOCATION_TAG, "Status": "Active"}],
+                        "Revision": revision},    # a changed property re-runs the call on the next deploy
+            physical_resource_id=cr.PhysicalResourceId.of(f"cost-allocation-tag-{COST_ALLOCATION_TAG}"),
+            region="us-east-1",                   # Cost Explorer's single endpoint
+            ignore_error_codes_matching="ValidationException")
+        cr.AwsCustomResource(
+            self, "CostAllocationTag", on_create=call, on_update=call, install_latest_aws_sdk=False,
+            policy=cr.AwsCustomResourcePolicy.from_statements([iam.PolicyStatement(
+                actions=["ce:UpdateCostAllocationTagsStatus"], resources=["*"])]),
+            log_group=logs.LogGroup(self, "LogsCostAllocationTag", log_group_name="/aws/lambda/amx-gpu-bench-cost-allocation-tag",
+                                    retention=logs.RetentionDays.ONE_MONTH, removal_policy=RemovalPolicy.DESTROY),
+            timeout=Duration.minutes(2))
 
     def _grant(self, worker, warmup, quality, init_level, plan_wave, wave_check, perf, amx_probe, membw, agg_level,
                agg_run, control, reaper, preflight) -> None:

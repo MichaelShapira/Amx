@@ -198,10 +198,10 @@ def _template_type(template_id: str) -> str | None:
 
 def _launch(run_id: str, tid: str, purchase: dict, market: str, instance_type: str | None = None) -> dict | None:
     template = _param(f"/amx-gpu-bench/targets/{tid}/launch-template")
+    from bench.tags import PROJECT_TAGS
     tags = [{"Key": "bench:managed", "Value": "true"}, {"Key": "bench:target", "Value": tid},
             {"Key": "bench:run", "Value": run_id}, {"Key": "Name", "Value": f"amx-gpu-bench-{tid}"},
-            {"Key": "project", "Value": "amx-gpu-bench"}, {"Key": "owner", "Value": "operator"},
-            {"Key": "purpose", "Value": "cpu-amx-vs-gpu-benchmark"}]
+            *({"Key": k, "Value": v} for k, v in PROJECT_TAGS.items())]
     # Subnet, security group, role, IMDSv2 and the no-public-IP setting all come from the template.
     kw: dict[str, Any] = {"LaunchTemplate": {"LaunchTemplateId": template, "Version": "$Latest"},
                           "MinCount": 1, "MaxCount": 1,

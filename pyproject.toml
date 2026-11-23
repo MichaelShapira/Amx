@@ -1,7 +1,11 @@
 [project]
 name = "amx-gpu-bench"
 version = "0.1.0"
-description = "CPU (Intel AMX) vs GPU inference benchmark harness, DSPM/DLP suite and migration effort calculator"
+description = "CPU (Intel AMX) vs GPU inference benchmark harness: same model, same load, same serving software on both sides"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Michael Shapira" }]
 requires-python = ">=3.12"
 # An application, not a library: every dependency is pinned to the version uv.lock resolves (uv sync installs the
 # hash-locked tree exactly). Bump a pin and re-run `uv lock` together.

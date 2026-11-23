@@ -22,13 +22,13 @@ if str(ROOT) not in sys.path:
 import aws_cdk as cdk  # noqa: E402
 
 from bench.config import load_targets  # noqa: E402
+from bench.tags import PROJECT_TAGS  # noqa: E402
 from infra.stacks.core import CoreStack  # noqa: E402
 from infra.stacks.network import NetworkStack  # noqa: E402
 from infra.stacks.target import TargetStack  # noqa: E402
 from infra.stacks.webapp import WebAppStack  # noqa: E402
 
 ACCOUNT, REGION, AZ_ID = "346399954218", "us-east-1", "use1-az1"
-PROJECT_TAGS = {"project": "amx-gpu-bench", "owner": "operator", "purpose": "cpu-amx-vs-gpu-benchmark"}
 
 
 def resolve_az_name(app: cdk.App) -> str:

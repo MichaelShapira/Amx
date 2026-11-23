@@ -24,9 +24,12 @@ infra/cdk.out/
 infra/node_modules/
 prompts/generated/
 reports/local/
+deployment/            # cdk --outputs-file targets; the CLI and the app read CloudFormation directly
 /runs/
 webui/.shots/
 webui/dist/
 webui/node_modules/
 .protoshield/
 .holmes/
+# cdk --outputs-file targets; the CLI and the app read CloudFormation directly
+deployment/
