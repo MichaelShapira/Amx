@@ -41,7 +41,7 @@ dev = [
 bench = "bench.cli:main"
 
 [build-system]
-requires = ["setuptools>=70,<81"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

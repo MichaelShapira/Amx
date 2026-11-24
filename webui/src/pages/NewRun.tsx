@@ -392,13 +392,13 @@ function StepHardware({ w, set }: SP) {
       <Label help="Run every hardware option at the same time (fastest; one instance per option is up at once) or one after another (fewer instances running at any moment; the run takes longer). Results are the same either way.">How to run the hardware options</Label>
       <Toggle value={w.parallel_targets ? "par" : "seq"} onChange={(v) => set({ parallel_targets: v === "par" })} options={[{ value: "par", label: "All in parallel" }, { value: "seq", label: "One after another" }]} />
       <div className="mt">
-        <Label help="Spot: spare capacity at a discount that AWS may reclaim with two minutes' notice; the run then launches a replacement and re-runs only the unfinished measurements. On-Demand: guaranteed for the run, full price. Cost columns always use On-Demand prices so results stay comparable.">How to buy the test instances</Label>
-        <Toggle value={w.purchase} onChange={(v) => set({ purchase: v })} options={[{ value: "spot", label: "Spot (cheaper, may be interrupted)" }, { value: "on-demand", label: "On-Demand (guaranteed)" }]} />
+        <Label help="Spot: spare capacity at a discount that AWS may reclaim with two minutes' notice; the run then launches a replacement and re-runs only the unfinished measurements. On-Demand: not subject to Spot interruption, full price. Cost columns always use On-Demand prices so results stay comparable.">How to buy the test instances</Label>
+        <Toggle value={w.purchase} onChange={(v) => set({ purchase: v })} options={[{ value: "spot", label: "Spot (cheaper, may be interrupted)" }, { value: "on-demand", label: "On-Demand (full price, no Spot interruption)" }]} />
         {w.purchase === "spot" && (
           <div className="row small mt" style={{ alignItems: "center", gap: 8 }}>
             <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={w.spot_fallback} onChange={(e) => set({ spot_fallback: e.target.checked })} /> Fall back to On-Demand when Spot has had no capacity for</label>
             <input type="number" min={1} max={720} value={w.spot_wait_minutes} disabled={!w.spot_fallback} onChange={(e) => set({ spot_wait_minutes: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 70 }} /> minutes
-            <Help text="Spot is tried first. If AWS keeps answering 'no capacity', the run switches that hardware option to On-Demand (full price, guaranteed) after this many minutes. Untick to stay on Spot only." />
+            <Help text="Spot is tried first. If AWS keeps answering 'no capacity', the run switches that hardware option to On-Demand (full price, no Spot interruption) after this many minutes. Untick to stay on Spot only." />
           </div>
         )}
         <div className="row small mt" style={{ alignItems: "center", gap: 8 }}>

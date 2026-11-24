@@ -188,7 +188,7 @@ PURCHASE = {
     "spot": ("Spot", "Spare capacity at a discount; AWS may reclaim it with two minutes' notice. The run then launches "
                      "a replacement and re-runs only the unfinished measurements. Cost columns always use "
                      "On-Demand prices so results stay comparable."),
-    "on-demand": ("On-Demand", "Guaranteed for the run, full price. Use when Spot keeps getting interrupted."),
+    "on-demand": ("On-Demand", "Not subject to Spot interruption; full price. Use when Spot keeps getting interrupted or refused."),
 }
 CONCURRENCY_HINTS = {1: "one user", 4: "a small team", 8: "a department", 16: "a busy service", 32: "a large service",
                      64: "peak load"}

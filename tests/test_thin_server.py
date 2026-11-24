@@ -308,7 +308,7 @@ def test_mnli_joined_string_equals_pair_encoding():
     thin server receive the same text; it must tokenize exactly like a sentence pair."""
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(_snapshot(*MNLI, patterns=["*.json", "*.txt", "merges.txt", "vocab.json"]))
+    tok = AutoTokenizer.from_pretrained(_snapshot(*MNLI, patterns=["*.json", "*.txt", "merges.txt", "vocab.json"]))  # nosec B615 - a local snapshot at the pinned revision
     for a, b in [("The cat sat on the mat.", "A cat is sitting."), ("SSN 000-00-0000 for payroll", "This text contains a government ID number.")]:
         assert tok(a, b)["input_ids"] == tok(a + "</s></s>" + b)["input_ids"]
 

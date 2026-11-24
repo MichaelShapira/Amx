@@ -198,7 +198,7 @@ The **fairness rule**: the GPU's and the CPU's hourly prices must be within half
 
 **How to run the hardware options**: in parallel (fastest; one instance per option is up at once) or one after another (fewer instances at any moment; the run takes longer). Results are the same either way.
 
-**How to buy the test instances**: **Spot** (spare capacity at a discount that AWS may reclaim with two minutes' notice; the run then launches a replacement and re-runs only the unfinished measurements) or **On-Demand** (guaranteed, full price). **Fall back to On-Demand** after N minutes without Spot capacity is ticked by default. Cost columns always use On-Demand prices so results stay comparable whatever you bought.
+**How to buy the test instances**: **Spot** (spare capacity at a discount that AWS may reclaim with two minutes' notice; the run then launches a replacement and re-runs only the unfinished measurements) or **On-Demand** (not subject to Spot interruption, full price; capacity can still be refused, which the run reports). **Fall back to On-Demand** after N minutes without Spot capacity is ticked by default. Cost columns always use On-Demand prices so results stay comparable whatever you bought.
 
 **Give up on a hardware option after N refusals**: AWS sometimes has no machines of a size in the zone, especially GPUs. The run asks again about once a minute, trying the alternate sizes too; after this many refusals it marks that option "Did not run, no capacity" and finishes the other options. The report then says so prominently, and the refusals themselves become evidence in the availability section of the results.
 

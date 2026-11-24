@@ -8,6 +8,9 @@ useDefault = true
 description = "synthetic DSPM test-data generators"
 paths = [
   '''tools/dspm/fakes\.py$''',
+  # PASSWORD="" is initialised empty and filled from stdin or a hidden prompt; the file never holds a value
+  # (generic-api-key matched the empty initialisation in the history, where an inline allow cannot reach).
+  '''infra/deploy_webapp\.sh$''',
 ]
 # gitleaks runs over the git history, where an inline `gitleaks:allow` added later cannot reach the old commits:
 # an empty shell variable initialisation and a benchmark level key, both matched by generic-api-key.
