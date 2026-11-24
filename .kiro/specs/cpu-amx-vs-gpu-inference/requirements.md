@@ -2,7 +2,7 @@
 
 Revision 2 (2026-11-09): applies the design-review answers. Models are capped at 4B
 parameters, M3 is a classification encoder, and the narrative is driven by GPU capacity
-rather than cost. Deployment target is account `346399954218`, us-east-1.
+rather than cost. Deployment target is account `<account-id>`, us-east-1.
 
 Revision 3 (2026-11-09): adds a DSPM/DLP suite (Requirements 21-23) for a cybersecurity
 customer, next to the standard suite. Narrow-label classification (Sensitive / Not
@@ -122,7 +122,7 @@ that idle capacity does not cost money.
    one command.
 3. THE SYSTEM SHALL place targets and load-generator Lambdas in private subnets of one
    VPC, in a single configurable Availability Zone, and SHALL record the AZ ID.
-4. THE SYSTEM SHALL make the account and region configurable (defaults `346399954218`,
+4. THE SYSTEM SHALL make the account and region configurable (defaults `<account-id>`,
    us-east-1) and SHALL check instance-type offerings in the chosen AZ before deploying a
    target.
 

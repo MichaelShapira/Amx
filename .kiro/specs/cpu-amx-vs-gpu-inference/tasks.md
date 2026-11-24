@@ -2,7 +2,7 @@
 
 Based on [design.md](design.md) revision 3 and [requirements.md](requirements.md)
 revision 3. Tasks 1-24 are local code with no AWS changes. Tasks 25-27 create and use AWS
-resources in account `346399954218`; before the first `cdk deploy`, I will confirm with
+resources in account `<account-id>`; before the first `cdk deploy`, I will confirm with
 you and list what will be created and what it costs per hour.
 
 - [x] 1. Scaffold the repository
@@ -255,7 +255,7 @@ you and list what will be created and what it costs per hour.
   - You review `review_sample.md` (100 items) before the test set is frozen.
   - Stop and report results before any AWS change.
 
-- [x] 25. Deploy and bring up (AWS, account `346399954218`; go-ahead 2026-11-09)
+- [x] 25. Deploy and bring up (AWS, account `<account-id>`; go-ahead 2026-11-09)
   - [x] 25.1 HF token stored as `amx-gpu-bench/hf-token` in Secrets Manager (2026-11-09),
     Hugging Face user `MichaelShapira`; reused as decided.
   - [x] 25.2 Gemma license accepted: the token gets HTTP 200 for `google/gemma-2-2b-it`

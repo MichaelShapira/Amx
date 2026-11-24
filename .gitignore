@@ -1,35 +1,46 @@
+# Python
 __pycache__/
-.DS_Store
-.env
-.idea/
+*.py[cod]
+*.egg-info/
+.venv/
 .pytest_cache/
 .ruff_cache/
-.venv/
-.vscode/
-*.egg-info/
-*.pem
-*.py[cod]
-*creds*.sh
-# Build outputs
-# Credentials and secrets: never commit
+
 # Editor / OS noise
-# Generated data. The DSPM dataset contains realistic fake secrets and identifiers that
-# Local run outputs
-# secret scanners flag; it lives in S3 and in data/ locally, never in git.
-# web app build and screenshots
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials and secrets: never commit
+.env
+*.pem
+*creds*.sh
+
+# Build outputs
 build/
 cdk.out/
-data/
 infra/cdk.out/
 infra/node_modules/
-prompts/generated/
-reports/local/
-deployment/            # cdk --outputs-file targets; the CLI and the app read CloudFormation directly
-/runs/
-webui/.shots/
 webui/dist/
 webui/node_modules/
-.protoshield/
-.holmes/
+webui/tsconfig.tsbuildinfo
+
+# CDK context cache: holds the deploying account's id and AZ list; the CLI regenerates it
+infra/cdk.context.json
+
 # cdk --outputs-file targets; the CLI and the app read CloudFormation directly
 deployment/
+
+# Generated data. The DSPM dataset contains realistic fake secrets and identifiers that
+# secret scanners flag; it lives in S3 and in data/ locally, never in git.
+data/
+prompts/generated/
+
+# Local run outputs and screenshots
+/runs/
+reports/local/
+webui/.shots/
+
+# Scanner working directories
+.protoshield/
+.holmes/

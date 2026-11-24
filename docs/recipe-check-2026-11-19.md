@@ -11,7 +11,7 @@ On-Demand, three server configurations one after another, the same client agains
 `vllm bench serve --dataset-name random --random-input-len 128 --random-output-len 128 --ignore-eos
 --request-rate inf`, the command Intel prints next to its own numbers. Model `Qwen/Qwen3-4B`
 (the same architecture and size as M2 in this catalog, and a model Intel publishes figures for).
-Artifacts: `s3://amx-gpu-bench-346399954218-us-east-1/runs/recipe-check-20261119T081855Z/` and
+Artifacts: `s3://amx-gpu-bench-<account-id>-us-east-1/runs/recipe-check-20261119T081855Z/` and
 `.../recipe-check-20261119T085351Z/` (bench JSON, server logs, lscpu).
 
 ## Result 1: the harness's configuration is as fast as Intel's recipe, or faster

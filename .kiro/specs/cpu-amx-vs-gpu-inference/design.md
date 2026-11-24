@@ -4,7 +4,7 @@ Status: revision 2, after design review (2026-11-09). Inputs:
 [requirements.md](requirements.md), [research.md](research.md). Section 23 records the
 review decisions and the defaults kept for questions that were not answered.
 
-Changes in revision 2: deploy to account `346399954218`; models capped at 4B (M2 is now
+Changes in revision 2: deploy to account `<account-id>`; models capped at 4B (M2 is now
 Qwen3-4B-Instruct-2507, the 7B model is gone); M3 is the classifier roberta-large-mnli;
 verdicts are decided by capacity, not cost; vLLM INT8 W8A8 and classifier FP16 cells are
 added and prefill is reported separately, based on the two Intel case studies
@@ -113,7 +113,7 @@ flowchart LR
 
 ## 4. Repository layout
 
-New standalone repo at `/Users/operator/Documents/Code/amx-gpu-bench` (hosting is still
+New standalone repo at `amx-gpu-bench` (hosting is still
 open; see section 23).
 
 ```
@@ -282,7 +282,7 @@ KV cache sizes are per target and checked at preflight against
 run:
   name: smoke-m1-t1-t2
   mode: smoke                 # "full" requires >= 200 requests and >= 3 repeats
-  account: "346399954218"
+  account: "<account-id>"
   region: us-east-1
   az_id: use1-az1
   models: [m1-qwen2.5-3b]
@@ -325,7 +325,7 @@ invented authentication, no public storage.
   security group inside a private subnet, so the network is the boundary. If you want
   defense in depth, vLLM `--api-key` can be fed from Secrets Manager; OVMS has no
   equivalent. Kept as the default (section 23).
-- **Account.** Account `346399954218`, us-east-1. `CDKToolkit` is already bootstrapped
+- **Account.** Account `<account-id>`, us-east-1. `CDKToolkit` is already bootstrapped
   there (bootstrap version 32). CDK deploys use the bootstrap roles; run-time reads use
   the least-privilege roles below.
 - **IAM.**
@@ -342,7 +342,7 @@ invented authentication, no public storage.
     `states:StartExecution` on the level state machine, S3 and DynamoDB on bench paths,
     `secretsmanager:GetSecretValue` on the HF token (preflight gating check only).
 - **Secrets.** The HF token secret exists outside CDK:
-  `arn:aws:secretsmanager:us-east-1:346399954218:secret:amx-gpu-bench/hf-token-naqygX`
+  `arn:aws:secretsmanager:us-east-1:<account-id>:secret:amx-gpu-bench/hf-token-XXXXXX`
   (created 2026-11-09, default `aws/secretsmanager` key, project tags). The value is the
   raw token string. CDK imports it by name and never puts a value in a template. Scripts
   read it into memory, pass it to downloads through the environment, and redact it from
@@ -922,7 +922,7 @@ Illustrations (assumed speeds, not measurements):
 
 | # | Question | Decision | Where applied |
 |---|---|---|---|
-| 1 | Account | Deploy to `346399954218`, us-east-1, AZ `use1-az1` (default kept) | sections 5.3, 6 |
+| 1 | Account | Deploy to `<account-id>`, us-east-1, AZ `use1-az1` (default kept) | sections 5.3, 6 |
 | 2 | M3 use case | Classification. M3 is `FacebookAI/roberta-large-mnli`; ModernBERT classifier optional (no OpenVINO path) | sections 5.1, 7.1, 15 |
 | 3 | Cost vs capacity | Capacity decides the verdict; cost is shown only | sections 12, 12.1, 18.4 |
 | 4 | Run length | Models capped at 4B. Qwen2.5-7B removed; M2 is Qwen3-4B-Instruct-2507 (4.02B, nominal 4B) | sections 5.1, 20 |

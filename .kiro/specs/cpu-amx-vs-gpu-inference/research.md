@@ -13,7 +13,7 @@ customer, which drives a new DSPM/DLP benchmark suite with synthetic data.
 AWS facts below were read live with read-only calls (`describe-instance-type-offerings`,
 `describe-instance-types`, `pricing get-products`, `lambda get-account-settings`,
 `service-quotas get-service-quota`, `ssm get-parameter`, `ec2 describe-images`,
-`cloudformation describe-stacks`) using account `346399954218`, role `MLGod` (Isengard).
+`cloudformation describe-stacks`) using account `<account-id>`, an administrator role.
 Software facts come from the projects' release APIs, container registries, docs and
 source trees (vLLM v0.33.0, optimum-intel v2.2.0). Anything not verified this way is
 marked **unverified**.
@@ -172,7 +172,7 @@ are known. Third-party quantized checkpoints are recorded by repo and revision.
 | transformers | 5.22.2 latest; the OpenVINO path must stay below 5.6 | | |
 | oneDNN | 3.14.2 latest; vLLM 0.33.0 builds oneDNN 3.13 statically with `ONEDNN_VERBOSE=ON` and `ONEDNN_ENABLE_MAX_CPU_ISA=ON` | | |
 | IPEX | last CPU release 2.8.0 (2025-08-12). Do not use | | |
-| CDK bootstrap in 346399954218 / us-east-1 | `CDKToolkit` stack `UPDATE_COMPLETE`, bootstrap version 32 | | |
+| CDK bootstrap in <account-id> / us-east-1 | `CDKToolkit` stack `UPDATE_COMPLETE`, bootstrap version 32 | | |
 
 AMIs in us-east-1 (resolved from public SSM parameters):
 

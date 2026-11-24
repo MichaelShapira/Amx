@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from webui.api import aws  # noqa: E402
 
 CREDS = """# pasted from the portal
-export ISENGARD_PRODUCTION_ACCOUNT=false
+export SOME_PORTAL_FLAG=false
 export AWS_ACCESS_KEY_ID=ASIAEXAMPLE000000001
 export AWS_SECRET_ACCESS_KEY="secret/one+two"
 export AWS_SESSION_TOKEN=IQoJtoken1
