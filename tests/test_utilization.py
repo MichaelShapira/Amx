@@ -194,7 +194,9 @@ def test_compare_carries_utilization_sizing_and_the_summary_backfills_old_report
                      "workload": None, "bucket": None, "conc": conc, "batch": 8, "repeats": 2, "kind": "classifier", "n_ok": 50,
                      "n_requests": 50, "e2e_p50": 40.0, "e2e_p99": 80.0, "cls_s": 100.0 * conc, "usd_per_hour": 1.5, "error_pct": 0,
                      "amx": "VERIFIED", "usd_per_1m_items": 4.0, "cell_key": "m3__t2__bf16", "level_group": f"m3__t2__bf16__short__c{conc}__b8"})
-    summary = {"run_id": "r-util", "rows": rows, "smoke": True, "run": {"suite": "standard", "concurrency": [1, 16], "instance_types": {"t2-m8i-4xl": "c8i.8xlarge"}}}
+    # The run ASKED for c8i.4xlarge; a capacity fallback launched c8i.8xlarge, which is what the rows carry and what every
+    # card must name (the utilization card said g6.xlarge for a run that ran on g5.xlarge, 2026-11-23).
+    summary = {"run_id": "r-util", "rows": rows, "smoke": True, "run": {"suite": "standard", "concurrency": [1, 16], "instance_types": {"t2-m8i-4xl": "c8i.4xlarge"}}}
     with moto.mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket=bucket)
@@ -226,7 +228,7 @@ def test_compare_carries_utilization_sizing_and_the_summary_backfills_old_report
         u = c.get("/api/runs/r-util/utilization").json()
         assert u["period_s"] in (60, 300, 3600) and [t["target"] for t in u["targets"]] == ["t2-m8i-4xl"]
         t = u["targets"][0]
-        assert t["instance_type"] == "c8i.8xlarge" and t["accelerator"] == "cpu" and len(t["windows"]) == 4
+        assert t["instance_type"] == "c8i.8xlarge" and t["accelerator"] == "cpu" and len(t["windows"]) == 4   # what ran, not what was asked
         assert t["scoped_to_run"] and t["instances"] == 2                                  # the run's own two hosts, by name
         assert main._run_hosts("r-util", "t2-m8i-4xl") == ["ip-10-40-1-1.ec2.internal", "ip-10-40-2-2.ec2.internal"]
         assert main._run_hosts("r-util", "t9-none") == []

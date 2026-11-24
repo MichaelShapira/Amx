@@ -1666,7 +1666,10 @@ def get_utilization(run_id: str):
             error = None
         except Exception as e:  # noqa: BLE001 - say so per hardware option; the page keeps the per-measurement numbers
             series, error = {}, (aws.expired_sentence() if aws.is_expired(e) else f"{type(e).__name__}: {str(e)[:120]}")
-        itype = itypes.get(tid)
+        # The type that actually ran (the report's rows carry it), not the one the run asked for: a capacity fallback
+        # launches an alternate (g6.xlarge -> g5.xlarge after 27 refusals, 2026-11-23) and the card must say so.
+        itype = next((r["instance_type"] for r in s.get("rows") or [] if r.get("target") == tid and r.get("instance_type")), None) \
+            or itypes.get(tid)
         spec = cat.get(itype) if itype else None
         windows = [{"level": report.group_key(m["level_key"]), "name": m.get("name"), "conc": m.get("conc"), "batch": m.get("batch") or 1,
                     "start": m["window_wall_ns"][0] / 1e9, "end": m["window_wall_ns"][1] / 1e9}
