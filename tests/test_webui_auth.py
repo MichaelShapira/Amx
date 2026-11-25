@@ -3,6 +3,8 @@ standing in for the pool's JWKS, and the security headers."""
 
 from __future__ import annotations
 
+import base64
+import json
 import sys
 import time
 from pathlib import Path
@@ -87,6 +89,16 @@ def test_anonymous_calls_are_refused_with_an_identifiable_gate(gated):
     assert c.get("/").status_code == 200
 
 
+def _b64url(obj: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(obj, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+
+def _unsigned_token(claims: dict) -> str:
+    """An attacker's forged token: header {"alg": "none"}, valid-looking claims, empty signature. Assembled by hand
+    (RFC 7519 section 6) rather than through a JWT library, so the test exercises exactly the bytes a forger sends."""
+    return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url(claims)}."
+
+
 def test_bad_tokens_are_refused(gated):
     c = gated
     bad = {
@@ -97,8 +109,8 @@ def test_bad_tokens_are_refused(gated):
         "other client": "Bearer " + token(client_id="zzzzzzzzzzzzzzzzzzzzzzzzzz"),
         "id token": "Bearer " + token(token_use="id"),  # nosec B106 (the claim's value)
         "basic scheme": "Basic dXNlcjpwYXNz",
-        "none alg": "Bearer " + jwt.encode({"sub": "x", "iss": ISSUER, "client_id": CLIENT, "token_use": "access",  # nosemgrep: python.jwt.security.jwt-python-none-alg (the REFUSED case)
-                                            "exp": int(time.time()) + 60, "iat": int(time.time())}, "", algorithm="none"),
+        "none alg": "Bearer " + _unsigned_token({"sub": "x", "iss": ISSUER, "client_id": CLIENT, "token_use": "access",
+                                                 "exp": int(time.time()) + 60, "iat": int(time.time())}),
     }
     for why, header in bad.items():
         r = c.get("/api/catalog", headers={"Authorization": header})
