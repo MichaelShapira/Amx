@@ -174,8 +174,9 @@ hf_secret_arn=<its full ARN>`, on every deploy of that account.
   TLS only, SSE-S3, retained on destroy), the DynamoDB table (retained), the Lambdas, two
   state machines, a reaper schedule (every 10 minutes) and one launch template plus
   instance role per target stack, and the Hugging Face token secret (empty until a token is stored).
-  Everything carries the tags `Amx=amx-gpu-bench`, `project=amx-gpu-bench`, `owner=operator`,
-  `purpose=cpu-amx-vs-gpu-benchmark`.
+  Everything carries the tags `Amx=amx-gpu-bench`, `project=amx-gpu-bench` and
+  `purpose=cpu-amx-vs-gpu-benchmark`, plus `owner=<value>` when `AMXBENCH_OWNER` is set in the
+  environment of the deploy (and of the stacks' Lambdas, which read the same module).
 - **Standing cost while the stacks exist:** the NAT gateway, $0.045/hour (about $1.08 a
   day), plus data processing. No instance runs until a run starts one; the reaper stops
   (On-Demand) or terminates (Spot) any target with no activity for 30 minutes, and any
@@ -624,5 +625,6 @@ loopback.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). The models, container images and datasets the harness downloads keep their own
-licenses (the catalog records each model's; a research-only license is shown on the model card and in the report).
+Public domain, under [The Unlicense](LICENSE): no copyright is claimed and no attribution is required. Written by
+Michael Shapira. The models, container images and datasets the harness downloads keep their own licenses (the
+catalog records each model's; a research-only license is shown on the model card and in the report).

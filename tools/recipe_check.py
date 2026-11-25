@@ -34,6 +34,9 @@ from pathlib import Path
 import boto3
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from bench.tags import PROJECT_TAGS  # noqa: E402
+
 REGION = "us-east-1"
 OURS_IMAGE = "docker.io/vllm/vllm-openai-cpu@sha256:4154467a886f8b7ffa9dbab32f873f5ca4528409d042a6ec866e8888223263d3"
 INTEL_IMAGE = "public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.23.0"
@@ -109,8 +112,7 @@ def launch(ec2, instance_type: str, shutdown_behavior: str | None = None) -> str
     template = ssm.get_parameter(Name="/amx-gpu-bench/targets/t2-m8i-4xl/launch-template")["Parameter"]["Value"]
     tags = [{"Key": "bench:managed", "Value": "false"}, {"Key": "bench:target", "Value": "recipe-check"},
             {"Key": "bench:run", "Value": "recipe-check"}, {"Key": "Name", "Value": "amx-gpu-bench-recipe-check"},
-            {"Key": "project", "Value": "amx-gpu-bench"}, {"Key": "owner", "Value": "operator"},
-            {"Key": "purpose", "Value": "cpu-amx-vs-gpu-benchmark"}]
+            *({"Key": k, "Value": v} for k, v in PROJECT_TAGS.items())]
     extra = {"InstanceInitiatedShutdownBehavior": shutdown_behavior} if shutdown_behavior else {}
     r = ec2.run_instances(LaunchTemplate={"LaunchTemplateId": template, "Version": "$Latest"}, MinCount=1, MaxCount=1,
                           InstanceType=instance_type, **extra,
