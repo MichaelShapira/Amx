@@ -31,7 +31,7 @@ done
 [[ $STACKS_ONLY == 1 || -n "$EMAIL" ]] || { echo "--email EMAIL is required (the web app's sign-in user), or --stacks-only" >&2; exit 2; }
 cd "$(dirname "$0")/.."
 BENCH=.venv/bin/bench
-[[ -x $BENCH ]] || { echo "no $BENCH: run the Setup steps of the README first (python -m venv .venv; pip install -e '.[dev]')" >&2; exit 2; }
+[[ -x $BENCH ]] || { echo "no $BENCH: run README "Step 1: one-time local setup" first (python -m venv .venv; pip install -e '.[dev]')" >&2; exit 2; }
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION="${AMXBENCH_REGION:-us-east-1}"
