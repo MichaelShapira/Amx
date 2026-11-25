@@ -1,6 +1,12 @@
 # Is the CPU side configured right? Checking this harness against Intel's vLLM Xeon recipe
 
-Question (2026-11-19): every run so far shows a clear GPU advantage, while Intel's Software
+> [!NOTE]
+> This is the record of an internal check we ran on 2026-11-19 while building the tool. The runs it
+> describes are ours and are not part of your deployment. The check is repeatable in your own account
+> with `tools/recipe_check.py`, which writes the bench JSON, server logs and `lscpu` output under the
+> run's prefix in your bench bucket.
+
+Question we asked ourselves on 2026-11-19: every internal run so far showed a clear GPU advantage, while Intel's Software
 Catalog says Xeon with AMX competes with GPUs for some model types and sizes. Is the harness
 running vLLM on the CPU the way Intel does (`public.ecr.aws/q9t5s3a7/vllm-cpu-release-repo:v0.23.0`,
 `VLLM_CPU_SGL_KERNEL=1`, `VLLM_CPU_KVCACHE_SPACE=40`, `--distributed-executor-backend mp`,
@@ -10,9 +16,7 @@ Method: `tools/recipe_check.py`. One m8i.4xlarge (the size the harness pairs wit
 On-Demand, three server configurations one after another, the same client against each:
 `vllm bench serve --dataset-name random --random-input-len 128 --random-output-len 128 --ignore-eos
 --request-rate inf`, the command Intel prints next to its own numbers. Model `Qwen/Qwen3-4B`
-(the same architecture and size as M2 in this catalog, and a model Intel publishes figures for).
-Artifacts: `s3://amx-gpu-bench-<account-id>-us-east-1/runs/recipe-check-20261119T081855Z/` and
-`.../recipe-check-20261119T085351Z/` (bench JSON, server logs, lscpu).
+(the same architecture as the catalog's Qwen3-1.7B, one size up, and a model Intel publishes figures for).
 
 ## Result 1: the harness's configuration is as fast as Intel's recipe, or faster
 
@@ -55,7 +59,7 @@ per core against 12 GB/s per core on the 4xlarge). Cost per million output token
 | m8i.4xlarge, Qwen3-4B | $1.93 | $0.91 | $0.74 |
 | m8i.16xlarge, Qwen3-4B | $3.60 | $1.48 | $1.14 |
 | m8i.16xlarge, Qwen3-1.7B | $1.88 | $0.80 | $0.64 |
-| g6.2xlarge (L4), Qwen2.5-3B, run qwen-2-5-20261115T102048Z | $0.49 | — | — |
+| g6.2xlarge (L4), Qwen2.5-3B, from an earlier internal run (2026-11-15) | $0.49 | — | — |
 
 The GPU figure is at C=16 with TPOT 27 ms; at C=64–128 an L4 would be several times cheaper still.
 
@@ -87,8 +91,8 @@ pairs with a g6.xlarge keeps up with it, and on these measurements it does not.
    `ukernel,exec,cpu,brgemm,,undef,src:u8 wei:s8` with no implementation name; the parser only
    counted primitive lines, so the trace read `gemm_total: 0`. PyTorch admits u8 inputs to that
    micro-kernel only when the ISA is `avx512_core_amx`, so those 200,000 lines WERE the AMX INT8
-   path. Fixed in `bench/amx.py`; `bench rejudge-amx <run> --render` re-parsed and re-rendered the
-   Qwen run: W8A8 at C=16 gives 246 tok/s against 162 for BF16 (1.5x) and $0.96 per 1M tokens.
+   path. Fixed in `bench/amx.py`; `bench rejudge-amx <run> --render` re-parsed and re-rendered an
+   internal Qwen run: W8A8 at C=16 gives 246 tok/s against 162 for BF16 (1.5x) and $0.96 per 1M tokens.
    (Those rows are still excluded for a different reason, see "open" below.)
 2. **The default concurrency sweep (1, 4, 16) stops where the CPU is still climbing.** Throughput
    doubled again between C=16 and C=128 on both slices. The wizard allows up to 512; a run that
@@ -111,12 +115,12 @@ google/gemma-4-E4B-it twice on one m8i.4xlarge (default, then `=0`), same `vllm 
 | 2048/128 | 16 | 36.7 (378.5) | 36.7 (378.6) | +0.0% |
 
 Noise level in every cell, including the long-input point where an attention-kernel choice would
-show. The variable stays unset. (Artifacts: `runs/gemma4-splitkv-ab-20261119T142617Z/`.) The single-
-stream figure is itself the bandwidth story again: E4B reads ~9 GB of effective weights per token,
+show. The variable stays unset. The single-stream figure is itself the bandwidth story again: E4B reads ~9 GB of effective weights per token,
 8.6 tok/s = ~77 GB/s of the slice's 110 GB/s.
 
-## Resolved 2026-11-19: the quality flag is a warning, not an exclusion
-Owner decision: **warning only**. `report.meets_sla` no longer fails a row for `quality_flag`; the flag is shown on
+## Decision taken 2026-11-19: the quality flag is a warning, not an exclusion
+
+Decision: **warning only**. `report.meets_sla` no longer fails a row for `quality_flag`; the flag is shown on
 the option's card and listed in the report notes, and the row keeps its place in the capacity and cost verdict.
 The reasoning that led there:
 
@@ -128,7 +132,7 @@ after the first differing token), so W8A8 at 0.50 and INT8-OV at 0.61 are flagge
 the capacity and cost verdict. That measures divergence from the GPU's text, not accuracy. The DSPM
 suite (labels) and the translation suite (chrF against a reference) measure the task itself;
 whether a divergence flag should remove a row from the rankings is a policy decision for the
-owner, not something this check settles.
+tool's owner, not something this check settles.
 
 ## Bottom line
 

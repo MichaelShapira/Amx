@@ -568,7 +568,7 @@ internal test, including the workloads built for AMX:
 | Embeddings, EmbeddingGemma, batch 32 | 4.3x (2,531 against 583 embeddings/s) |
 | Classification, RoBERTa-large | 7.3x |
 | Inline DLP and short-document scans, Gemma 4 E4B | 14–16x |
-| Chat, Qwen3-1.7B at 16 concurrent requests | about 4x ($0.49 against $1.93 per million tokens) |
+| Chat, 3–4B models at 16 concurrent requests | about 4x ($0.49 against $1.93 per million output tokens) |
 | **Long-document scans, Gemma 4 E4B** | **about 1x: the m8i.4xlarge matched a g6.2xlarge (4.5 against 3.5 documents/s), the one exception we saw** |
 
 The Results page says this up front for each run.
